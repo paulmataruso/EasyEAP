@@ -1,0 +1,18 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-font",
+        "value": "*",
+        "files": [
+          "frontend/src/concepts/a/concept.css",
+          "frontend/src/concepts/e/concept.css"
+        ],
+        "createdAt": "2026-11-05T12:30:54.899Z",
+        "reason": "Claude decided: phase-1 design-concept prototypes (design/CONCEPTS.md) with their own type systems by design; DESIGN.md documents only the production app (frontend/src/app, frontend/src/enroll)"
+      }
+    ]
+  }
+}
