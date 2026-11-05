@@ -76,6 +76,3 @@ export function compareRank(a: [number, number, number], b: [number, number, num
 }
 
 /** Backend titles read "1 rejected attempts: …"; fix the singular locally until the API does. */
-export function queueTitle(item: QueueItem): string {
-  return item.title.replace(/^1 rejected attempts:/, '1 rejected attempt:')
-}

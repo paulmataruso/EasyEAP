@@ -5,7 +5,6 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 import { ArrowRight, CalendarClock, CircleCheck, History, UsersRound } from 'lucide-react'
 import { cn } from '@/ui/lib'
-import { queueTitle } from '../../api/dashboard'
 import type { QueueItem, Severity } from '../../api/types'
 import { ago, fmtDate, fmtDateTime, plural, relative } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
@@ -37,7 +36,9 @@ export function sourceText(item: QueueItem, now: Date): string {
   const at = item.source_at
   const c = item.code
   if (c === 'radius_offline' || c === 'radius_config' || c === 'snapshot_pending') return at ? `Last RADIUS heartbeat ${ago(at, now)}` : 'No RADIUS heartbeat received yet'
+  if (c === 'worker_offline') return at ? `Last worker heartbeat ${ago(at, now)}` : 'No worker heartbeat received yet'
   if (!at) return 'Source time not recorded'
+  if (c === 'snapshot_overdue') return `Snapshot built ${ago(at, now)}`
   if (c.startsWith('rejects:')) return `Last attempt ${ago(at, now)}`
   if (c === 'directory_failed') return `Last sync attempt ${ago(at, now)}`
   if (c === 'server_cert_expiring' || c === 'issuing_ca_expiring') return `Certificate issued ${fmtDate(at)}`
@@ -69,7 +70,7 @@ export function QueueRow({ item, tid, primary, canOpen, unavailable }: { item: Q
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
           <SeverityChip severity={item.severity} />
-          <h3 className="ee-h3 min-w-0">{queueTitle(item)}</h3>
+          <h3 className="ee-h3 min-w-0">{item.title}</h3>
         </div>
         <p className="ee-small ee-ink-2 mt-1.5 max-w-[75ch]">{item.detail}</p>
         <p className="ee-small mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5">

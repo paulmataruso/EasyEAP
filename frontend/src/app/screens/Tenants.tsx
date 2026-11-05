@@ -4,7 +4,7 @@ import { useMemo, type MouseEvent } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { Building, CircleAlert, CircleCheck, CircleX, Plus, TriangleAlert } from 'lucide-react'
 import { cn } from '@/ui/lib'
-import { compareRank, queueRank, queueTitle, useOverview, type OverviewTenant } from '../api/dashboard'
+import { compareRank, queueRank, useOverview, type OverviewTenant } from '../api/dashboard'
 import { useSession } from '../api/session'
 import { ago, fmtDateTime, fmtPercent, plural, relative } from '../lib/format'
 import { useNow } from '../lib/useNow'
@@ -35,7 +35,7 @@ function TopIssue({ t, compact }: { t: OverviewTenant; compact?: boolean }) {
   const more = t.queue_count - 1
   // A tenant in setup already says "Not enforceable yet" in its enforcement column; name the next step instead.
   const setup = top.code === 'not_enforceable' && t.enforcement.missing.length > 0
-  const title = setup ? `Next setup step: ${t.enforcement.missing[0].message}` : queueTitle(top)
+  const title = setup ? `Next setup step: ${t.enforcement.missing[0].message}` : top.title
   return (
     <div className={cn('flex min-w-0 gap-3', compact ? 'flex-col items-start' : 'items-center justify-between')}>
       <div className="min-w-0">
