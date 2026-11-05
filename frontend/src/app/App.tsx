@@ -8,6 +8,7 @@ import { TenantProvider, useTenantQuery } from './api/tenant'
 import { paths } from './routes'
 import { Shell } from './shell/Shell'
 import { Empty, ErrorState, LoadingBlock, Toaster } from './ui'
+import { ErrorBoundary } from './ui/ErrorBoundary'
 import { FirstRun } from './screens/FirstRun'
 import { Login } from './screens/Login'
 
@@ -51,7 +52,13 @@ function RequireSession() {
   if (loading || needsSetup === null) return <Loading />
   if (needsSetup) return <Navigate to={paths.firstRun()} replace />
   if (!me) return <Navigate to={paths.login()} replace state={{ from: location.pathname + location.search }} />
-  return <TenantScope><Shell><Suspense fallback={<Loading />}><Outlet /></Suspense></Shell></TenantScope>
+  return <TenantScope><Shell><ScreenBoundary><Suspense fallback={<Loading />}><Outlet /></Suspense></ScreenBoundary></Shell></TenantScope>
+}
+
+/** A screen that crashes shows an error inside the shell; moving to another route clears it. */
+function ScreenBoundary({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation()
+  return <ErrorBoundary resetKey={pathname}>{children}</ErrorBoundary>
 }
 
 /** Provides the tenant to the shell (sidebar scope, search, palette) and to every /t/:tid screen. */
@@ -102,6 +109,7 @@ export function App() {
       <SessionProvider>
         <Tooltip.Provider delayDuration={250}>
           <HashRouter>
+            <ErrorBoundary fullPage>
             <Routes>
               <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
               <Route path="/first-run" element={<FirstRunOnly />} />
@@ -132,6 +140,7 @@ export function App() {
                 <Route path="*" element={<Empty title="Page not found">Use the sidebar or press ⌘K to find what you need.</Empty>} />
               </Route>
             </Routes>
+            </ErrorBoundary>
           </HashRouter>
           <Toaster />
         </Tooltip.Provider>

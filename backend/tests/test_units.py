@@ -181,3 +181,50 @@ def test_vlan_colour_must_come_from_the_palette():
     assert len(set(VLAN_COLORS)) == len(VLAN_COLORS) == 8
     with pytest.raises(pydantic.ValidationError):
         VlanIn(vlan_id=100, name="Staff", color="url(javascript:x)")
+
+
+def test_directory_base_dn_helpers():
+    from app.directory import ldap
+    assert ldap.dn_to_domain("DC=Corp, DC=Example,DC=com") == "corp.example.com"
+    assert ldap.dn_to_domain("OU=Staff,DC=corp,DC=com") == "corp.com"
+    assert ldap.within("OU=Staff,DC=corp,DC=example,DC=com", "dc=corp, dc=example, dc=com")
+    assert ldap.within("DC=corp,DC=example,DC=com", "DC=corp,DC=example,DC=com")
+    assert not ldap.within("DC=other,DC=com", "DC=corp,DC=com")
+    assert not ldap.within("DC=com", "DC=corp,DC=com")  # a parent is not inside
+    assert not ldap.within("DC=corp,DC=com", "")
+
+
+def test_unsynced_directory_reports_no_stats():
+    # A new configuration stores {} until the first sync. The console must get null, not an empty record it
+    # would try to print as "undefined users".
+    import uuid
+
+    from app.routers.directory import config_out
+    c = m.DirectoryConfig(tenant_id=uuid.uuid4(), enabled=True, hosts=["dc1.corp.example"], port=636, transport="ldaps",
+                          verify_certificate=True, domain="corp.example", base_dn="DC=corp,DC=example", user_search_base="",
+                          group_search_base="", user_filter="(objectClass=user)", group_filter="(objectClass=group)",
+                          bind_dn="svc@corp.example", sync_interval_minutes=15, last_sync_stats={})
+    assert config_out(c)["last_sync_stats"] is None
+    c.last_sync_stats = {"users": 3, "groups": 2}
+    assert config_out(c)["last_sync_stats"] == {"users": 3, "groups": 2}
+
+
+def test_radius_state_distinguishes_idle_and_starting_from_stopped():
+    from datetime import timedelta
+
+    from app.routers.radius import STARTING_WINDOW, radius_state
+
+    class Answers:  # stands in for the session: active-tenant count, then the latest activation time
+        def __init__(self, *values):
+            self.values = list(values)
+
+        def scalar(self, _stmt):
+            return self.values.pop(0)
+
+    now = datetime.now(UTC)
+    running, down = m.AgentStatus(agent_id="r", radius_running=True), m.AgentStatus(agent_id="r", radius_running=False)
+    assert radius_state(Answers(), running, now) == "running"
+    assert radius_state(Answers(0), down, now) == "idle"  # nothing active: nothing to serve
+    assert radius_state(Answers(1, now - timedelta(seconds=10)), down, now) == "starting"
+    assert radius_state(Answers(1, now - STARTING_WINDOW - timedelta(seconds=1)), down, now) == "stopped"
+    assert radius_state(Answers(1, None), down, now) == "stopped"

@@ -7,6 +7,7 @@ import { useDashboard, type DashboardResponse } from '../api/dashboard'
 import { useControllers, usePolicyLite } from '../api/events'
 import { useSession } from '../api/session'
 import { useTenant } from '../api/tenant'
+import { radiusState } from '../api/types'
 import { ago, duration, fmtDate, fmtDateTime, fmtPercent, plural, remaining } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { paths } from '../routes'
@@ -299,10 +300,12 @@ export default function Dashboard() {
                   <ServiceRow
                     icon={<Router />}
                     title="RADIUS agent"
-                    tone={!agent ? 'crit' : !agent.online ? 'crit' : !agent.config_ok || !agent.radius_running ? 'crit' : 'valid'}
-                    status={!agent ? 'Never reported' : !agent.online ? 'Not reporting' : !agent.radius_running ? 'RADIUS stopped' : !agent.config_ok ? 'Config rejected' : 'Online'}
+                    tone={!agent || !agent.online || !agent.config_ok ? 'crit' : { running: 'valid', idle: 'neutral', starting: 'neutral', stopped: 'crit' }[radiusState(agent)] as Tone}
+                    status={!agent ? 'Never reported' : !agent.online ? 'Not reporting' : !agent.config_ok ? 'Config rejected'
+                      : { running: 'Online', idle: 'Idle', starting: 'RADIUS starting', stopped: 'RADIUS stopped' }[radiusState(agent)]}
                     detail={agent
-                      ? <>Heartbeat {ago(agent.last_seen_at, now)}{agent.config_error ? ` · ${agent.config_error}` : agent.radius_running ? ' · RADIUS running' : ''}</>
+                      ? <>Heartbeat {ago(agent.last_seen_at, now)}{agent.config_error ? ` · ${agent.config_error}`
+                        : { running: ' · RADIUS running', idle: ' · RADIUS starts when a tenant is activated', starting: ' · loading this tenant, usually within 15 seconds', stopped: '' }[radiusState(agent)]}</>
                       : 'EasyEAP hasn’t received a heartbeat from the RADIUS agent.'}
                   />
                   <ServiceRow

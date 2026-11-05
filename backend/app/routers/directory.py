@@ -24,7 +24,7 @@ def config_out(c: m.DirectoryConfig | None) -> dict | None:
             "group_search_base": c.group_search_base, "user_filter": c.user_filter, "group_filter": c.group_filter, "bind_dn": c.bind_dn,
             "password_set": bool(c.bind_password_ct), "sync_interval_minutes": c.sync_interval_minutes,
             "last_sync_at": c.last_sync_at.isoformat() if c.last_sync_at else None, "last_sync_status": c.last_sync_status,
-            "last_sync_error": c.last_sync_error, "last_sync_stats": c.last_sync_stats}
+            "last_sync_error": c.last_sync_error, "last_sync_stats": c.last_sync_stats or None}  # {} until the first sync
 
 
 @router.get("")
@@ -73,6 +73,34 @@ def _apply(ctx: TenantCtx, body: DirectoryIn, existing: m.DirectoryConfig | None
 def test(body: DirectoryIn, ctx: TenantCtx = Depends(require("directory:write"))) -> dict:
     p, _ = _apply(ctx, body, ctx.session.get(m.DirectoryConfig, ctx.id))
     return ldap.test(p)
+
+
+class DiscoverIn(BaseModel):
+    hosts: list[str] = Field(min_length=1, max_length=6)
+    port: int = Field(default=636, ge=1, le=65535)
+    transport: str = Field(default="ldaps", pattern="^(ldaps|starttls|plain)$")
+    verify_certificate: bool = True
+    ca_bundle_pem: str | None = Field(default=None, max_length=100_000)
+    clear_ca_bundle: bool = False
+    bind_dn: str = Field(default="", max_length=500)
+    bind_password: str | None = Field(default=None, max_length=512)
+
+
+@router.post("/discover")
+def discover(body: DiscoverIn, ctx: TenantCtx = Depends(require("directory:write"))) -> dict:
+    """Base DN and AD domain from the domain controller's RootDSE. Tries anonymously first, so no password is sent
+    unless the directory insists; the service account is used only if one was entered or saved."""
+    if body.ca_bundle_pem and "BEGIN CERTIFICATE" not in body.ca_bundle_pem:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The CA bundle must be PEM (-----BEGIN CERTIFICATE-----).")
+    existing = ctx.session.get(m.DirectoryConfig, ctx.id)
+    password = body.bind_password or ""
+    if not password and body.bind_dn and existing and existing.bind_password_ct and existing.bind_dn == body.bind_dn:
+        password = crypto.decrypt_str(ctx.id, existing.bind_password_ct)
+    ca = None if body.clear_ca_bundle else (body.ca_bundle_pem or (existing.ca_bundle_pem if existing else None))
+    p = ldap.DirectoryParams(hosts=[h.strip() for h in body.hosts if h.strip()], port=body.port, transport=body.transport,
+                             verify_certificate=body.verify_certificate, ca_bundle_pem=ca, base_dn="", user_search_base="",
+                             group_search_base="", user_filter="", group_filter="", bind_dn=body.bind_dn, bind_password=password)
+    return ldap.discover(p)
 
 
 @router.put("")

@@ -5,8 +5,22 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Base DN detection.** Directory settings read the base DN and AD domain from the domain controller's RootDSE with
+  "Detect from domain controller". It needs only the controller's name and TLS settings and tries without signing
+  in first. The base DN also follows the AD domain as you type, and Test connection names the directory's real base
+  DN when the one entered is outside it.
+
 ### Fixed
 
+- Saving a new directory connection blanked the console until the first sync finished. A configuration that hasn't
+  synced yet now reports no statistics, and the page checks for complete statistics before showing them.
+- A screen that hits a rendering error now shows what happened inside the console, with a reload button, instead of
+  a blank page.
+- The RADIUS status no longer reads "Not running" in red before any tenant is active. It shows "Idle" until a tenant
+  is activated and "Starting" while the agent loads it. The RADIUS screen, dashboard and system overview check every
+  5 seconds during that time instead of every 30.
 - `install.sh` puts an IP address in the temporary TLS certificate as an IP subjectAltName. A DNS entry made browsers
   reject the certificate when the console hostname is an IP address.
 

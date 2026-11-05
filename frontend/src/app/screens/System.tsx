@@ -7,6 +7,7 @@ import { ApiError } from '../api/client'
 import { useOverview } from '../api/dashboard'
 import { useSession } from '../api/session'
 import { useSystemHealth, type HealthCheck } from '../api/system'
+import { radiusState } from '../api/types'
 import { ago, fmtDateTime, plural, relative } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { paths } from '../routes'
@@ -138,7 +139,7 @@ export default function System() {
 
         <div className="grid grid-cols-1 gap-5 lg:col-span-5 [&>*]:min-w-0">
         {/* RADIUS agent */}
-        <Panel risk={overview.data ? (!agent || !agent.online || !agent.config_ok || !agent.radius_running ? 'crit' : 'valid') : undefined} aria-labelledby="sys-agent">
+        <Panel risk={overview.data ? (!agent || !agent.online || !agent.config_ok || radiusState(agent) === 'stopped' ? 'crit' : radiusState(agent) === 'running' ? 'valid' : undefined) : undefined} aria-labelledby="sys-agent">
           <div className="p-5">
             <SectionHeader id="sys-agent" title="RADIUS agent" actions={agent ? (agent.online ? <Chip tone="valid">Online</Chip> : <Chip tone="crit">Not reporting</Chip>) : undefined} />
             {overview.isLoading ? <LoadingBlock rows={4} label="Loading RADIUS agent" />
@@ -150,7 +151,12 @@ export default function System() {
                   <Dl
                     items={[
                       ['Last heartbeat', <span title={fmtDateTime(agent.last_seen_at)}>{ago(agent.last_seen_at, now)}</span>],
-                      ['RADIUS process', agent.radius_running ? <HealthDot tone="valid" label="Running" /> : <HealthDot tone="crit" label="Stopped" />],
+                      ['RADIUS process', {
+                        running: <HealthDot tone="valid" label="Running" />,
+                        idle: <HealthDot tone="neutral" label="Idle: starts when the first tenant is activated" />,
+                        starting: <HealthDot tone="neutral" label="Starting for a newly activated tenant" />,
+                        stopped: <HealthDot tone="crit" label="Stopped" />,
+                      }[radiusState(agent)]],
                       ['Configuration', agent.config_ok ? <HealthDot tone="valid" label="Loaded" /> : <HealthDot tone="crit" label="Rejected" />, false],
                       ['Agent ID', <span className="ee-mono text-[12.5px]">{agent.agent_id}</span>],
                       ...(agent.config_error ? [['Configuration error', <span className="text-[var(--ee-crit-ink)]">{agent.config_error}</span>, 'wide'] as [ReactNode, ReactNode, 'wide']] : []),

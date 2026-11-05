@@ -36,6 +36,10 @@ Some failures never produce an authentication event:
 - **"Controllers can't reach the configured RADIUS address."** `EASYEAP_RADIUS_ADDRESS` is a loopback or unspecified
   address. Set it in `deploy/.env` to the address controllers use for this server and restart the stack. The setup
   guides leave the address as a placeholder until then.
+- **FreeRADIUS shows "Idle".** No tenant is active yet, so there is nothing to serve and the agent keeps FreeRADIUS
+  stopped. It starts when a tenant is activated (setup's last step). For about 15 seconds after that the status reads
+  "Starting" while the agent picks up the new configuration. "Not running" after that is a real fault: check the
+  Configuration status on the RADIUS screen and `docker compose logs easyeap-radius`.
 
 ## Useful commands
 
