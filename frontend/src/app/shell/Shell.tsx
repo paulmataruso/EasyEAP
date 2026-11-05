@@ -12,6 +12,7 @@ import { cn } from '@/ui/lib'
 import { useSession } from '../api/session'
 import { useOptionalTenant, useTenantList } from '../api/tenant'
 import type { TenantListItem } from '../api/types'
+import { plural } from '../lib/format'
 import { useRecent, type RecentItem } from '../lib/recent'
 import { paths } from '../routes'
 import { Btn } from '../ui'
@@ -50,7 +51,7 @@ function TenantSwitcher({ onNavigated }: { onNavigated?: () => void }) {
         <span className="ee-monogram" aria-hidden>{current ? monogram(current.name) : <Building className="size-3.5" />}</span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13.5px] font-semibold">{current?.name ?? (isPlatform ? 'All tenants' : 'Choose a tenant')}</span>
-          <span className="block truncate text-[12px] ee-ink-3">{current ? (current.domain || current.slug) : `${tenants.data?.length ?? '…'} tenants`}</span>
+          <span className="block truncate text-[12px] ee-ink-3">{current ? (current.domain || current.slug) : (tenants.data ? plural(tenants.data.length, 'tenant') : 'Loading tenants…')}</span>
         </span>
         <ChevronsUpDown className="size-4 ee-ink-3" aria-hidden />
       </DropdownMenu.Trigger>

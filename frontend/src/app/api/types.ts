@@ -54,8 +54,15 @@ export interface Enforcement {
   snapshot_version: number | null
   deadline_at: string | null
   max_snapshot_age_seconds: number
-  /** True while the directory is healthy: the worker rebuilds the snapshot hourly, so the deadline keeps moving. */
+  /** True while the directory is healthy and the worker is running: the snapshot is rebuilt hourly, so the deadline keeps moving. */
   auto_refresh: boolean
+  /** What stopped the hourly rebuild, when auto_refresh is false. */
+  refresh_blocked_by: 'worker' | 'directory' | null
+  /** The snapshot is older than 75 minutes although it should be rebuilt hourly. */
+  refresh_overdue: boolean
+  directory_fresh: boolean
+  worker_alive: boolean
+  worker_seen_at: string | null
   agent_online: boolean
   agent_applied_version: number | null
   agent_in_sync: boolean
