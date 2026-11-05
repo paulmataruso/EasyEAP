@@ -3,6 +3,13 @@
 All notable changes to EasyEAP. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- `install.sh` puts an IP address in the temporary TLS certificate as an IP subjectAltName. A DNS entry made browsers
+  reject the certificate when the console hostname is an IP address.
+
 ## [1.0.0] - 2026-11-05
 
 The first complete release: multi-tenant EAP-TLS with PKI, Active Directory, RADIUS, enrollment and the console.
