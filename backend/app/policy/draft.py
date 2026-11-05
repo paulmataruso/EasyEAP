@@ -110,7 +110,8 @@ def preview(session: Session, tenant_id: uuid.UUID, draft_rules: list[DraftRuleD
             if len(changes) < MAX_LISTED_CHANGES:
                 changes.append({"kind": kind, "purpose": purpose, "has_certificate": bool(held),
                                 "identity": {"id": str(ident.id), "display_name": ident.display_name, "username": ident.username,
-                                             "account_state": ident.account_state},
+                                             "account_state": ident.account_state,
+                                             "groups": [{"id": str(g.id), "name": g.name, "source": g.source} for g in ident.groups if not g.deleted]},
                                 "before": _brief(before, names), "after": _brief(after, names), "steps": after.steps})
     order = {"newly_allowed": 0, "newly_denied": 1, "vlan_changed": 2}
     changes.sort(key=lambda c: (order[c["kind"]], not c["has_certificate"], c["identity"]["display_name"].lower()))

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app import audit as audit_mod
 from app import models as m
-from app.db import set_platform
+from app.db import set_platform, set_tenant
 from app.deps import Principal, TenantCtx, db, platform, require
 from app.radius.explain import explain
 
@@ -120,3 +120,21 @@ def verify(p: Principal = Depends(platform("platform:read")), s: Session = Depen
     set_platform(s)
     ok, bad, n = audit_mod.verify_chain(s)
     return {"ok": ok, "first_bad_id": bad, "checked": n}
+
+
+@router.post("/tenants/{tenant_id}/audit/verify")
+def verify_tenant(ctx: TenantCtx = Depends(require("audit:read"))) -> dict:
+    """Integrity check for a tenant's administrators. The audit trail is one hash chain across the platform, so the
+    whole chain is verified; the answer discloses only this tenant's share (no other tenant's rows or ids)."""
+    s = ctx.session
+    set_platform(s)
+    try:
+        ok, bad, checked = audit_mod.verify_chain(s)
+        bad_row = s.get(m.AuditEvent, bad) if bad else None
+        in_tenant = bool(bad_row is not None and bad_row.tenant_id == ctx.id)
+    finally:
+        set_tenant(s, ctx.id)
+    entries = s.scalar(select(func.count()).select_from(m.AuditEvent).where(m.AuditEvent.tenant_id == ctx.id)) or 0
+    return {"ok": ok, "checked": checked, "tenant_entries": entries,
+            "first_bad_id": bad if in_tenant else None, "break_in_this_tenant": in_tenant}
+

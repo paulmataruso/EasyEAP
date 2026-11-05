@@ -164,3 +164,40 @@ def test_access_states_separate_policy_from_certificate(tenant):
     finally:
         s.rollback()
         s.close()
+
+
+def test_settings_cannot_change_the_default_and_keygen_needs_permission_only_to_change(tenant):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):  # the default goes through draft + publish, never through settings
+        policy_router.SettingsIn(default_action="allow", max_snapshot_age_seconds=86_400, expiry_warning_days=30)
+    s = new_session()
+    try:
+        ctx = _ctx(s, tenant["tenant"])
+        policy_router.policy_settings(s, ctx.id).allow_server_keygen = True
+        # A Wi-Fi Admin (no enrollment:server_keygen) can still save other settings while keygen stays on...
+        out = policy_router.update_settings(policy_router.SettingsIn(max_snapshot_age_seconds=43_200, allow_server_keygen=True, expiry_warning_days=14), ctx)
+        assert out["expiry_warning_days"] == 14 and out["default_action"] == "deny"
+        # ...but can't change it.
+        with pytest.raises(HTTPException) as e:
+            policy_router.update_settings(policy_router.SettingsIn(max_snapshot_age_seconds=43_200, allow_server_keygen=False, expiry_warning_days=14), ctx)
+        assert e.value.status_code == 403
+    finally:
+        s.rollback()
+        s.close()
+
+
+def test_preview_lists_groups_and_tenant_audit_verify_discloses_only_this_tenant(tenant):
+    from app.routers import events as events_router
+    s = new_session()
+    try:
+        ctx = _ctx(s, tenant["tenant"])
+        d = _live_draft(ctx)
+        d.rules[0].enabled = False
+        change = next(c for c in policy_router.preview(d, ctx)["changes"] if c["identity"]["username"] == "carol")
+        assert {g["name"] for g in change["identity"]["groups"]} == {"Contractors", "Staff"}
+        v = events_router.verify_tenant(ctx)
+        assert set(v) == {"ok", "checked", "tenant_entries", "first_bad_id", "break_in_this_tenant"}
+        assert v["ok"] is True and v["first_bad_id"] is None
+    finally:
+        s.rollback()
+        s.close()

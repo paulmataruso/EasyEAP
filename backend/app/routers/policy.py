@@ -5,7 +5,7 @@ import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 
 from app import audit
@@ -197,8 +197,9 @@ def reorder(body: OrderIn, ctx: TenantCtx = Depends(require("policy:write"))) ->
 
 
 class SettingsIn(BaseModel):
-    default_action: str = Field(pattern="^(allow|deny)$")
-    default_vlan_ref: uuid.UUID | None = None
+    """Tenant policy settings. The default action and VLAN are part of the policy itself: they change only through a
+    draft publish (with its revision check), never here, so a settings save can't silently undo a newer publish."""
+    model_config = ConfigDict(extra="forbid")
     max_snapshot_age_seconds: int = Field(ge=3600, le=7 * 86_400)
     allow_server_keygen: bool = False
     expiry_warning_days: int = Field(ge=1, le=180)
@@ -206,11 +207,10 @@ class SettingsIn(BaseModel):
 
 @router.put("/settings")
 def update_settings(body: SettingsIn, ctx: TenantCtx = Depends(require("policy:write"))) -> dict:
-    if body.allow_server_keygen and "enrollment:server_keygen" not in ctx.perms:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a Tenant Administrator can turn on server-generated keys.")
-    if body.default_action == "allow" and not body.default_vlan_ref:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose the VLAN that the default Allow assigns.")
     ps = policy_settings(ctx.session, ctx.id)
+    # Only changing the server-keygen setting needs the extra permission; saving other settings leaves it as it is.
+    if body.allow_server_keygen != ps.allow_server_keygen and "enrollment:server_keygen" not in ctx.perms:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a Tenant Administrator can change whether server-generated keys are allowed.")
     before = settings_out(ps)
     for k, v in body.model_dump().items():
         setattr(ps, k, v)
@@ -331,4 +331,7 @@ def publish(body: DraftIn, ctx: TenantCtx = Depends(require("policy:write"))) ->
     audit.record(s, ctx.actor, "policy.published", tenant_id=ctx.id, target_type="policy",
                  detail={"from_revision": before_rev, "to_revision": after_rev, "created": created, "updated": updated, "deleted": deleted,
                          "order": [r.name for r in data], "default_action": body.default_action, "impact": impact})
-    return {**get_policy(ctx), "impact": impact}
+    rs = s.get(m.RadiusSettings, ctx.id)
+    # The snapshot this publish produced: the console watches the agent's applied version reach it.
+    snapshot = {"version": rs.snapshot_version, "built_at": rs.snapshot_built_at.isoformat() if rs.snapshot_built_at else None} if rs else None
+    return {**get_policy(ctx), "impact": impact, "snapshot": snapshot}
