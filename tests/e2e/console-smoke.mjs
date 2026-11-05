@@ -36,6 +36,10 @@ await page.fill('#email', email)
 await page.fill('#password', password)
 await page.click('button[type=submit]')
 await page.waitForURL((u) => !u.hash.includes('login'), { timeout: 15000 }).then(() => ok('sign in'), () => bad('sign in'))
+await page.waitForLoadState('networkidle').catch(() => {})
+// Anything that went wrong while loading the app (CSP violations, script errors) counts, not only per-screen problems.
+if (problems.length) bad(`app load: ${problems.join('; ').slice(0, 400)}`)
+else ok('app loads without console errors or CSP violations')
 
 const tenants = await page.evaluate(() => fetch('/api/tenants').then((r) => r.json())).catch(() => ({ tenants: [] }))
 const tenant = tenants.tenants.find((t) => t.slug === process.env.E2E_TENANT) ?? tenants.tenants[0]

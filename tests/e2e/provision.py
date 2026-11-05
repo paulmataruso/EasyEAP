@@ -126,7 +126,8 @@ def provision(api, subnet):
         out["certs"][user] = {"serial": res["serial"], "cn": cn, "cert_pem": res["certificate_pem"],
                               "key_pem": key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()}
         reuse = api.c.post(f"/api/enroll/{token}/csr", json={"csr": csr, "key_origin": "csr"})
-        assert reuse.status_code == 404, "an enrollment link must work only once"
+        assert reuse.status_code == 410, f"an enrollment link must work only once (got {reuse.status_code})"
+        assert api.c.get(f"/api/enroll/{token}").json().get("status") == "completed", "a used link must say it was used"
     r = api.c.post(f"/api/tenants/{T}/enrollments", json={"identity_id": users["dave"]["id"], "device_name": "dave-laptop", "platform": "linux"})
     if r.status_code < 400:
         fail("a disabled directory account was allowed to enroll")

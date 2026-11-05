@@ -169,7 +169,8 @@ function RecentList({ onNavigated }: { onNavigated?: () => void }) {
   const tctx = useOptionalTenant()
   const recent = useRecent(tctx?.tid ?? '')
   const navigate = useNavigate()
-  if (!tctx) return null
+  // Nothing to show until something has been opened: no placeholder hint taking sidebar space.
+  if (!tctx || recent.length === 0) return null
   const open = (r: RecentItem) => {
     navigate(r.kind === 'identity' ? paths.user(tctx.tid, r.id) : r.kind === 'certificate' ? paths.certificate(tctx.tid, r.id) : paths.radius(tctx.tid))
     onNavigated?.()
@@ -177,22 +178,18 @@ function RecentList({ onNavigated }: { onNavigated?: () => void }) {
   return (
     <div className="mt-5">
       <p className="ee-nav-group mt-0 flex items-center gap-1.5"><Clock className="size-3.5" aria-hidden />Recently viewed</p>
-      {recent.length === 0 ? (
-        <p className="px-2.5 text-[12.5px] ee-ink-3">Users and certificates you open appear here.</p>
-      ) : (
-        <ul>
-          {recent.slice(0, 4).map((r) => (
-            <li key={`${r.kind}:${r.id}`}>
-              <button type="button" className="ee-nav-item h-auto py-1.5" onClick={() => open(r)}>
-                <span className="min-w-0">
-                  <span className="block truncate text-[13px]">{r.label}</span>
-                  <span className="block truncate text-[12px] ee-ink-3">{r.sub}</span>
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul>
+        {recent.slice(0, 4).map((r) => (
+          <li key={`${r.kind}:${r.id}`}>
+            <button type="button" className="ee-nav-item h-auto py-1.5" onClick={() => open(r)}>
+              <span className="min-w-0">
+                <span className="block truncate text-[13px]">{r.label}</span>
+                <span className="block truncate text-[12px] ee-ink-3">{r.sub}</span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
