@@ -1,6 +1,7 @@
 // Dashboard charts. Forms (dataviz procedure): hourly accept/reject = stacked columns over time (2 series, legend +
-// tooltip + table view); failure reasons and VLAN usage = ranked horizontal bars in one hue (nominal categories, so
-// one colour for every bar, identity carried by the label). Series colours --ee-series-accept / --ee-series-reject
+// tooltip + table view); failure reasons and VLAN usage = ranked horizontal bars. Failure reasons are nominal, so one hue
+// with identity carried by the label. VLANs have a stored identity colour shown everywhere in EasyEAP, so each bar wears
+// its VLAN's colour (colour follows the entity, never its rank) and the label still names it. Series colours --ee-series-accept / --ee-series-reject
 // were validated against the panel surface #141b30 (dark): lightness, chroma, CVD ΔE 10.7, normal ΔE 31.9, contrast ≥ 3:1.
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
@@ -196,9 +197,9 @@ export function HourlyChart({ hourly, view, height = 200 }: { hourly: HourBucket
   )
 }
 
-export interface RankedItem { key: string; label: ReactNode; text: string; value: number; to?: string; hint?: string }
+export interface RankedItem { key: string; label: ReactNode; text: string; value: number; to?: string; hint?: string; /** Entity colour (VLANs); else the chart's hue. */ color?: string }
 
-/** Ranked horizontal bars, one hue. Value at the bar tip; tooltip adds the share; table view lists the same rows. */
+/** Ranked horizontal bars: one hue unless an item carries its entity's colour. Value at the bar tip; tooltip adds the share; table view lists the same rows. */
 export function RankedBars({ items, color, unit, view, caption, nameHeader }: {
   items: RankedItem[]
   color: string
@@ -237,7 +238,7 @@ export function RankedBars({ items, color, unit, view, caption, nameHeader }: {
             <span className="min-w-0 truncate text-[13px]">{i.label}</span>
             <span className="ee-num text-[13px] font-semibold">{i.value}</span>
             <span className="col-span-2 block h-[6px] rounded-[1px] bg-[rgba(237,234,227,0.06)]" aria-hidden>
-              <span className="block h-full rounded-r-[3px] rounded-l-[1px] transition-[width] duration-300" style={{ width: `${Math.max(2, (i.value / max) * 100)}%`, background: color }} />
+              <span className="block h-full rounded-r-[3px] rounded-l-[1px] transition-[width] duration-300" style={{ width: `${Math.max(2, (i.value / max) * 100)}%`, background: i.color ?? color }} />
             </span>
           </>
         )

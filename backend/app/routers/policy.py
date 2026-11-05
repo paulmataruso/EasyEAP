@@ -51,18 +51,28 @@ def _changed(ctx: TenantCtx) -> None:
     bump(ctx.session, ctx.id)
 
 
+# Same order as the console's palette (frontend ui/index.tsx VLAN_COLORS).
+VLAN_COLORS = ("blue", "violet", "teal", "orange", "amber", "green", "rose", "slate")
+
+
 class VlanIn(BaseModel):
     vlan_id: int = Field(ge=1, le=4094)
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(default="", max_length=300)
-    color: str = Field(default="blue", max_length=16)
+    # None: a new VLAN gets the first colour no other VLAN in the tenant uses; an update keeps its colour.
+    color: str | None = Field(default=None, pattern="^(" + "|".join(VLAN_COLORS) + ")$")
+
+
+def _free_color(s, tenant_id: uuid.UUID) -> str:
+    used = {v.color for v in s.scalars(select(m.Vlan).where(m.Vlan.tenant_id == tenant_id))}
+    return next((c for c in VLAN_COLORS if c not in used), VLAN_COLORS[len(used) % len(VLAN_COLORS)])
 
 
 @router.post("/vlans", status_code=201)
 def create_vlan(body: VlanIn, ctx: TenantCtx = Depends(require("policy:write"))) -> dict:
     if ctx.session.scalars(select(m.Vlan).where(m.Vlan.tenant_id == ctx.id, m.Vlan.vlan_id == body.vlan_id)).first():
         raise HTTPException(status.HTTP_409_CONFLICT, f"VLAN {body.vlan_id} already exists.")
-    v = m.Vlan(tenant_id=ctx.id, **body.model_dump())
+    v = m.Vlan(tenant_id=ctx.id, **{**body.model_dump(), "color": body.color or _free_color(ctx.session, ctx.id)})
     ctx.session.add(v)
     ctx.session.flush()
     audit.record(ctx.session, ctx.actor, "vlan.created", tenant_id=ctx.id, target_type="vlan", target_id=v.id, target_label=f"{v.vlan_id} {v.name}")
@@ -74,7 +84,7 @@ def update_vlan(vlan_ref: uuid.UUID, body: VlanIn, ctx: TenantCtx = Depends(requ
     v = ctx.session.get(m.Vlan, vlan_ref)
     if v is None or v.tenant_id != ctx.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "VLAN not found.")
-    for k, val in body.model_dump().items():
+    for k, val in body.model_dump(exclude_none=True).items():
         setattr(v, k, val)
     _changed(ctx)
     audit.record(ctx.session, ctx.actor, "vlan.updated", tenant_id=ctx.id, target_type="vlan", target_id=v.id, target_label=f"{v.vlan_id} {v.name}")

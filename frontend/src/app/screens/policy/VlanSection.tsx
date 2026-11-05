@@ -55,11 +55,19 @@ export function VlanSection({ tid, live, draft, canWrite }: { tid: string; live:
   const [deleting, setDeleting] = useState<Vlan | null>(null)
   // A deleted VLAN's row (and its button) disappears: return focus to "Add VLAN" instead.
   const addRef = useRef<HTMLButtonElement>(null)
+  // Colour is how a VLAN is recognised across EasyEAP; two VLANs sharing one breaks that, so name the clash.
+  const clashes = VLAN_COLORS.map((c) => live.vlans.filter((v) => v.color === c)).filter((g) => g.length > 1)
 
   return (
     <section aria-labelledby="vlans-h">
       <SectionHeader id="vlans-h" title="VLANs" meta="Colour-coded the same everywhere in EasyEAP. Changes apply immediately."
         actions={canWrite ? <Btn ref={addRef} size="sm" onClick={() => setEditing('new')}><Plus aria-hidden />Add VLAN</Btn> : undefined} />
+      {clashes.length > 0 && (
+        <Callout tone="warn" className="mb-3" title="Some VLANs share a colour">
+          {clashes.map((g) => `${g.map((v) => v.vlan_id).join(' and ')} are both ${g[0].color}`).join('; ')}, so they can’t be told apart at a glance.
+          {canWrite ? ' Edit one and choose another colour.' : ''}
+        </Callout>
+      )}
       <Panel className="overflow-hidden">
         {live.vlans.length === 0 ? (
           <div className="p-4"><Empty title="No VLANs yet">Allow rules place people on a VLAN, so create at least one. Use the VLAN numbers your switches and controllers already carry.</Empty></div>
@@ -126,6 +134,7 @@ function VlanForm({ tid, live, draft, vlan, onClose }: { tid: string; live: Poli
   const [name, setName] = useState(vlan?.name ?? '')
   const [description, setDescription] = useState(vlan?.description ?? '')
   const [color, setColor] = useState(vlan?.color ?? VLAN_COLORS.find((c) => !used.includes(c)) ?? 'blue')
+  const sharedWith = live.vlans.filter((v) => v.color === color && v.id !== vlan?.id)
   const [tried, setTried] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const n = Number(num)
@@ -172,6 +181,11 @@ function VlanForm({ tid, live, draft, vlan, onClose }: { tid: string; live: Poli
             </RadioGroup.Item>
           ))}
         </RadioGroup.Root>
+        {sharedWith.length > 0 && (
+          <p className="ee-small mt-1.5 text-[var(--ee-warn-ink)]">
+            VLAN {sharedWith.map((v) => v.vlan_id).join(' and ')} already {sharedWith.length === 1 ? 'uses' : 'use'} {color}. Choose another so the two can be told apart.
+          </p>
+        )}
       </fieldset>
       {u && (
         <div className="ee-small rounded-[8px] border border-[var(--ee-line)] px-3 py-2.5">

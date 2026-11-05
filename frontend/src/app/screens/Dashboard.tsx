@@ -10,7 +10,7 @@ import { useTenant } from '../api/tenant'
 import { ago, duration, fmtDate, fmtDateTime, fmtPercent, plural, remaining } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { paths } from '../routes'
-import { Empty, ErrorState, HealthDot, Panel, PageHeader, SectionHeader, Skeleton, VlanTag, type Tone } from '../ui'
+import { Empty, ErrorState, HealthDot, Panel, PageHeader, SectionHeader, Skeleton, VlanTag, vlanVar, type Tone } from '../ui'
 import { HourlyChart, RankedBars, ViewToggle, type ChartView } from './dashboard/charts'
 import { EnforcementPanel, enforcementRisk } from './dashboard/Enforcement'
 import { QueueEmpty, QueueRow, queueRisk } from './dashboard/Queue'
@@ -247,7 +247,7 @@ export default function Dashboard() {
                   color="var(--ee-series-accept)"
                   items={[...d.vlan_usage].sort((a, b) => b.count - a.count).map((v) => {
                     const meta = vlans?.find((x) => x.vlan_id === v.vlan_id)
-                    return { key: String(v.vlan_id), label: <VlanTag vlanId={v.vlan_id} name={v.name ?? meta?.name} color={meta?.color} />, text: `VLAN ${v.vlan_id}${v.name ? ` ${v.name}` : ''}`, value: v.count }
+                    return { key: String(v.vlan_id), label: <VlanTag vlanId={v.vlan_id} name={v.name ?? meta?.name} color={meta?.color} />, text: `VLAN ${v.vlan_id}${v.name ? ` ${v.name}` : ''}`, value: v.count, color: vlanVar(meta?.color) }
                   })}
                 />
               )}

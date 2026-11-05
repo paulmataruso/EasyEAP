@@ -143,3 +143,41 @@ def test_tokens():
     s = new_shared_secret()
     assert len(s) == 32 and s.isalnum()
     assert len(token_hash("x")) == 64
+
+
+def test_events_attributed_by_packet_source_before_nas_ip():
+    from app.radius.events import attribute_client
+    lab = m.RadiusClient(name="lab-controller", address="172.21.0.0/16")
+    site = m.RadiusClient(name="site", address="10.20.0.10")
+    clients = [lab, site]
+    # The controller reports a NAS-IP-Address outside its source range: the packet source still identifies it.
+    assert attribute_client(clients, "172.21.0.5", "10.0.0.5") is lab
+    # Older agents shipped only NAS-IP-Address.
+    assert attribute_client(clients, None, "10.20.0.10") is site
+    assert attribute_client(clients, None, "10.0.0.5") is None
+    assert attribute_client(clients, "not-an-ip", None) is None
+
+
+def test_unreachable_radius_address_is_withheld(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.routers import radius
+    for raw in ("127.0.0.1", "0.0.0.0", "::1", "localhost"):  # noqa: S104 — unspecified addresses are the input under test
+        monkeypatch.setattr(radius, "get_settings", lambda raw=raw: SimpleNamespace(radius_public_address=raw))
+        out = radius.controller_address()
+        assert out["radius_address"] == "" and raw in out["radius_address_problem"]
+    for raw in ("192.0.2.10", "radius.example.net", ""):
+        monkeypatch.setattr(radius, "get_settings", lambda raw=raw: SimpleNamespace(radius_public_address=raw))
+        assert radius.controller_address() == {"radius_address": raw, "radius_address_problem": None}
+
+
+def test_vlan_colour_must_come_from_the_palette():
+    import pydantic
+    import pytest
+
+    from app.routers.policy import VLAN_COLORS, VlanIn
+    assert VlanIn(vlan_id=100, name="Staff").color is None  # the server picks the first unused colour
+    assert VlanIn(vlan_id=100, name="Staff", color="teal").color == "teal"
+    assert len(set(VLAN_COLORS)) == len(VLAN_COLORS) == 8
+    with pytest.raises(pydantic.ValidationError):
+        VlanIn(vlan_id=100, name="Staff", color="url(javascript:x)")
