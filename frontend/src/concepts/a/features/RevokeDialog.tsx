@@ -19,7 +19,6 @@ const REASON_HELP: Record<RevocationReason, string> = {
   affiliationChanged: 'The person no longer needs this access.',
   superseded: 'A new certificate already replaces this one.',
   cessationOfOperation: 'The device is no longer in use.',
-  certificateHold: 'Suspend while you investigate. Still blocks Wi-Fi access.',
 }
 
 /** Two-step revoke: reason, then an honest confirmation of what happens to connected devices. */

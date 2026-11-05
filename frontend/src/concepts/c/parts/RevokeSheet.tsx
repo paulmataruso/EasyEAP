@@ -11,7 +11,7 @@ import { Note } from '../ui/Layout'
 import { useConcept } from '../app/context'
 import { list, shortSerial } from '../lib/format'
 
-const REASONS: RevocationReason[] = ['keyCompromise', 'affiliationChanged', 'superseded', 'cessationOfOperation', 'certificateHold', 'unspecified']
+const REASONS: RevocationReason[] = ['keyCompromise', 'affiliationChanged', 'superseded', 'cessationOfOperation', 'unspecified']
 
 /**
  * Revoke one certificate: reason (RFC 5280 labels) → honest consequences → confirm.
@@ -79,7 +79,7 @@ export function RevokeSheet({ certificate, open, onOpenChange }: { certificate: 
       />
       <Note icon={Info}>
         <strong>New authentications are rejected within seconds.</strong> Devices already connected stay online until they reauthenticate (session timeout {sessionTimeout}) or a disconnect (CoA) reaches their controller.
-        {reason === 'certificateHold' ? ' A hold can be released later; every other reason is permanent.' : ' This cannot be undone.'}
+        {' This cannot be undone.'}
       </Note>
       {coaClients.length ? (
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>

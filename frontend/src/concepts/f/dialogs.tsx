@@ -191,8 +191,8 @@ export function IssueCertificateDialog({ open, onOpenChange, identity: fixedIden
 }
 
 // ── Revoke certificate ──────────────────────────────────────────────────
-const REASONS: RevocationReason[] = ['keyCompromise', 'affiliationChanged', 'superseded', 'cessationOfOperation', 'certificateHold', 'unspecified']
-const REASON_CODE: Record<RevocationReason, number> = { unspecified: 0, keyCompromise: 1, affiliationChanged: 3, superseded: 4, cessationOfOperation: 5, certificateHold: 6 }
+const REASONS: RevocationReason[] = ['keyCompromise', 'affiliationChanged', 'superseded', 'cessationOfOperation', 'unspecified']
+const REASON_CODE: Record<RevocationReason, number> = { unspecified: 0, keyCompromise: 1, affiliationChanged: 3, superseded: 4, cessationOfOperation: 5 }
 
 export function RevokeDialog({ cert, subject, open, onOpenChange, onRevoked }: { cert: Certificate; subject: string; open: boolean; onOpenChange: (o: boolean) => void; onRevoked?: () => void }) {
   const d = useTenantData()
@@ -240,7 +240,6 @@ export function RevokeDialog({ cert, subject, open, onOpenChange, onRevoked }: {
                 ))}
               </RadioGroup.Root>
               {error && <p className="f-field-error mt-2" role="alert">{error}</p>}
-              {reason === 'certificateHold' && <p className="f-small f-ink-2 mt-2">EasyEAP treats a hold like a revocation. To restore access, issue the device a new certificate.</p>}
             </fieldset>
             <div className="space-y-2.5 rounded-[8px] border border-[var(--f-line)] bg-[rgba(6,9,17,0.4)] px-4 py-3 text-[13px]">
               <p className="font-semibold">What happens</p>

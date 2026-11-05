@@ -12,8 +12,8 @@ import { Notice } from '../ui/Section'
 import { CertTape } from '../ui/Tape'
 import { useToast } from '../ui/Toast'
 
-const RFC_CODES: Record<RevocationReason, number> = { unspecified: 0, keyCompromise: 1, affiliationChanged: 3, superseded: 4, cessationOfOperation: 5, certificateHold: 6 }
-const ORDER: RevocationReason[] = ['keyCompromise', 'affiliationChanged', 'superseded', 'cessationOfOperation', 'certificateHold', 'unspecified']
+const RFC_CODES: Record<RevocationReason, number> = { unspecified: 0, keyCompromise: 1, affiliationChanged: 3, superseded: 4, cessationOfOperation: 5 }
+const ORDER: RevocationReason[] = ['keyCompromise', 'affiliationChanged', 'superseded', 'cessationOfOperation', 'unspecified']
 
 /** Revoke flow: RFC 5280 reason, honest consequences, explicit confirmation, immediate status + audit. */
 export function RevokeDialog({ cert, open, onOpenChange }: { cert: Certificate | null; open: boolean; onOpenChange: (o: boolean) => void }) {
@@ -87,7 +87,7 @@ export function RevokeDialog({ cert, open, onOpenChange }: { cert: Certificate |
         </ul>
       </div>
       <Notice icon={<Info aria-hidden="true" />}>
-        Revocation is permanent for every reason except <strong>Temporary hold</strong>. To restore access afterwards, issue the device a new certificate.
+        Revocation is permanent. To restore access afterwards, issue the device a new certificate.
       </Notice>
     </Modal>
   )
