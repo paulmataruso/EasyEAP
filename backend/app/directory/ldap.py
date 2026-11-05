@@ -83,7 +83,8 @@ def _tls(p: DirectoryParams) -> Tls:
     return Tls(**kwargs)
 
 
-def connect(p: DirectoryParams, timeout: int = 8) -> Connection:
+def connect(p: DirectoryParams, timeout: int = 8, *, anonymous: bool = False) -> Connection:
+    """Open, secure (StartTLS) and bind. anonymous=True binds without credentials: only for reading the RootDSE."""
     if p.transport == "plain" and not get_settings().lab_mode:
         raise DirectoryError("Plain LDAP is disabled.", "Use LDAPS (636) or StartTLS so the service-account password is encrypted in transit.")
     tls = None if p.transport == "plain" else _tls(p)
@@ -92,7 +93,8 @@ def connect(p: DirectoryParams, timeout: int = 8) -> Connection:
     if not servers:
         raise DirectoryError("No domain controller configured.", "Enter at least one domain controller hostname.")
     pool = ServerPool(servers, FIRST, active=1, exhaust=True)
-    conn = Connection(pool, user=p.bind_dn, password=p.bind_password, auto_bind=False, receive_timeout=timeout * 2,
+    conn = Connection(pool, user=None if anonymous else p.bind_dn, password=None if anonymous else p.bind_password, auto_bind=False,
+                      receive_timeout=timeout * 2,
                       raise_exceptions=False, read_only=True)
     try:
         conn.open()  # raises on socket/TLS failure
@@ -103,6 +105,8 @@ def connect(p: DirectoryParams, timeout: int = 8) -> Connection:
         if not conn.bind():
             res = conn.result or {}
             text = f"{res.get('description', '')} {res.get('message', '')}".strip()
+            if anonymous:
+                raise DirectoryError("The domain controller refused an anonymous connection.", "Enter the service account and try again.", text)
             raise DirectoryError("The service account could not sign in.", _hint_for(text), text)
     except LDAPException as exc:
         raise DirectoryError("Could not connect to the directory.", _hint_for(str(exc)), str(exc)) from exc
@@ -112,7 +116,7 @@ def connect(p: DirectoryParams, timeout: int = 8) -> Connection:
 def _hint_for(message: str) -> str:
     msg = message.lower()
     if "certificate verify failed" in msg or ("certificate" in msg and "verify" in msg):
-        return "The domain controller's certificate is not trusted. Upload your AD root CA (PEM) in Advanced settings."
+        return "The domain controller's certificate is not trusted. Paste your AD root CA (PEM) under Certificate trust."
     if "doesn't match" in msg or "does not match" in msg or ("hostname" in msg and "match" in msg):
         return "The certificate does not match the hostname. Use the DC's fully qualified name as it appears in its certificate."
     if "invalidcredentials" in msg or "invalid credentials" in msg or "52e" in msg:
@@ -123,7 +127,7 @@ def _hint_for(message: str) -> str:
         return "The service account is locked out."
     if "strongerauthrequired" in msg or "stronger" in msg:
         return "The domain controller requires signing or TLS. Use LDAPS or StartTLS."
-    if "timed out" in msg or "timeout" in msg or "unreachable" in msg or "refused" in msg or "socket" in msg:
+    if "timed out" in msg or "timeout" in msg or "unreachable" in msg or "refused" in msg or "socket" in msg or "no active server" in msg:
         return "EasyEAP could not open a connection. Check DNS, routing and that TCP 636 (or 389 for StartTLS) is allowed."
     return "See the technical details for the exact error."
 
@@ -244,6 +248,60 @@ def search_live(conn: Connection, p: DirectoryParams, query: str, limit: int = 2
     return out
 
 
+def read_root_dse(conn: Connection) -> dict[str, Any]:
+    conn.search("", "(objectClass=*)", search_scope=BASE, attributes=["defaultNamingContext", "dnsHostName"])
+    for e in conn.response or []:
+        if e.get("type") == "searchResEntry":
+            return dict(e.get("attributes") or {})
+    return {}
+
+
+def dn_to_domain(dn: str) -> str:
+    """DC=corp,DC=example,DC=com -> corp.example.com"""
+    return ".".join(rdn.split("=", 1)[1].strip() for rdn in dn.split(",") if rdn.strip().lower().startswith("dc=")).lower()
+
+
+def within(dn: str, base: str) -> bool:
+    """True when dn is base or sits below it (RDN-wise, ignoring case and spacing)."""
+    def norm(x: str) -> list[str]:
+        return [r.strip().lower().replace(" ", "") for r in x.split(",") if r.strip()]
+    d, b = norm(dn), norm(base)
+    return bool(b) and len(d) >= len(b) and d[-len(b):] == b
+
+
+def discover(p: DirectoryParams) -> dict[str, Any]:
+    """Read the directory's base DN and DNS domain from its RootDSE.
+
+    Active Directory publishes the RootDSE to anonymous clients, so this needs only the domain controller and the
+    TLS settings, and sends no password. If a hardened directory refuses that and a service account was entered,
+    it signs in and reads it again.
+    """
+    def read(anonymous: bool) -> dict[str, Any]:
+        conn = connect(p, anonymous=anonymous)
+        try:
+            return read_root_dse(conn)
+        finally:
+            conn.unbind()
+
+    try:
+        try:
+            dse, signed_in = read(anonymous=True), False
+        except DirectoryError:
+            if not (p.bind_dn and p.bind_password):
+                raise
+            dse = {}
+        if not _first(dse, "defaultNamingContext") and p.bind_dn and p.bind_password:
+            dse, signed_in = read(anonymous=False), True
+    except DirectoryError as exc:
+        return {"ok": False, "message": str(exc), "hint": exc.hint, "detail": exc.detail}
+    base = _first(dse, "defaultNamingContext")
+    if not base:
+        return {"ok": False, "message": "The domain controller didn’t report a base DN.",
+                "hint": "Enter the service account below and detect again, or type the base DN.", "detail": ""}
+    return {"ok": True, "base_dn": str(base), "domain": dn_to_domain(str(base)), "dc_hostname": str(_first(dse, "dnsHostName") or p.hosts[0]),
+            "signed_in": signed_in}
+
+
 def test(p: DirectoryParams) -> dict[str, Any]:
     """Connection test with one step per stage, for the setup wizard and Directory settings."""
     steps: list[dict[str, Any]] = []
@@ -254,13 +312,16 @@ def test(p: DirectoryParams) -> dict[str, Any]:
         return {"ok": False, "steps": steps}
     steps.append({"step": "connect", "ok": True, "message": f"Connected over {p.transport.upper()} and signed in as the service account"})
     try:
+        directory_base = _first(read_root_dse(conn), "defaultNamingContext")
+        discovered = {"base_dn": str(directory_base), "domain": dn_to_domain(str(directory_base))} if directory_base else None
         conn.search(p.user_search_base or p.base_dn, p.user_filter, search_scope=SUBTREE, attributes=["sAMAccountName"], size_limit=5)
         n_users = len([e for e in conn.response or [] if e.get("type") == "searchResEntry"])
         conn.search(p.group_search_base or p.base_dn, p.group_filter, search_scope=SUBTREE, attributes=["cn"], size_limit=5)
         n_groups = len([e for e in conn.response or [] if e.get("type") == "searchResEntry"])
         ok = n_users > 0
+        outside = bool(discovered) and not within(p.base_dn, discovered["base_dn"])
         steps.append({"step": "search", "ok": ok, "message": f"Found users ({n_users}+ sample) and groups ({n_groups}+ sample)" if ok else "The user search returned no users",
-                      "hint": "" if ok else "Check the base DN and user search base."})
-        return {"ok": ok, "steps": steps}
+                      "hint": "" if ok else (f"This directory's base DN is {discovered['base_dn']}." if outside else "Check the base DN and user search base.")})
+        return {"ok": ok, "steps": steps, "discovered": discovered, "base_dn_outside": outside}
     finally:
         conn.unbind()

@@ -4,12 +4,12 @@
 import { useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { BookUser, ChevronRight, CircleCheck, CircleX, FlaskConical, Plus, RefreshCw, Save, Search } from 'lucide-react'
+import { BookUser, ChevronRight, CircleCheck, CircleX, FlaskConical, Plus, RefreshCw, Save, ScanSearch, Search } from 'lucide-react'
 import { cn } from '@/ui/lib'
 import { ApiError } from '../api/client'
 import {
   directoryApi, useDirectory, useDirectoryGroups, useLabMode,
-  type DirectoryBody, type DirectoryConfig, type SyncResult, type SyncStats, type TestResult, type Transport,
+  type DirectoryBody, type DirectoryConfig, type DiscoverResult, type SyncResult, type SyncStats, type TestResult, type Transport,
 } from '../api/directory'
 import { qk } from '../api/keys'
 import { useEnforcement, usePolicy } from '../api/policy'
@@ -48,15 +48,25 @@ const DEFAULT_USER_FILTER = '(&(objectCategory=person)(objectClass=user))'
 const DEFAULT_GROUP_FILTER = '(objectClass=group)'
 const defaultPort = (t: Transport) => (t === 'ldaps' ? 636 : 389)
 
+/** corp.example.com -> DC=corp,DC=example,DC=com: the usual AD base DN for a domain. */
+export function deriveBaseDn(domain: string): string {
+  const labels = domain.trim().toLowerCase().replace(/\.$/, '').split('.').filter(Boolean)
+  return labels.length >= 2 && labels.every((l) => /^[a-z0-9-]+$/.test(l)) ? labels.map((l) => `DC=${l}`).join(',') : ''
+}
+
+/** Stats are {} (or absent) until the first sync finishes; only a complete record is shown. */
+export const hasStats = (s: SyncStats | null | undefined): s is SyncStats => !!s && typeof s.users === 'number' && typeof s.groups === 'number'
+
 function formFrom(c: DirectoryConfig | null, tenantDomain: string): Form {
   return {
     hosts: c?.hosts.join(', ') ?? '', port: String(c?.port ?? 636), transport: c?.transport ?? 'ldaps', verify: c?.verify_certificate ?? true,
-    caPem: '', clearCa: false, domain: c?.domain ?? tenantDomain ?? '', baseDn: c?.base_dn ?? '', userBase: c?.user_search_base ?? '', groupBase: c?.group_search_base ?? '',
+    caPem: '', clearCa: false, domain: c?.domain ?? tenantDomain ?? '', baseDn: c?.base_dn ?? deriveBaseDn(tenantDomain ?? ''), userBase: c?.user_search_base ?? '', groupBase: c?.group_search_base ?? '',
     userFilter: c?.user_filter ?? DEFAULT_USER_FILTER, groupFilter: c?.group_filter ?? DEFAULT_GROUP_FILTER, bindDn: c?.bind_dn ?? '', password: '',
     interval: String(c?.sync_interval_minutes ?? 15), enabled: c?.enabled ?? true,
   }
 }
 
+const DETECT_FIELDS: Array<keyof Form> = ['hosts', 'port', 'caPem']
 const hostList = (s: string) => s.split(/[\s,;]+/).map((h) => h.trim()).filter(Boolean)
 
 function validate(f: Form, c: DirectoryConfig | null): Partial<Record<keyof Form, string>> {
@@ -224,7 +234,7 @@ function SyncStatus({ tid, config: c, canSync, onEdit }: { tid: string; config: 
         </div>
       )}
 
-      {!failed && c.last_sync_stats && <p className="ee-small ee-ink-2 mt-3">{statsText(c.last_sync_stats)}</p>}
+      {!failed && hasStats(c.last_sync_stats) && <p className="ee-small ee-ink-2 mt-3">{statsText(c.last_sync_stats)}</p>}
 
       <Dl className="mt-4" cols={3} items={[
         ['Schedule', c.enabled ? `Every ${plural(c.sync_interval_minutes, 'minute')}` : 'Off: syncs run only when you start one'],
@@ -233,7 +243,7 @@ function SyncStatus({ tid, config: c, canSync, onEdit }: { tid: string; config: 
           : !due ? 'As soon as the background worker runs' : overdue
           ? <span className="text-[var(--ee-warn-ink)]">Overdue since {fmtDateTime(due.toISOString())}. The background worker may be stopped.</span>
           : due.getTime() <= now.getTime() ? 'Due now' : `${relative(due.toISOString(), now)} (${fmtDateTime(due.toISOString())})`],
-        ['Last good data', failed ? 'From the last successful sync' : c.last_sync_stats ? plural(c.last_sync_stats.users, 'user') : '—'],
+        ['Last good data', failed ? 'From the last successful sync' : hasStats(c.last_sync_stats) ? plural(c.last_sync_stats.users, 'user') : '—'],
       ]} />
 
       {result && 'ok' in result && !result.ok && <Callout tone="crit" className="mt-4" title="This sync failed">{result.error}</Callout>}
@@ -250,7 +260,7 @@ function SyncStatus({ tid, config: c, canSync, onEdit }: { tid: string; config: 
 
 // ── Connection form ──────────────────────────────────────────────────────
 
-function TestResultView({ r }: { r: TestResult }) {
+function TestResultView({ r, baseDn, onUseBase }: { r: TestResult; baseDn: string; onUseBase: (base: string, domain: string) => void }) {
   return (
     <div className={cn('rounded-[8px] border px-4 py-3', r.ok ? 'border-[rgba(45,212,191,0.3)]' : 'border-[rgba(244,63,94,0.4)]')} role="status">
       <p className="font-semibold">{r.ok ? 'Connection works' : 'Connection test failed'}</p>
@@ -271,6 +281,13 @@ function TestResultView({ r }: { r: TestResult }) {
           </li>
         ))}
       </ol>
+      {r.discovered && r.base_dn_outside && r.discovered.base_dn !== baseDn && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+          {/* A failed search already names the directory's base DN in its hint. */}
+          {r.ok && <p className="ee-small">This directory’s base DN is <span className="ee-mono text-[12.5px]">{r.discovered.base_dn}</span>.</p>}
+          <Btn size="sm" onClick={() => onUseBase(r.discovered!.base_dn, r.discovered!.domain)}>{r.ok ? 'Use it' : 'Use the directory’s base DN'}</Btn>
+        </div>
+      )}
       {!r.ok && <p className="ee-small ee-ink-3 mt-2">Nothing was saved. Fix the field the hint points to and test again.</p>}
     </div>
   )
@@ -281,13 +298,16 @@ function ConnectionForm({ tid, config: c, tenantDomain, headingRef }: { tid: str
   const lab = useLabMode(tid)
   const [f, setF] = useState<Form>(() => formFrom(c, tenantDomain))
   const [tried, setTried] = useState(false)
+  // Detect needs only the domain controller and TLS fields, so it flags only those.
+  const [detectTried, setDetectTried] = useState(false)
   const [test, setTest] = useState<TestResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [detected, setDetected] = useState<DiscoverResult | null>(null)
   const [advanced, setAdvanced] = useState(!!c && (c.user_search_base !== '' || c.group_search_base !== '' || c.user_filter !== DEFAULT_USER_FILTER || c.group_filter !== DEFAULT_GROUP_FILTER))
   const errs = validate(f, c)
   const invalid = Object.keys(errs).length > 0
   const set = <K extends keyof Form>(k: K, v: Form[K]) => { setF((x) => ({ ...x, [k]: v })); setTest(null) }
-  const err = (k: keyof Form) => (tried ? errs[k] ?? null : null)
+  const err = (k: keyof Form) => (tried || (detectTried && DETECT_FIELDS.includes(k)) ? errs[k] ?? null : null)
   const plainAllowed = lab.data === true || c?.transport === 'plain'
 
   const testM = useMutation({
@@ -310,6 +330,33 @@ function ConnectionForm({ tid, config: c, tenantDomain, headingRef }: { tid: str
     setError(null)
     if (invalid) return
     if (which === 'test') { setTest(null); testM.mutate() } else save.mutate()
+  }
+  // The base DN follows the AD domain until someone types their own or detects it.
+  const onDomain = (domain: string) => {
+    setF((x) => ({ ...x, domain, baseDn: !x.baseDn.trim() || x.baseDn === deriveBaseDn(x.domain) ? deriveBaseDn(domain) : x.baseDn }))
+    setTest(null)
+  }
+  const applyBase = (baseDn: string, domain: string) => {
+    setF((x) => ({ ...x, baseDn, domain: domain || x.domain }))
+    setTest(null)
+  }
+  const detect = useMutation({
+    mutationFn: () => directoryApi.discover(tid, {
+      hosts: hostList(f.hosts), port: Number(f.port), transport: f.transport, verify_certificate: f.verify,
+      ca_bundle_pem: f.caPem.trim() ? f.caPem.trim() : null, clear_ca_bundle: f.clearCa && !f.caPem.trim(),
+      bind_dn: f.bindDn.trim(), bind_password: f.password ? f.password : null,
+    }),
+    onSuccess: (r) => {
+      setDetected(r)
+      if (r.ok) applyBase(r.base_dn, r.domain)
+    },
+    onError: (e) => setDetected({ ok: false, message: errorMessage(e) }),
+  })
+  const runDetect = () => {
+    setDetectTried(true)
+    setDetected(null)
+    if (errs.hosts || errs.port || errs.caPem) return
+    detect.mutate()
   }
   const onTransport = (t: Transport) => {
     setF((x) => ({ ...x, transport: t, port: Number(x.port) === defaultPort(x.transport) ? String(defaultPort(t)) : x.port }))
@@ -370,12 +417,33 @@ function ConnectionForm({ tid, config: c, tenantDomain, headingRef }: { tid: str
         <FormGroup title="Where to look">
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="AD domain" htmlFor="dir-domain" error={err('domain')}>
-              <input id="dir-domain" className="ee-input" value={f.domain} onChange={(e) => set('domain', e.target.value)} placeholder="corp.example.com" autoComplete="off" spellCheck={false} aria-invalid={!!err('domain') || undefined} />
+              <input id="dir-domain" className="ee-input" value={f.domain} onChange={(e) => onDomain(e.target.value)} placeholder="corp.example.com" autoComplete="off" spellCheck={false} aria-invalid={!!err('domain') || undefined} />
             </Field>
-            <Field label="Base DN" htmlFor="dir-base" error={err('baseDn')}>
+            <Field label="Base DN" htmlFor="dir-base" error={err('baseDn')} hint="Follows the AD domain as you type. Detect reads it from the domain controller.">
               <input id="dir-base" className="ee-input ee-mono text-[13px]" value={f.baseDn} onChange={(e) => set('baseDn', e.target.value)} placeholder="DC=corp,DC=example,DC=com" autoComplete="off" spellCheck={false} aria-invalid={!!err('baseDn') || undefined} />
             </Field>
           </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <Btn size="sm" onClick={runDetect} busy={detect.isPending}><ScanSearch aria-hidden />Detect from domain controller</Btn>
+            {!detected && <span className="ee-small ee-ink-3">Needs only the domain controller above. It reads without signing in where the directory allows it.</span>}
+            {detected?.ok && (
+              <span className="ee-small ee-ink-2" role="status">
+                <CircleCheck className="mr-1 inline size-3.5 align-[-2px] text-[var(--ee-valid)]" aria-hidden />
+                Read from {detected.dc_hostname}{detected.signed_in ? ' (signed in as the service account)' : ''}: <span className="ee-mono text-[12.5px]">{detected.base_dn}</span>
+              </span>
+            )}
+          </div>
+          {detected && !detected.ok && (
+            <Callout tone="crit" title={detected.message}>
+              {detected.hint && <p>{detected.hint}</p>}
+              {detected.detail && (
+                <details className="mt-1">
+                  <summary className="ee-small ee-ink-3 cursor-pointer">Technical details</summary>
+                  <p className="ee-mono mt-1 break-words text-[12px] ee-ink-2">{detected.detail}</p>
+                </details>
+              )}
+            </Callout>
+          )}
           <button type="button" className="ee-small ee-ink-2 inline-flex items-center gap-1 self-start rounded underline-offset-2 hover:underline" aria-expanded={advanced} onClick={() => setAdvanced((v) => !v)}>
             <ChevronRight className={cn('size-3.5 transition-transform', advanced && 'rotate-90')} aria-hidden />Search bases and filters
           </button>
@@ -428,7 +496,7 @@ function ConnectionForm({ tid, config: c, tenantDomain, headingRef }: { tid: str
 
         {tried && invalid && <Callout tone="crit">Fix the highlighted fields first.</Callout>}
         {error && <Callout tone="crit" title="That didn’t work">{error}</Callout>}
-        {test && <TestResultView r={test} />}
+        {test && <TestResultView r={test} baseDn={f.baseDn} onUseBase={applyBase} />}
 
         <div className="flex flex-wrap items-center gap-2 border-t border-[var(--ee-line)] pt-4">
           <Btn onClick={() => run('test')()} busy={testM.isPending}><FlaskConical aria-hidden />Test connection</Btn>

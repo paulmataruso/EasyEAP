@@ -62,7 +62,20 @@ export interface DirectoryBody {
 }
 
 export interface TestStep { step: 'connect' | 'search' | string; ok: boolean; message: string; hint?: string; detail?: string }
-export interface TestResult { ok: boolean; steps: TestStep[] }
+export interface TestResult {
+  ok: boolean
+  steps: TestStep[]
+  /** The directory's own base DN and domain, read from its RootDSE once signed in. */
+  discovered?: { base_dn: string; domain: string } | null
+  /** The entered base DN isn't the directory's base DN or below it. */
+  base_dn_outside?: boolean
+}
+
+/** Connection details for reading the RootDSE. No base DN needed; the service account is optional. */
+export type DiscoverBody = Pick<DirectoryBody, 'hosts' | 'port' | 'transport' | 'verify_certificate' | 'ca_bundle_pem' | 'clear_ca_bundle' | 'bind_dn' | 'bind_password'>
+export type DiscoverResult =
+  | { ok: true; base_dn: string; domain: string; dc_hostname: string; signed_in: boolean }
+  | { ok: false; message: string; hint?: string; detail?: string }
 
 export type SyncResult = ({ ok: true } & SyncStats) | { ok: false; error: string } | { skipped: true }
 
@@ -89,6 +102,7 @@ export const GROUP_LIST_LIMIT = 500
 export const directoryApi = {
   save: (tid: string, body: DirectoryBody) => api.put<{ config: DirectoryConfig }>(base(tid), body),
   test: (tid: string, body: DirectoryBody) => api.post<TestResult>(`${base(tid)}/test`, body),
+  discover: (tid: string, body: DiscoverBody) => api.post<DiscoverResult>(`${base(tid)}/discover`, body),
   sync: (tid: string, force = false) => api.post<SyncResult>(`${base(tid)}/sync`, { force }),
   createLocalGroup: (tid: string, name: string) => api.post<DirectoryGroup>(`${base(tid)}/groups`, { name }),
   searchGroups: (tid: string, q: string, signal?: AbortSignal) => api.get<{ groups: DirectoryGroup[] }>(`${base(tid)}/groups?q=${encodeURIComponent(q)}`, signal),
