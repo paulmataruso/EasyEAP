@@ -89,4 +89,45 @@ def overview(p: Principal = Depends(principal), s: Session = Depends(db)) -> dic
               "active_certificates": sum(t["health"]["certificates"]["active"] for t in tenants),
               "expiring_certificates": sum(t["health"]["certificates"]["expiring"] for t in tenants),
               "critical_issues": sum(1 for t in tenants for i in t["health"]["issues"] if i["severity"] == "critical")}
-    return {"tenants": tenants, "totals": totals, "radius_agent": agent, "generated_at": datetime.now(UTC).isoformat()}
+    return {"tenants": tenants, "totals": totals, "radius_agent": agent, "platform_queue": platform_queue(s, p),
+            "generated_at": datetime.now(UTC).isoformat()}
+
+
+BACKUP_MAX_AGE = timedelta(days=7)
+
+
+def platform_queue(s: Session, p: Principal, now: datetime | None = None) -> list[dict]:
+    """Platform-wide risks, ranked like a tenant's needs-action queue. Each item is shown only to someone who can open
+    its next action: backups to anyone who can read System health, other administrators' two-factor to owners."""
+    now = now or datetime.now(UTC)
+    perms = p.perms(None)
+    items: list[dict] = []
+
+    def add(code: str, severity: str, title: str, detail: str, label: str, target: str, affected: int = 0, source_at: datetime | None = None) -> None:
+        items.append({"code": code, "severity": severity, "title": title, "detail": detail, "action": {"label": label, "target": target},
+                      "affected": affected, "impact_at": None, "source_at": source_at.isoformat() if source_at else None})
+
+    if "platform:read" in perms:
+        b = s.get(m.PlatformSetting, "last_backup")
+        at = datetime.fromisoformat(b.value["at"]) if b and b.value.get("at") else None
+        if at is None:
+            add("no_backup", "warning", "No backup recorded",
+                "deploy/backup.sh has never reported a backup. If this server is lost, every tenant's issuing CA, policy and audit trail go with it.",
+                "Open System health", "system")
+        elif now - at > BACKUP_MAX_AGE:
+            add("backup_overdue", "warning", f"Last backup {(now - at).days} days ago",
+                "Schedule deploy/backup.sh to run daily. Anything changed since the last backup can't be restored.", "Open System health", "system",
+                source_at=at)
+    if not p.admin.mfa_enabled:
+        add("own_mfa_off", "critical" if p.admin.platform_role == "platform_owner" else "warning", "Your account has no two-factor authentication",
+            "Anyone with your password can sign in with your role. Turn on an authenticator app.", "Set up two-factor", "account", affected=1)
+    if "admins:manage" in perms:
+        others = list(s.scalars(select(m.Admin).where(m.Admin.is_active.is_(True), m.Admin.mfa_enabled.is_(False), m.Admin.id != p.admin.id)))
+        owners = sum(1 for a in others if a.platform_role == "platform_owner")
+        if others:
+            add("admins_mfa_off", "critical" if owners else "warning",
+                f"{len(others)} other administrator{'s' if len(others) != 1 else ''} without two-factor",
+                (f"Including {owners} Super Administrator{'s' if owners != 1 else ''}, who can change administrators and delete tenants. " if owners else "")
+                + "Ask them to turn it on under Account.", "Open Administrators", "admins", affected=len(others))
+    items.sort(key=lambda i: {"critical": 0, "warning": 1}.get(i["severity"], 2))
+    return items

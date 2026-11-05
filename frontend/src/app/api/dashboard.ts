@@ -42,6 +42,8 @@ export interface OverviewResponse {
   tenants: OverviewTenant[]
   totals: { tenants: number; accept_24h: number; reject_24h: number; active_certificates: number; expiring_certificates: number; critical_issues: number }
   radius_agent: AgentStatus | null
+  /** Platform-wide risks (backups, administrator two-factor), filtered to what this administrator can act on. */
+  platform_queue: QueueItem[]
   generated_at: string
 }
 

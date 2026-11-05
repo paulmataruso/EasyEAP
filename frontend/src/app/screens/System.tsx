@@ -37,6 +37,9 @@ function Command({ label, cmd }: { label: string; cmd: string }) {
   )
 }
 
+/** Same threshold as the platform needs-action queue (dashboard.py BACKUP_MAX_AGE). */
+const backupOverdue = (at: string, now: Date) => now.getTime() - new Date(at).getTime() > 7 * 864e5
+
 export default function System() {
   const { isPlatform, me } = useSession()
   const now = useNow()
@@ -179,9 +182,12 @@ export default function System() {
         </Panel>
 
         {/* Backup & restore */}
-        <Panel risk={isPlatform && h && !h.backup ? 'warn' : undefined} aria-labelledby="sys-backup">
+        <Panel risk={isPlatform && h && (!h.backup || backupOverdue(h.backup.at, now)) ? 'warn' : undefined} aria-labelledby="sys-backup">
           <div className="p-5">
             <SectionHeader id="sys-backup" title="Backup and restore" />
+            {isPlatform && h?.backup && backupOverdue(h.backup.at, now) && (
+              <Callout tone="warn" title={`Last backup ${ago(h.backup.at, now)}`} className="mb-4">Anything changed since then can’t be restored. Schedule the backup to run daily.</Callout>
+            )}
             {isPlatform && h && (h.backup ? (
               <Dl
                 className="mb-4"

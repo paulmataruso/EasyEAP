@@ -5,12 +5,13 @@ import { Link, useNavigate } from 'react-router'
 import { Building, CircleAlert, CircleCheck, CircleX, Plus, TriangleAlert } from 'lucide-react'
 import { cn } from '@/ui/lib'
 import { compareRank, queueRank, useOverview, type OverviewTenant } from '../api/dashboard'
+import type { QueueItem } from '../api/types'
 import { useSession } from '../api/session'
 import { ago, fmtDateTime, fmtPercent, plural, relative } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { paths, targetPath } from '../routes'
 import { monogram } from '../shell/Shell'
-import { Chip, Empty, ErrorState, HealthDot, LoadingBlock, PageHeader, Panel, SeverityChip } from '../ui'
+import { Chip, Empty, ErrorState, HealthDot, LoadingBlock, PageHeader, Panel, SectionHeader, SeverityChip } from '../ui'
 import { ActionLink } from './dashboard/Queue'
 
 function EnforcementChip({ t }: { t: OverviewTenant }) {
@@ -74,6 +75,32 @@ function Certs({ t }: { t: OverviewTenant }) {
   )
 }
 
+const platformTarget: Record<string, () => string> = { system: paths.system, admins: paths.admins, account: paths.account }
+
+/** Platform risks sit above the tenants: they have the widest blast radius (every tenant at once). */
+function PlatformQueue({ items }: { items: QueueItem[] }) {
+  if (items.length === 0) return null
+  return (
+    <Panel className="mb-5 px-5 py-4" risk={items.some((i) => i.severity === 'critical') ? 'crit' : 'warn'} aria-labelledby="platform-q-h">
+      <SectionHeader id="platform-q-h" title="Platform needs action" meta={`${plural(items.length, 'item')} · affects every tenant`} />
+      <ul className="ee-divide">
+        {items.map((i) => (
+          <li key={i.code} className="flex flex-col items-start gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <SeverityChip severity={i.severity} />
+                <span className="text-[13.5px] font-semibold">{i.title}</span>
+              </div>
+              <p className="ee-small ee-ink-2 mt-1 max-w-[80ch]">{i.detail}</p>
+            </div>
+            <span className="shrink-0"><ActionLink to={(platformTarget[i.action.target] ?? paths.system)()} label={i.action.label} size="sm" /></span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  )
+}
+
 export default function Tenants() {
   const { canCreateTenants, isPlatform } = useSession()
   const navigate = useNavigate()
@@ -113,6 +140,8 @@ export default function Tenants() {
           <li><span className="ee-num font-semibold">{d.totals.active_certificates.toLocaleString('en-GB')}</span><span className="ee-ink-2"> active certificates, </span><span className="ee-num font-semibold">{d.totals.expiring_certificates.toLocaleString('en-GB')}</span><span className="ee-ink-2"> expiring soon</span></li>
         </ul>
       </Panel>
+
+      <PlatformQueue items={d.platform_queue ?? []} />
 
       {ranked.length === 0 ? (
         <Empty icon={<Building aria-hidden />} title="No tenants yet" action={newBtn}>
