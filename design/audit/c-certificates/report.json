@@ -1,0 +1,73 @@
+{
+  "target": "http://localhost:5173/design.html#/c/c/certificates",
+  "consoleErrors": [],
+  "findings": [
+    {
+      "severity": "high",
+      "check": "horizontal-overflow",
+      "message": "Page is 417px wide at 360px viewport (horizontal scroll).",
+      "detail": "table.c-table, thead, tr, th, th",
+      "viewports": [
+        "mobile-360"
+      ]
+    },
+    {
+      "severity": "high",
+      "check": "focus-visible",
+      "message": "10/25 sampled interactive elements show no visible focus indicator.",
+      "viewports": [
+        "mobile-360",
+        "mobile-390"
+      ]
+    },
+    {
+      "severity": "high",
+      "check": "horizontal-overflow",
+      "message": "Page is 417px wide at 390px viewport (horizontal scroll).",
+      "detail": "table.c-table, thead, tr, th, th",
+      "viewports": [
+        "mobile-390"
+      ]
+    },
+    {
+      "severity": "high",
+      "check": "focus-visible",
+      "message": "7/25 sampled interactive elements show no visible focus indicator.",
+      "viewports": [
+        "tablet-768"
+      ]
+    },
+    {
+      "severity": "high",
+      "check": "focus-visible",
+      "message": "2/25 sampled interactive elements show no visible focus indicator.",
+      "viewports": [
+        "laptop-1024",
+        "desktop-1440",
+        "wide-1920"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "tap-target",
+      "message": "35 interactive targets < 44×44px on mobile.",
+      "viewports": [
+        "mobile-360",
+        "mobile-390"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "contrast",
+      "message": "~6/120 sampled text nodes below WCAG AA contrast (approximate).",
+      "viewports": [
+        "mobile-360",
+        "mobile-390",
+        "tablet-768",
+        "laptop-1024",
+        "desktop-1440",
+        "wide-1920"
+      ]
+    }
+  ]
+}
