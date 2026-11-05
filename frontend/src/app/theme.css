@@ -35,7 +35,11 @@
   --ee-gold-ink: #14100a;
   --ee-neutral: #9aa3b5;
 
-  /* VLAN inks (validated, dark, vs #141b30): blue · violet · teal · orange · amber */
+  /* VLAN identity inks, assigned in this order (backend VLAN_COLORS). Checked with the dataviz validator against #141b30,
+     all pairs: all eight pass lightness and 3:1 contrast. The first five also pass chroma and CVD separation (worst
+     ΔE 10.8), but blue/teal is ΔE 13.1 for normal vision (floor 15). Green, rose and slate are overflow: green/amber
+     merge under protanopia, rose/violet is ΔE 11.5, and slate reads grey. So colour is never the only cue: VlanTag and
+     every chart label always carry the VLAN number. */
   --ee-vlan-blue: #4194f9;
   --ee-vlan-violet: #994ab0;
   --ee-vlan-teal: #17a7b4;
@@ -78,7 +82,7 @@
 
 /* Component classes live in the components layer so Tailwind utilities can refine them. */
 @layer components {
-:focus-visible { outline: 2px solid var(--ee-gold); outline-offset: 2px; border-radius: 6px; }
+:focus-visible { outline: 2px solid var(--ee-gold); outline-offset: 2px; }
 /* Headings and the main region take focus programmatically on route change (tabindex=-1); no ring for that. */
 [data-page-heading]:focus, [data-page-heading]:focus-visible, #ee-main:focus, #ee-main:focus-visible { outline: none; }
 a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }

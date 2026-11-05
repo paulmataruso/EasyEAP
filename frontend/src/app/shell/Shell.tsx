@@ -228,6 +228,8 @@ function SidebarContent({ inputRef, onNavigated, onPalette }: { inputRef: React.
         </Btn>
       </div>
       <ScopeSearch inputRef={inputRef} onNavigated={onNavigated} />
+      {/* Only the lists scroll: the wordmark, search and account footer stay put on short screens. */}
+      <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1 pb-2">
       <RecentList onNavigated={onNavigated} />
       <nav aria-label="Main" className="mt-1">
         {tid && (
@@ -275,7 +277,8 @@ function SidebarContent({ inputRef, onNavigated, onPalette }: { inputRef: React.
           </div>
         )}
       </nav>
-      <div className="mt-auto pt-6">
+      </div>
+      <div className="pt-3">
         <div className="flex items-center gap-1 rounded-[8px] border border-[var(--ee-line)] py-1.5 pl-3 pr-1.5">
           <NavLink to={paths.account()} className="min-w-0 flex-1 rounded" onClick={onNavigated}>
             <span className="block truncate text-[12.5px] font-medium">{me?.email}</span>
@@ -320,7 +323,7 @@ export function Shell({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen">
       <a href="#ee-main" onClick={(e) => { e.preventDefault(); document.getElementById('ee-main')?.focus() }} className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[90] focus:rounded-md focus:bg-[var(--ee-gold)] focus:px-3 focus:py-2 focus:text-[var(--ee-gold-ink)]">Skip to content</a>
       <div className="ee-sidebar hidden w-[264px] shrink-0 lg:block">
-        <aside className="sticky top-0 h-screen overflow-y-auto" aria-label="Sidebar">
+        <aside className="sticky top-0 h-dvh" aria-label="Sidebar">
           <SidebarContent inputRef={inputRef} onPalette={openPalette} />
         </aside>
       </div>
