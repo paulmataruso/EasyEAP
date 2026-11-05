@@ -32,3 +32,4 @@ design/screenshots/tmp/
 # Runtime data
 data/
 backups/
+.impeccable/review/

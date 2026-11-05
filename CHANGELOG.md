@@ -75,3 +75,11 @@ The first complete release: multi-tenant EAP-TLS with PKI, Active Directory, RAD
 ### Security
 
 - Revocation is permanent. The certificate-hold state was removed from the domain model.
+- Enrollment links stay single-use after they are used, cancelled or expire: the token hash is kept, the portal says
+  which of those happened, and every action on a spent link returns 410. Per-address and per-token rate limits apply.
+- One-time secrets (new RADIUS shared secrets, the offline root key bundle and its passphrase) are never stored in the
+  console's query cache.
+- The tenant default action changes only through a published policy draft. The settings endpoint rejects unknown fields.
+- Tenant posture treats a stopped worker as a blocked refresh: the needs-action queue reports an offline worker, a
+  missing snapshot and an overdue refresh before RADIUS starts failing closed.
+- Fonts are served as files rather than inlined, so the strict CSP (`font-src 'self'`) holds without exceptions.
