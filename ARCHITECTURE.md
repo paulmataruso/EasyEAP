@@ -39,7 +39,7 @@ flowchart LR
 |---|---|---|---|
 | `easyeap-proxy` | nginx-unprivileged 1.29 | uid 101 | Serves the console SPA and the enrollment portal, terminates TLS, proxies `/api`, serves CRLs and OCSP on plain HTTP (clients fetch them without TLS by design). |
 | `easyeap-api` | python 3.13-slim | uid 10001 | REST API (OpenAPI at `/api/docs`), authentication, RBAC, policy engine, PKI orchestration, enrollment, snapshot publisher, event ingestion. |
-| `easyeap-worker` | same image as api | uid 10001 | Background jobs: directory sync, policy recomputation, expiry notifications, CRL refresh, snapshot heartbeat, retention. |
+| `easyeap-worker` | same image as api | uid 10001 | Background jobs: directory sync, hourly policy recomputation (which keeps the snapshot fresh while the directory is healthy), CRL rotation, enrollment-link expiry, purge of undelivered server-generated keys, event retention, OpenBao token renewal. |
 | `easyeap-db` | postgres 18-alpine | postgres | Application database. Row-level security isolates tenants. |
 | `easyeap-pki` | openbao 2.4.1 | openbao | One PKI secrets-engine mount per tenant (issuing CA), one Transit key per tenant (envelope encryption of tenant secrets). Static auto-unseal from a key file. Raft/file storage on its own volume. |
 | `easyeap-radius` | freeradius 3.2.7 | freerad | FreeRADIUS plus `radius-agent` (Python) under a small supervisor. Renders and validates its own configuration from the API's desired state, keeps a local authorization snapshot, ships events. |
@@ -119,12 +119,12 @@ sequenceDiagram
   R->>N: Access-Accept (Tunnel-Type=13, Tunnel-Medium-Type=6, Tunnel-Private-Group-ID=VLAN) or Access-Reject
   R->>A: event line (JSON) appended to spool
   A->>API: batch events (when API reachable)
-  API-->>A: snapshot updates (pull every 15s + on change)
+  API-->>A: snapshot updates (pulled every 15 s)
 ```
 
 - **Authorization data is precomputed.** The policy engine evaluates every certificate's holder against the tenant's rules whenever directory data, rules, certificates or account state change, and publishes a per-tenant snapshot: `serial → {decision, vlan, reply attributes, rule id, reason, valid_until}`. RADIUS performs one indexed lookup on a local SQLite file. There is **no synchronous call to the API, the database, AD or OpenBao during authentication**.
 - **Fail closed:** unknown serial → reject (`cert_unknown`); snapshot missing or older than the tenant's `max_snapshot_age` (default 24h) → reject (`snapshot_stale`); decision deny → reject with reason. AD unreachable → the last successfully synced state continues to apply until it ages past the limit; accounts AD reports as disabled/locked/deleted are denied at the next sync.
-- **Freshness:** directory sync every 15 min (configurable) and on demand; certificate, rule and revocation changes republish immediately. The agent pulls every 15s and is also nudged on change, so a typical change reaches RADIUS within seconds. Snapshot age is shown on the dashboard and enforced by RADIUS.
+- **Freshness:** directory sync every 15 min (configurable) and on demand; certificate, rule and revocation changes republish immediately. The agent pulls every 15 seconds (and on SIGHUP), so a change reaches RADIUS within about 15 seconds. Snapshot age is shown on the dashboard and enforced by RADIUS.
 - **Revocation latency, honestly:** new authentications are rejected within seconds of revocation (snapshot + CRL). A device **already connected** keeps its session until it re-authenticates: controllers re-authenticate on `Session-Timeout` (default 8h, tenant-configurable) and may skip full EAP on roaming (PMK caching / OKC / 802.11r). For controllers with CoA enabled, EasyEAP sends a Disconnect-Request immediately to end the session (UDP 3799; Catalyst 9800 defaults to 1700). TLS session resumption is disabled by default so a resumed session cannot bypass the snapshot check.
 - **Blast-RADIUS (CVE-2024-3596):** `require_message_authenticator = yes` and `limit_proxy_state = yes` on every client. RADIUS/UDP must not cross untrusted networks; use a site-to-site VPN, or RadSec where the controller supports it (planned).
 - **Configuration management:** the agent fetches the desired state (tenants, clients, virtual servers, certificates) from the API, renders FreeRADIUS configuration from templates, validates it with `freeradius -C` in a staging directory, swaps it atomically and restarts FreeRADIUS; on validation failure it keeps the running configuration and reports the error to the API (shown in System Health). Shared secrets reach the agent over the authenticated channel and live only on the RADIUS volume (mode 0600).
@@ -141,6 +141,13 @@ Deterministic, documented in the UI, identical in the backend engine and the UI 
 
 Every decision stores its full trace (`steps`), shown as "why this VLAN" on the user page and in authentication logs.
 
+**Staged changes.** The console never edits live rules one at a time. An administrator edits a draft (rules in order plus the tenant default), asks for an impact preview, and publishes:
+
+- `POST /api/tenants/{id}/policy/preview` evaluates both the live policy and the draft for every user (per certificate purpose they hold) against the current directory data and returns who is newly allowed, newly denied or moves VLAN, with the draft's decision trace. It never writes.
+- `POST /api/tenants/{id}/policy/publish` replaces the rules, their order and the default in one transaction, recomputes decisions and republishes the snapshot. Each draft carries the `revision` (a fingerprint of the live policy) it started from; a stale draft is refused with 409, so two administrators can't silently overwrite each other. The impact summary is written to the audit log.
+
+**Posture and the needs-action queue** (`app/posture.py`). For each tenant the API reports whether RADIUS can enforce it (CA, server certificate, at least one controller, tenant active), when its local snapshot would fail closed (`snapshot_built_at + max_snapshot_age`), whether the worker is still refreshing it, and whether the agent has applied the latest version. The dashboard's queue lists what needs action, ranked by severity, then time until users are affected, then how many people are affected; every item names one action and the screen that performs it.
+
 ## 7. Directory (Active Directory)
 
 LDAPS (636) or LDAP + StartTLS with certificate verification against an uploaded CA bundle; plain LDAP is refused unless explicitly enabled in Advanced settings. Read-only service account. Users are keyed by `objectGUID`; transitive group membership comes from `tokenGroups` (resolving the primary group such as *Domain Users*, which `memberOf` omits); account state from `userAccountControl` (disabled) and `msDS-User-Account-Control-Computed` (locked out). Users missing from a full sync are marked deleted and denied. Library: `ldap3` (pure Python) with explicit TLS context.
@@ -149,18 +156,23 @@ LDAPS (636) or LDAP + StartTLS with certificate verification against an uploaded
 
 | Domain | Tables |
 |---|---|
-| Platform | `tenants`, `admins`, `admin_sessions`, `admin_mfa`, `role_grants`, `platform_settings`, `audit_events` (hash-chained: each row stores `sha256(prev_hash ‖ canonical_row)`) |
-| PKI | `certificate_authorities` (metadata + PEM, never private keys), `certificate_templates`, `certificates`, `crl_publications` |
-| Identity | `directory_configs` (bind secret ciphertext), `directory_groups`, `identities`, `identity_groups`, `devices`, `directory_sync_runs` |
+| Platform | `tenants`, `admins` (Argon2id hash, TOTP secret ciphertext), `admin_sessions` (token hash), `role_grants`, `platform_settings`, `jobs`, `audit_events` (hash-chained: each row stores `sha256(prev_hash ‖ canonical_row)`; UPDATE and DELETE revoked from the application role) |
+| PKI | `certificate_authorities` (metadata + PEM, never private keys), `certificate_templates`, `certificates` |
+| Identity | `directory_configs` (bind secret ciphertext, last sync status and stats), `directory_groups`, `identities`, `identity_groups`, `devices` |
 | Policy | `vlans`, `access_rules`, `access_rule_groups`, `policy_settings`, `decisions` (per certificate, with trace) |
-| RADIUS | `radius_settings`, `radius_clients` (secret ciphertext), `snapshot_versions`, `auth_events`, `accounting_sessions` |
+| RADIUS | `radius_settings` (snapshot version and build time, server key ciphertext), `radius_clients` (secret ciphertext), `auth_events`, `accounting_sessions`, `coa_requests`, `agent_status` |
 | Enrollment | `enrollments` (token hash, method, status, expiry), `key_escrow` (ciphertext, one-time) |
 
 Migrations: Alembic, run automatically by the api container on start (`alembic upgrade head`) under an advisory lock.
 
 ## 9. Frontend
 
-React 19 + TypeScript + Tailwind CSS v4 + Radix primitives. Two production entries: the console (`index.html`) and the end-user enrollment portal (`enroll.html`). The design prototypes (`design.html`) are a separate entry that only `vite build --mode design` emits; their synthetic data never ships in the production bundle. Server state via TanStack Query against the REST API; CSRF token header on mutations; no secrets ever reach the browser except one-time displays (new shared secret, enrollment link).
+React 19 + TypeScript + Tailwind CSS v4 + Radix primitives, React Router (hash routes) and TanStack Query. Two production entries:
+
+- **Console** (`index.html`, `src/app/`): the design direction chosen in `design/CONCEPTS.md`, Concept F ("Modern Security Management") with Concept D's needs-action queue and Concept E's command palette. A search-first sidebar is scoped to the current tenant (`/`), and a command palette (Ctrl/Cmd+K) starts entity actions such as issue, revoke, rotate secret and test a user. The decision ledger renders the backend's decision trace on the user page, in Test a user and in the policy preview. Each status carries the age of its source data, and "allowed by policy" is shown separately from "can connect".
+- **Enrollment portal** (`enroll.html`, `src/enroll/`): the end-user flow behind a one-time link. The default path generates the key pair on the device with WebCrypto, builds the CSR and PKCS#12 in the page with PKI.js, and never sends or stores the private key.
+
+The design prototypes (`design.html`, `src/concepts/`, `src/prototype/`) are a separate entry that only `vite build --mode design` emits; their synthetic data never ships in the production bundle. Mutations carry the CSRF header; no secret reaches the browser except one-time displays (a new shared secret, an enrollment link, a server-generated package password, the encrypted root-key file from the CA ceremony).
 
 ## 10. Technology decisions
 

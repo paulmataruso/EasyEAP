@@ -1,0 +1,29 @@
+# Development override: publishes the API on 127.0.0.1:8000 for the Vite dev server, mounts the backend source with
+# auto-reload, installs the test dependencies and relaxes the cookie for http://localhost.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile lab up -d --build
+#   cd ../frontend && EASYEAP_API=http://127.0.0.1:8000 pnpm dev      # console on http://localhost:5173
+#
+# Never use this file on a production host.
+services:
+  easyeap-api:
+    build:
+      context: ../backend
+      args: { INSTALL_DEV: "1" }
+    image: easyeap-api:dev
+    environment:
+      EASYEAP_ENVIRONMENT: development
+      EASYEAP_COOKIE_SECURE: "false"
+      EASYEAP_PUBLIC_URL: http://localhost:5173
+      EASYEAP_RELOAD: "1"
+    volumes:
+      - ../backend:/app
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  easyeap-worker:
+    image: easyeap-api:dev
+    environment:
+      EASYEAP_ENVIRONMENT: development
+    volumes:
+      - ../backend:/app

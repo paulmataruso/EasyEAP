@@ -20,7 +20,7 @@ case "$role" in
     # Migrations run as the schema owner under an advisory lock (see alembic/env.py).
     alembic upgrade head
     python -m app.cli bootstrap
-    exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips "${EASYEAP_TRUSTED_PROXY:-*}" --no-server-header --log-level warning
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips "${EASYEAP_TRUSTED_PROXY:-*}" --no-server-header --log-level warning ${EASYEAP_RELOAD:+--reload --reload-dir /app/app}
     ;;
   worker)
     wait_for python -c "import psycopg; from app.config import get_settings as g; psycopg.connect(g().database_url.replace('postgresql+psycopg','postgresql')).close()"

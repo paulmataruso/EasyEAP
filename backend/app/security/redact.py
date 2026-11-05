@@ -33,3 +33,6 @@ def configure_logging(level: str = "INFO") -> None:
     root.setLevel(level)
     for noisy in ("uvicorn.access",):
         logging.getLogger(noisy).addFilter(RedactingFilter())
+    # One INFO line per OpenBao/HTTP call drowns the useful logs; failures are still logged by the callers.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
