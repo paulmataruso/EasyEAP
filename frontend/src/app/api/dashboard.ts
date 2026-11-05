@@ -3,7 +3,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from './client'
 import { qk } from './keys'
-import type { AgentStatus, Enforcement, QueueItem, Severity, Tenant, TenantHealth } from './types'
+import { agentPoll, type AgentStatus, type Enforcement, type QueueItem, type Severity, type Tenant, type TenantHealth } from './types'
 import type { AuthEvent } from './events'
 
 export interface HourBucket { /** Start of the hour (UTC ISO). The last bucket is the current, partial hour. */ hour: string; accept: number; reject: number }
@@ -51,7 +51,7 @@ export function useDashboard(tid: string) {
   return useQuery({
     queryKey: qk.dashboard(tid),
     queryFn: ({ signal }) => api.get<DashboardResponse>(`/api/tenants/${tid}/dashboard`, signal),
-    refetchInterval: 30_000,
+    refetchInterval: (q) => agentPoll(q.state.data?.services.radius_agent),
     staleTime: 10_000,
   })
 }
@@ -60,7 +60,7 @@ export function useOverview(opts: { refetch?: boolean } = {}) {
   return useQuery({
     queryKey: qk.overview(),
     queryFn: ({ signal }) => api.get<OverviewResponse>('/api/overview', signal),
-    refetchInterval: opts.refetch === false ? false : 30_000,
+    refetchInterval: (q) => (opts.refetch === false ? false : agentPoll(q.state.data?.radius_agent)),
     staleTime: 10_000,
   })
 }

@@ -10,7 +10,7 @@ import { api } from '../api/client'
 import { qk } from '../api/keys'
 import { useCoa, useRadius, vendorLabels, type CoaRequest, type RadiusClient, type RadiusResponse, type Unattributed } from '../api/radius'
 import { useTenant } from '../api/tenant'
-import type { Enforcement } from '../api/types'
+import { radiusState, type Enforcement } from '../api/types'
 import { ago, fmtDateTime } from '../lib/format'
 import { pushRecent } from '../lib/recent'
 import { useNow } from '../lib/useNow'
@@ -167,6 +167,16 @@ function StatusCell({ label, tone, value, sub }: { label: string; tone: Tone; va
   )
 }
 
+function freeradiusCell(a: RadiusResponse['agent']): { tone: Tone; value: string; sub?: ReactNode } {
+  if (!a) return { tone: 'neutral', value: 'Unknown' }
+  switch (radiusState(a)) {
+    case 'running': return { tone: 'valid', value: 'Running' }
+    case 'idle': return { tone: 'neutral', value: 'Idle', sub: 'Starts when a tenant is activated. Until then there is nothing to serve.' }
+    case 'starting': return { tone: 'neutral', value: 'Starting', sub: 'Loading the newly activated tenant. The agent checks every 15 seconds.' }
+    default: return { tone: 'crit', value: 'Not running', sub: <>Check <Link className="underline" to={paths.system()}>System health</Link> and the Configuration status.</> }
+  }
+}
+
 function ServiceStatus({ data }: { data: RadiusResponse }) {
   const { tid, tenant } = useTenant()
   const now = useNow()
@@ -192,7 +202,7 @@ function ServiceStatus({ data }: { data: RadiusResponse }) {
     <Panel aria-label="RADIUS service status" risk={!a || !a.online || !a.config_ok ? 'crit' : undefined}>
       <div className="grid divide-y divide-[var(--ee-line)] sm:grid-cols-2 sm:divide-y-0 xl:grid-cols-4 xl:divide-x">
         <StatusCell label="RADIUS agent" tone={!a ? 'crit' : a.online ? 'valid' : 'crit'} value={!a ? 'Never reported' : a.online ? 'Online' : 'Not reporting'} sub={seen ?? 'Check System health.'} />
-        <StatusCell label="FreeRADIUS" tone={!a ? 'neutral' : a.radius_running ? 'valid' : 'crit'} value={!a ? 'Unknown' : a.radius_running ? 'Running' : 'Not running'} sub={a ? <>Reported {ago(a.last_seen_at, now)}</> : undefined} />
+        <StatusCell label="FreeRADIUS" {...freeradiusCell(a)} />
         <StatusCell label="Configuration" tone={!a ? 'neutral' : a.config_ok ? 'valid' : 'crit'} value={!a ? 'Unknown' : a.config_ok ? 'Loaded' : 'Rejected'} sub={a && !a.config_ok ? (a.config_error ?? 'The last configuration failed to load.') : a ? <>Reported {ago(a.last_seen_at, now)}</> : undefined} />
         <StatusCell label={`${tenant.name} on RADIUS`} {...tenantCell} />
       </div>

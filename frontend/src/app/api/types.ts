@@ -88,12 +88,26 @@ export interface QueueItem {
   source_at: string | null
 }
 
+export type RadiusState = 'running' | 'idle' | 'starting' | 'stopped'
+
+export const radiusState = (a: Pick<AgentStatus, 'state' | 'radius_running'>): RadiusState => a.state ?? (a.radius_running ? 'running' : 'stopped')
+
+/** Poll quickly while RADIUS is starting for a new tenant, so the console shows "Running" within seconds. */
+export const agentPoll = (a: Pick<AgentStatus, 'state' | 'radius_running'> | null | undefined) => (a && radiusState(a) === 'starting' ? 5_000 : 30_000)
+
 export interface AgentStatus {
   agent_id: string
   last_seen_at: string
   config_ok: boolean
   config_error: string | null
   radius_running: boolean
+  /**
+   * idle: FreeRADIUS is kept stopped because no tenant is active (nothing to serve). starting: a tenant was just
+   * activated and the agent hasn't picked it up yet (it polls every 15 seconds). Absent from older API versions.
+   */
+  state?: RadiusState
+  /** Tenants in the configuration the agent last applied. */
+  serving?: number | null
   snapshot_versions: Record<string, number>
   config_version: string | number | null
   online: boolean

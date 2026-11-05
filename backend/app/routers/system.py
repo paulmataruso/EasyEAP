@@ -42,9 +42,15 @@ def health(p: Principal = Depends(platform("platform:read")), s: Session = Depen
     except Exception as exc:  # noqa: BLE001
         checks.append({"service": "pki", "ok": False, "detail": f"OpenBao unreachable: {exc}"[:200], "checked_at": datetime.now(UTC).isoformat()})
     agent = agent_out(s)
-    checks.append({"service": "radius", "ok": bool(agent and agent["online"] and agent["config_ok"] and agent["radius_running"]),
-                   "detail": ("RADIUS running, configuration applied" if agent and agent["config_ok"] and agent["radius_running"] else
-                              (agent or {}).get("config_error") or "No heartbeat from the RADIUS agent") if agent else "No heartbeat from the RADIUS agent yet",
+    state = agent["state"] if agent else None
+    radius_detail = {
+        "running": "RADIUS running, configuration applied",
+        "idle": "RADIUS idle: it starts when the first tenant is activated",
+        "starting": "RADIUS starting for a newly activated tenant",
+        "stopped": "RADIUS is not running",
+    }
+    checks.append({"service": "radius", "ok": bool(agent and agent["online"] and agent["config_ok"] and state in ("running", "idle", "starting")),
+                   "detail": (agent.get("config_error") or radius_detail.get(state, "RADIUS is not running")) if agent else "No heartbeat from the RADIUS agent yet",
                    "last_seen_at": agent["last_seen_at"] if agent else None})
     hb = s.get(m.PlatformSetting, "worker_heartbeat")
     last = datetime.fromisoformat(hb.value["at"]) if hb and hb.value.get("at") else None

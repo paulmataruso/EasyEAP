@@ -59,13 +59,37 @@ def client_out(c: m.RadiusClient) -> dict:
             "last_request_at": c.last_request_at.isoformat() if c.last_request_at else None}
 
 
+# The agent polls every 15 s and FreeRADIUS starts in seconds, so a tenant activated longer ago than this should be served.
+STARTING_WINDOW = timedelta(minutes=2)
+
+
+def radius_state(s, a: m.AgentStatus, now: datetime) -> str:
+    """running | idle | starting | stopped.
+
+    The agent keeps FreeRADIUS stopped while no tenant is active, because there is nothing to serve. That is
+    "idle", not a fault. "starting" covers the poll interval right after an activation. Activations are read from the
+    audit trail, so in a tenant-scoped session (RLS) only that tenant's activation counts.
+    """
+    if a.radius_running:
+        return "running"
+    if not s.scalar(select(func.count()).select_from(m.Tenant).where(m.Tenant.status == "active")):
+        return "idle"
+    activated = s.scalar(select(func.max(m.AuditEvent.at)).where(m.AuditEvent.action == "tenant.updated",
+                                                                 m.AuditEvent.detail["status"].astext == "active"))
+    if activated and now - activated < STARTING_WINDOW:
+        return "starting"
+    return "stopped"
+
+
 def agent_out(s) -> dict | None:
     a = s.scalars(select(m.AgentStatus).order_by(m.AgentStatus.last_seen_at.desc())).first()
     out = None
     if a:
+        now = datetime.now(UTC)
         out = {"agent_id": a.agent_id, "last_seen_at": a.last_seen_at.isoformat(), "config_ok": a.config_ok, "config_error": a.config_error,
-               "radius_running": a.radius_running, "snapshot_versions": a.snapshot_versions, "config_version": a.config_version,
-               "online": (datetime.now(UTC) - a.last_seen_at).total_seconds() < 90, "detail": a.detail}
+               "radius_running": a.radius_running, "state": radius_state(s, a, now), "serving": (a.detail or {}).get("tenants"),
+               "snapshot_versions": a.snapshot_versions, "config_version": a.config_version,
+               "online": (now - a.last_seen_at).total_seconds() < 90, "detail": a.detail}
     return out
 
 

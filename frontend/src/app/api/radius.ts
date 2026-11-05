@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import { useOneTimeCall } from './oneTime'
 import { qk } from './keys'
-import type { AgentStatus } from './types'
+import { agentPoll, type AgentStatus } from './types'
 
 export const VENDORS = ['cisco-9800', 'cisco-aireos', 'unifi', 'other'] as const
 export type Vendor = (typeof VENDORS)[number]
@@ -95,7 +95,7 @@ export const guideKey = (tid: string, vendor: string) => [...qk.radius(tid), 'gu
 export const coaKey = (tid: string) => [...qk.radius(tid), 'coa'] as const
 
 export function useRadius(tid: string) {
-  return useQuery({ queryKey: qk.radius(tid), queryFn: ({ signal }) => api.get<RadiusResponse>(base(tid), signal), refetchInterval: 30_000 })
+  return useQuery({ queryKey: qk.radius(tid), queryFn: ({ signal }) => api.get<RadiusResponse>(base(tid), signal), refetchInterval: (q) => agentPoll(q.state.data?.agent) })
 }
 
 export function useGuide(tid: string, vendor: string | null, enabled = true) {
