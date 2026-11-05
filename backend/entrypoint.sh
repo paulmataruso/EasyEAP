@@ -3,6 +3,16 @@
 set -eu
 role="${1:-api}"
 
+# Build database URLs from Docker secrets when provided (passwords never appear in the compose file or env).
+if [ -n "${EASYEAP_DB_APP_PASSWORD_FILE:-}" ] && [ -f "$EASYEAP_DB_APP_PASSWORD_FILE" ]; then
+  EASYEAP_DATABASE_URL="postgresql+psycopg://easyeap_app:$(cat "$EASYEAP_DB_APP_PASSWORD_FILE")@${EASYEAP_DB_HOST:-easyeap-db}:5432/easyeap"
+  export EASYEAP_DATABASE_URL
+fi
+if [ -n "${EASYEAP_DB_OWNER_PASSWORD_FILE:-}" ] && [ -f "$EASYEAP_DB_OWNER_PASSWORD_FILE" ]; then
+  EASYEAP_DATABASE_OWNER_URL="postgresql+psycopg://easyeap:$(cat "$EASYEAP_DB_OWNER_PASSWORD_FILE")@${EASYEAP_DB_HOST:-easyeap-db}:5432/easyeap"
+  export EASYEAP_DATABASE_OWNER_URL
+fi
+
 wait_for() {
   i=0
   until "$@" >/dev/null 2>&1; do

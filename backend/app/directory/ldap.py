@@ -30,9 +30,10 @@ NEVER = (0, 0x7FFFFFFFFFFFFFFF)
 
 
 class DirectoryError(RuntimeError):
-    def __init__(self, message: str, hint: str = ""):
+    def __init__(self, message: str, hint: str = "", detail: str = ""):
         super().__init__(message)
         self.hint = hint
+        self.detail = detail[:500]
 
 
 @dataclass
@@ -94,15 +95,17 @@ def connect(p: DirectoryParams, timeout: int = 8) -> Connection:
     conn = Connection(pool, user=p.bind_dn, password=p.bind_password, auto_bind=False, receive_timeout=timeout * 2,
                       raise_exceptions=False, read_only=True)
     try:
-        if not conn.open():
-            raise DirectoryError("Could not reach a domain controller.", _hint_for(str(conn.result)))
+        conn.open()  # raises on socket/TLS failure
+        if conn.closed:
+            raise DirectoryError("Could not reach a domain controller.", _hint_for(str(conn.last_error)), str(conn.last_error))
         if p.transport == "starttls" and not conn.start_tls():
-            raise DirectoryError("StartTLS failed.", "Check the domain controller's certificate and the uploaded CA bundle.")
+            raise DirectoryError("StartTLS failed.", "Check the domain controller's certificate and the uploaded CA bundle.", str(conn.result))
         if not conn.bind():
-            desc = (conn.result or {}).get("description", "")
-            raise DirectoryError("The service account could not sign in.", _hint_for(desc + " " + str((conn.result or {}).get("message", ""))))
+            res = conn.result or {}
+            text = f"{res.get('description', '')} {res.get('message', '')}".strip()
+            raise DirectoryError("The service account could not sign in.", _hint_for(text), text)
     except LDAPException as exc:
-        raise DirectoryError("Could not connect to the directory.", _hint_for(str(exc))) from exc
+        raise DirectoryError("Could not connect to the directory.", _hint_for(str(exc)), str(exc)) from exc
     return conn
 
 
@@ -110,7 +113,7 @@ def _hint_for(message: str) -> str:
     msg = message.lower()
     if "certificate verify failed" in msg or "certificate" in msg and "verify" in msg:
         return "The domain controller's certificate is not trusted. Upload your AD root CA (PEM) in Advanced settings."
-    if "hostname" in msg and "match" in msg:
+    if "doesn't match" in msg or "does not match" in msg or ("hostname" in msg and "match" in msg):
         return "The certificate does not match the hostname. Use the DC's fully qualified name as it appears in its certificate."
     if "invalidcredentials" in msg or "invalid credentials" in msg or "52e" in msg:
         return "Check the service account's bind DN (or user@domain) and password."
@@ -122,7 +125,7 @@ def _hint_for(message: str) -> str:
         return "The domain controller requires signing or TLS. Use LDAPS or StartTLS."
     if "timed out" in msg or "timeout" in msg or "unreachable" in msg or "refused" in msg or "socket" in msg:
         return "EasyEAP could not open a connection. Check DNS, routing and that TCP 636 (or 389 for StartTLS) is allowed."
-    return "See technical details below."
+    return "See the technical details for the exact error."
 
 
 def _guid(value: Any) -> str:
@@ -247,7 +250,7 @@ def test(p: DirectoryParams) -> dict[str, Any]:
     try:
         conn = connect(p)
     except DirectoryError as exc:
-        steps.append({"step": "connect", "ok": False, "message": str(exc), "hint": exc.hint})
+        steps.append({"step": "connect", "ok": False, "message": str(exc), "hint": exc.hint, "detail": exc.detail})
         return {"ok": False, "steps": steps}
     steps.append({"step": "connect", "ok": True, "message": f"Connected over {p.transport.upper()} and signed in as the service account"})
     try:

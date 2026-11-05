@@ -16,6 +16,10 @@ def main(argv: list[str] | None = None) -> int:
     rp = sub.add_parser("reset-admin-mfa", help="Turn off two-factor authentication for an administrator (break-glass)")
     rp.add_argument("email")
     sub.add_parser("recompute", help="Recompute every tenant's access decisions")
+    bp = sub.add_parser("record-backup", help="Record a completed backup (called by deploy/backup.sh)")
+    bp.add_argument("--file", required=True)
+    bp.add_argument("--size", type=int, default=0)
+    bp.add_argument("--encrypted", action="store_true")
     args = parser.parse_args(argv)
 
     from app import models as m
@@ -60,6 +64,16 @@ def main(argv: list[str] | None = None) -> int:
         with platform_session() as s:
             for t in s.scalars(select(m.Tenant)):
                 print(t.slug, recompute_tenant(s, t.id))
+        return 0
+    if args.cmd == "record-backup":
+        from datetime import UTC, datetime
+        from app import audit
+        with platform_session() as s:
+            row = s.get(m.PlatformSetting, "last_backup") or m.PlatformSetting(key="last_backup", value={})
+            row.value = {"at": datetime.now(UTC).isoformat(), "file": args.file, "size": args.size, "encrypted": args.encrypted}
+            s.add(row)
+            audit.record(s, audit.Actor("system", "deploy/backup.sh"), "system.backup_created", target_type="backup", target_label=args.file,
+                         detail={"size": args.size, "encrypted": args.encrypted})
         return 0
     return 1
 

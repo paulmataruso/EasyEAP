@@ -39,7 +39,8 @@ def sync_tenant(session: Session, tenant_id: uuid.UUID, *, force: bool = False) 
             conn.unbind()
     except Exception as exc:  # noqa: BLE001 — recorded, never silently ignored
         cfg.last_sync_at, cfg.last_sync_status = started, "failed"
-        cfg.last_sync_error = f"{exc}" + (f" — {exc.hint}" if isinstance(exc, ldap.DirectoryError) and exc.hint else "")
+        cfg.last_sync_error = f"{exc}" + (f" — {exc.hint}" if isinstance(exc, ldap.DirectoryError) and exc.hint else "") + \
+            (f" ({exc.detail})" if isinstance(exc, ldap.DirectoryError) and exc.detail else "")
         log.warning("Directory sync failed for tenant %s: %s", tenant_id, exc)
         return {"ok": False, "error": cfg.last_sync_error}
 
