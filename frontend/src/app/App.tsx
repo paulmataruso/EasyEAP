@@ -82,9 +82,11 @@ function Home() {
 
 function PublicOnly({ children }: { children: ReactNode }) {
   const { me, loading, needsSetup } = useSession()
+  const from = (useLocation().state as { from?: string } | null)?.from
   if (loading || needsSetup === null) return <Loading />
   if (needsSetup) return <Navigate to={paths.firstRun()} replace />
-  if (me) return <Navigate to="/" replace />
+  // Back to where the administrator was going (only in-app paths).
+  if (me) return <Navigate to={from?.startsWith('/') && !from.startsWith('//') ? from : '/'} replace />
   return <>{children}</>
 }
 

@@ -1,6 +1,6 @@
 // The signed-in administrator. /api/auth/me is the source of truth; the CSRF token it carries is installed on the
 // client for every unsafe request.
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, onUnauthorized, setCsrfToken } from './client'
 import type { Me } from './types'
@@ -21,34 +21,36 @@ const SessionContext = createContext<SessionValue | null>(null)
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient()
-  const [me, setMe] = useState<Me | null>(null)
   const setup = useQuery({ queryKey: ['setup-status'], queryFn: () => api.get<{ needs_setup: boolean }>('/api/setup/status'), staleTime: 60_000 })
+  // `me` is read straight from the query (never copied into state in an effect), so there is no render in which
+  // loading is false but the session isn't known yet: deep links opened in a new tab survive the first load.
   const meQuery = useQuery({
     queryKey: ['me'],
     queryFn: async () => {
-      try { return await api.get<Me>('/api/auth/me') } catch (e) { if (e instanceof ApiError && e.status === 401) return null; throw e }
+      try {
+        const m = await api.get<Me>('/api/auth/me')
+        setCsrfToken(m.csrf_token)
+        return m
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) { setCsrfToken(null); return null }
+        throw e
+      }
     },
     enabled: setup.data?.needs_setup === false,
     retry: false,
     staleTime: 5 * 60_000,
   })
+  const me = meQuery.data ?? null
 
-  useEffect(() => {
-    if (meQuery.data !== undefined) {
-      setMe(meQuery.data)
-      setCsrfToken(meQuery.data?.csrf_token ?? null)
-    }
-  }, [meQuery.data])
+  useEffect(() => { setCsrfToken(meQuery.data?.csrf_token ?? null) }, [meQuery.data])
 
   useEffect(() => onUnauthorized(() => {
-    setMe(null)
     setCsrfToken(null)
     qc.setQueryData(['me'], null)
   }), [qc])
 
   const signIn = useCallback((m: Me) => {
     setCsrfToken(m.csrf_token)
-    setMe(m)
     qc.setQueryData(['me'], m)
     qc.setQueryData(['setup-status'], { needs_setup: false })
   }, [qc])
@@ -56,7 +58,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     try { await api.post('/api/auth/logout') } catch { /* already signed out */ }
     setCsrfToken(null)
-    setMe(null)
     qc.clear()
     qc.setQueryData(['setup-status'], { needs_setup: false })
     qc.setQueryData(['me'], null)
@@ -64,14 +65,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<SessionValue>(() => ({
     me,
-    loading: setup.isLoading || (setup.data?.needs_setup === false && meQuery.isLoading),
+    loading: setup.isLoading || (setup.data?.needs_setup === false && meQuery.data === undefined && !meQuery.isError),
     needsSetup: setup.data?.needs_setup ?? null,
     signIn,
     signOut,
     isPlatform: !!me?.platform_role,
     canManageAdmins: me?.platform_role === 'platform_owner',
     canCreateTenants: me?.platform_role === 'platform_owner' || me?.platform_role === 'platform_operator',
-  }), [me, setup.isLoading, setup.data, meQuery.isLoading, signIn, signOut])
+  }), [me, setup.isLoading, setup.data, meQuery.data, meQuery.isError, signIn, signOut])
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }

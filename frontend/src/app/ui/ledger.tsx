@@ -11,7 +11,7 @@ export interface LedgerRule { id: string; name: string; action: 'allow' | 'deny'
 export interface LedgerVlan { vlan_id: number; name: string; color: string }
 
 export const reasonText: Record<string, string> = {
-  account_disabled: 'Directory account is disabled, locked or deleted',
+  account_disabled: 'Account is disabled, locked or deleted',
   cert_revoked: 'Certificate was revoked',
   cert_expired: 'Certificate has expired',
   cert_unknown: 'Certificate not issued by EasyEAP',

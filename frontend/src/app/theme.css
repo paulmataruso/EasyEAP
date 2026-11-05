@@ -79,6 +79,8 @@
 /* Component classes live in the components layer so Tailwind utilities can refine them. */
 @layer components {
 :focus-visible { outline: 2px solid var(--ee-gold); outline-offset: 2px; border-radius: 6px; }
+/* Headings and the main region take focus programmatically on route change (tabindex=-1); no ring for that. */
+[data-page-heading]:focus, [data-page-heading]:focus-visible, #ee-main:focus, #ee-main:focus-visible { outline: none; }
 a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
 
 .ee-num { font-variant-numeric: tabular-nums; }
@@ -127,7 +129,7 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 .ee-btn-sm { height: 28px; padding: 0 10px; font-size: 12.5px; }
 .ee-btn-lg { height: 36px; padding: 0 15px; font-size: 13.5px; }
 .ee-btn-icon { width: 32px; padding: 0; }
-.ee-btn-sm.f-btn-icon { width: 28px; }
+.ee-btn-sm.ee-btn-icon { width: 28px; }
 .ee-btn-primary { background: var(--ee-gold); color: var(--ee-gold-ink); border-color: transparent; font-weight: 620; }
 .ee-btn-primary:hover { background: var(--ee-gold-hi); border-color: transparent; }
 .ee-btn-ghost { background: transparent; border-color: transparent; color: var(--ee-ink-2); }
@@ -203,7 +205,7 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
 /* ── Tables ──────────────────────────────────────────────────────────── */
 .ee-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
 .ee-table th { text-align: left; font-weight: 540; font-size: 12px; color: var(--ee-ink-3); padding: 0 12px 9px; border-bottom: 1px solid var(--ee-line-2); white-space: nowrap; }
-.ee-table th.f-right, .ee-table td.f-right { text-align: right; }
+.ee-table th.ee-right, .ee-table td.ee-right { text-align: right; }
 .ee-table td { padding: 10px 12px; border-bottom: 1px solid var(--ee-line); vertical-align: middle; }
 .ee-table tbody tr { transition: background-color 120ms; }
 .ee-table tbody tr[data-clickable="true"] { cursor: pointer; }
@@ -273,7 +275,6 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
   html, body { margin: 0; min-height: 100%; background: var(--ee-ground); }
   #root { min-height: 100vh; }
   h1, h2, h3, p { margin: 0; }
-  h1:focus { outline: none; }
 }
 @layer components {
   /* Callout: a status line inside a panel. Tone sets the left rule. */

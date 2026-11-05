@@ -20,7 +20,7 @@ export const qk = {
   directoryGroups: (tid: string) => ['t', tid, 'directory', 'groups'] as const,
   pki: (tid: string) => ['t', tid, 'pki'] as const,
   events: (tid: string, params: object = {}) => ['t', tid, 'events', params] as const,
-  sessions: (tid: string) => ['t', tid, 'sessions'] as const,
+  sessions: (tid: string, params: object = {}) => ['t', tid, 'sessions', params] as const,
   tenantAudit: (tid: string, params: object = {}) => ['t', tid, 'audit', params] as const,
   audit: (params: object = {}) => ['audit', params] as const,
   admins: () => ['admins'] as const,

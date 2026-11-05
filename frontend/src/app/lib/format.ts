@@ -26,12 +26,26 @@ export function relative(iso: string | null | undefined, now: Date = new Date())
   const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [['year', 31_536e6], ['month', 2_592e6], ['week', 6048e5], ['day', 864e5], ['hour', 36e5], ['minute', 6e4]]
   for (const [unit, ms] of units) {
     if (abs >= ms) {
-      // Avoid "in 0 days" from rounding: floor toward zero, minimum 1.
-      const n = Math.max(1, Math.floor(abs / ms))
+      // Nearest whole unit (a 72-hour link reads "in 3 days", not "in 2"), never zero. remaining() floors instead,
+      // so validity is never overstated.
+      const n = Math.max(1, Math.round(abs / ms))
       return rtf.format(diff < 0 ? -n : n, unit)
     }
   }
   return diff < 0 ? 'less than a minute ago' : 'in under a minute'
+}
+
+/**
+ * Relative time for something that has already happened (a heartbeat, a sync, a request). Server clocks can run a few
+ * seconds ahead of the browser; within five minutes that skew is clamped so a just-received report never reads
+ * "in under a minute". A larger gap is shown as it is, because it points at a real clock problem.
+ */
+export function ago(iso: string | null | undefined, now: Date = new Date()): string {
+  if (valid(iso)) {
+    const ahead = new Date(iso).getTime() - now.getTime()
+    if (ahead >= 0 && ahead <= 5 * 6e4) return 'less than a minute ago'
+  }
+  return relative(iso, now)
 }
 
 /** Whole days from now until iso (negative when past). */
