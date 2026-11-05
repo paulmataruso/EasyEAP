@@ -1,0 +1,789 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-05T12:21:17+00:00",
+  "title": "Design System: EasyEAP",
+  "extensions": {
+    "colorMeta": {
+      "gold": {
+        "role": "primary",
+        "displayName": "Ledger Gold",
+        "canonical": "#e2c275",
+        "cssVar": "--ee-gold",
+        "tonalRamp": [
+          "#0d0b05",
+          "#2c230c",
+          "#4b3e1e",
+          "#6d5b31",
+          "#907b46",
+          "#b69b5b",
+          "#e0c074",
+          "#fbedcd"
+        ]
+      },
+      "gold-hi": {
+        "role": "primary",
+        "displayName": "Gold Highlight",
+        "canonical": "#ecd396",
+        "cssVar": "--ee-gold-hi",
+        "tonalRamp": [
+          "#0d0b07",
+          "#292315",
+          "#483f29",
+          "#695c3f",
+          "#8b7c56",
+          "#b09d6e",
+          "#d9c289",
+          "#f9eed2"
+        ]
+      },
+      "gold-ink": {
+        "role": "primary",
+        "displayName": "Lamp Black",
+        "canonical": "#14100a",
+        "cssVar": "--ee-gold-ink",
+        "tonalRamp": [
+          "#0d0b08",
+          "#27231d",
+          "#433f3a",
+          "#605d58",
+          "#807d78",
+          "#a09e9a",
+          "#c5c4c1",
+          "#efeeee"
+        ]
+      },
+      "valid": {
+        "role": "secondary",
+        "displayName": "Verdigris",
+        "canonical": "#2dd4bf",
+        "cssVar": "--ee-valid",
+        "tonalRamp": [
+          "#030e0c",
+          "#002c26",
+          "#004c42",
+          "#006d61",
+          "#0a9182",
+          "#1fb6a4",
+          "#4bdfca",
+          "#c7fbf1"
+        ]
+      },
+      "valid-ink": {
+        "role": "secondary",
+        "displayName": "Verdigris Ink",
+        "canonical": "#5fe3d2",
+        "cssVar": "--ee-valid-ink",
+        "tonalRamp": [
+          "#050d0c",
+          "#042b26",
+          "#124a43",
+          "#236b62",
+          "#348e83",
+          "#47b3a5",
+          "#5cddcc",
+          "#c9fbf2"
+        ]
+      },
+      "warn": {
+        "role": "secondary",
+        "displayName": "Signal Amber",
+        "canonical": "#f5a524",
+        "cssVar": "--ee-warn",
+        "tonalRamp": [
+          "#110902",
+          "#371d00",
+          "#5b3700",
+          "#815200",
+          "#aa6f04",
+          "#d48d17",
+          "#ffb242",
+          "#ffe8c0"
+        ]
+      },
+      "warn-ink": {
+        "role": "secondary",
+        "displayName": "Signal Amber Ink",
+        "canonical": "#f7b955",
+        "cssVar": "--ee-warn-ink",
+        "tonalRamp": [
+          "#0f0a04",
+          "#322002",
+          "#543a0f",
+          "#78571e",
+          "#9f752f",
+          "#c79440",
+          "#f5b854",
+          "#ffeac3"
+        ]
+      },
+      "crit": {
+        "role": "secondary",
+        "displayName": "Revocation Crimson",
+        "canonical": "#f43f5e",
+        "cssVar": "--ee-crit",
+        "tonalRamp": [
+          "#1b0205",
+          "#50000d",
+          "#7c0022",
+          "#aa1a39",
+          "#db3351",
+          "#ff5b71",
+          "#ff909c",
+          "#ffdcde"
+        ]
+      },
+      "crit-ink": {
+        "role": "secondary",
+        "displayName": "Revocation Crimson Ink",
+        "canonical": "#ff7a8f",
+        "cssVar": "--ee-crit-ink",
+        "tonalRamp": [
+          "#150608",
+          "#41101a",
+          "#692632",
+          "#933d4c",
+          "#bf5667",
+          "#ee7084",
+          "#ff99aa",
+          "#ffdee3"
+        ]
+      },
+      "neutral": {
+        "role": "secondary",
+        "displayName": "Slate Neutral",
+        "canonical": "#9aa3b5",
+        "cssVar": "--ee-neutral",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#21242b",
+          "#3b4049",
+          "#585e6a",
+          "#767d8c",
+          "#969fb0",
+          "#bcc4d5",
+          "#ebeff6"
+        ]
+      },
+      "vlan-blue": {
+        "role": "tertiary",
+        "displayName": "VLAN Blue",
+        "canonical": "#4194f9",
+        "cssVar": "--ee-vlan-blue",
+        "tonalRamp": [
+          "#020b1a",
+          "#002250",
+          "#083f7a",
+          "#1d5da8",
+          "#327dd7",
+          "#51a0ff",
+          "#83c7ff",
+          "#d5f1ff"
+        ]
+      },
+      "vlan-violet": {
+        "role": "tertiary",
+        "displayName": "VLAN Violet",
+        "canonical": "#994ab0",
+        "cssVar": "--ee-vlan-violet",
+        "tonalRamp": [
+          "#130418",
+          "#3a0647",
+          "#5c206d",
+          "#813995",
+          "#a459ba",
+          "#c380d7",
+          "#e4abf6",
+          "#fce5ff"
+        ]
+      },
+      "vlan-teal": {
+        "role": "tertiary",
+        "displayName": "VLAN Teal",
+        "canonical": "#17a7b4",
+        "cssVar": "--ee-vlan-teal",
+        "tonalRamp": [
+          "#010e10",
+          "#002c32",
+          "#004a52",
+          "#006b75",
+          "#008e9a",
+          "#35b1be",
+          "#76d6e0",
+          "#d2f6fb"
+        ]
+      },
+      "vlan-orange": {
+        "role": "tertiary",
+        "displayName": "VLAN Orange",
+        "canonical": "#c0401f",
+        "cssVar": "--ee-vlan-orange",
+        "tonalRamp": [
+          "#1b0301",
+          "#4e0000",
+          "#771500",
+          "#a32f10",
+          "#cb5032",
+          "#e87b5f",
+          "#ffa78f",
+          "#ffe4d9"
+        ]
+      },
+      "vlan-amber": {
+        "role": "tertiary",
+        "displayName": "VLAN Amber",
+        "canonical": "#ac913a",
+        "cssVar": "--ee-vlan-amber",
+        "tonalRamp": [
+          "#0f0b02",
+          "#2f2200",
+          "#4e3e02",
+          "#705b17",
+          "#937b2c",
+          "#b69c4b",
+          "#d9c37e",
+          "#f7eed3"
+        ]
+      },
+      "vlan-green": {
+        "role": "tertiary",
+        "displayName": "VLAN Green",
+        "canonical": "#4f9a3c",
+        "cssVar": "--ee-vlan-green",
+        "tonalRamp": [
+          "#040f02",
+          "#042d00",
+          "#1a4d0a",
+          "#316e21",
+          "#499137",
+          "#6fb35e",
+          "#9cd78e",
+          "#dff7d9"
+        ]
+      },
+      "vlan-rose": {
+        "role": "tertiary",
+        "displayName": "VLAN Rose",
+        "canonical": "#c64f86",
+        "cssVar": "--ee-vlan-rose",
+        "tonalRamp": [
+          "#18040c",
+          "#450327",
+          "#6d1b44",
+          "#963463",
+          "#c24d83",
+          "#e275a4",
+          "#ffa2c9",
+          "#ffe1f0"
+        ]
+      },
+      "vlan-slate": {
+        "role": "tertiary",
+        "displayName": "VLAN Slate",
+        "canonical": "#6f7c94",
+        "cssVar": "--ee-vlan-slate",
+        "tonalRamp": [
+          "#090b10",
+          "#1d2431",
+          "#374050",
+          "#535e72",
+          "#717e96",
+          "#939fb5",
+          "#bac5d8",
+          "#eaeff7"
+        ]
+      },
+      "series-accept": {
+        "role": "tertiary",
+        "displayName": "Accept Series",
+        "canonical": "#1a9a8f",
+        "cssVar": "--ee-series-accept",
+        "tonalRamp": [
+          "#000e0d",
+          "#002d28",
+          "#004c45",
+          "#006d65",
+          "#129086",
+          "#4eb2a7",
+          "#85d6cc",
+          "#d7f6f2"
+        ]
+      },
+      "series-reject": {
+        "role": "tertiary",
+        "displayName": "Reject Series",
+        "canonical": "#f43f5e",
+        "cssVar": "--ee-series-reject",
+        "tonalRamp": [
+          "#1b0205",
+          "#50000d",
+          "#7c0022",
+          "#aa1a39",
+          "#db3351",
+          "#ff5b71",
+          "#ff909c",
+          "#ffdcde"
+        ]
+      },
+      "ground": {
+        "role": "neutral",
+        "displayName": "Midnight Ground",
+        "canonical": "#0b0f1a",
+        "cssVar": "--ee-ground",
+        "tonalRamp": [
+          "#090b10",
+          "#20242f",
+          "#3b404a",
+          "#5a5d67",
+          "#7a7d85",
+          "#9c9ea5",
+          "#c2c4c9",
+          "#eeeef0"
+        ]
+      },
+      "sidebar": {
+        "role": "neutral",
+        "displayName": "Sidebar Navy",
+        "canonical": "#0d1322",
+        "cssVar": "--ee-sidebar",
+        "tonalRamp": [
+          "#080b12",
+          "#1d2433",
+          "#39404e",
+          "#585e6a",
+          "#787d88",
+          "#9a9ea7",
+          "#c1c4cb",
+          "#eeeef0"
+        ]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Smoked Glass",
+        "canonical": "rgba(24, 32, 58, 0.7)",
+        "cssVar": "--ee-panel"
+      },
+      "panel-solid": {
+        "role": "neutral",
+        "displayName": "Smoked Glass (opaque)",
+        "canonical": "#141b30",
+        "cssVar": "--ee-panel-solid",
+        "tonalRamp": [
+          "#080b13",
+          "#1c2338",
+          "#383f53",
+          "#565d6f",
+          "#777d8d",
+          "#999eac",
+          "#c0c4ce",
+          "#edeef1"
+        ]
+      },
+      "raised": {
+        "role": "neutral",
+        "displayName": "Raised Glass",
+        "canonical": "rgba(34, 43, 71, 0.8)",
+        "cssVar": "--ee-raised"
+      },
+      "raised-solid": {
+        "role": "neutral",
+        "displayName": "Raised Glass (opaque)",
+        "canonical": "#1d253e",
+        "cssVar": "--ee-raised-solid",
+        "tonalRamp": [
+          "#080b14",
+          "#1b233b",
+          "#373f57",
+          "#555d73",
+          "#767d90",
+          "#989eaf",
+          "#bfc4d1",
+          "#edeef3"
+        ]
+      },
+      "overlay": {
+        "role": "neutral",
+        "displayName": "Overlay Glass",
+        "canonical": "rgba(16, 22, 40, 0.86)",
+        "cssVar": "--ee-overlay"
+      },
+      "hover": {
+        "role": "neutral",
+        "displayName": "Hover Wash",
+        "canonical": "rgba(237, 234, 227, 0.045)",
+        "cssVar": "--ee-hover"
+      },
+      "select": {
+        "role": "neutral",
+        "displayName": "Select Wash",
+        "canonical": "rgba(226, 194, 117, 0.085)",
+        "cssVar": "--ee-select"
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "rgba(237, 234, 227, 0.085)",
+        "cssVar": "--ee-line"
+      },
+      "line-2": {
+        "role": "neutral",
+        "displayName": "Control Hairline",
+        "canonical": "rgba(237, 234, 227, 0.15)",
+        "cssVar": "--ee-line-2"
+      },
+      "line-3": {
+        "role": "neutral",
+        "displayName": "Hover Hairline",
+        "canonical": "rgba(237, 234, 227, 0.24)",
+        "cssVar": "--ee-line-3"
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Bone Ink",
+        "canonical": "#edeae3",
+        "cssVar": "--ee-ink",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#242423",
+          "#40403d",
+          "#5f5d5a",
+          "#7f7d79",
+          "#a09e99",
+          "#c6c4be",
+          "#f0eeeb"
+        ]
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "Bone Ink Secondary",
+        "canonical": "#b7b4ac",
+        "cssVar": "--ee-ink-2",
+        "tonalRamp": [
+          "#0b0b0a",
+          "#252421",
+          "#41403c",
+          "#5f5d59",
+          "#7f7d77",
+          "#a19e97",
+          "#c7c4bc",
+          "#f0eeeb"
+        ]
+      },
+      "ink-3": {
+        "role": "neutral",
+        "displayName": "Bone Ink Muted",
+        "canonical": "#94918a",
+        "cssVar": "--ee-ink-3",
+        "tonalRamp": [
+          "#0c0b0a",
+          "#252421",
+          "#41403b",
+          "#605d58",
+          "#807d77",
+          "#a19e97",
+          "#c6c4be",
+          "#efeeec"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Page title (ee-h1), once per screen; takes focus on route change."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Panel and section titles (ee-h2); dialog titles at 18px."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Sub-sections and empty-state titles (ee-h3)."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default text; tables and controls at 13px, ledes 13.5px in ink-2."
+      },
+      "body-sm": {
+        "displayName": "Small",
+        "purpose": "Metadata, hints, ledger detail lines, chart legends (ee-small)."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Field keys, table headers, nav and menu group names; sentence case, ink-3."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Serials, MACs, RADIUS attributes, hostnames, one-time secrets."
+      },
+      "portal-display": {
+        "displayName": "Portal Display",
+        "purpose": "Enrollment step title; 24px below 640px, 28px above."
+      },
+      "portal-body": {
+        "displayName": "Portal Body",
+        "purpose": "Enrollment portal base text; inputs at 16px."
+      }
+    },
+    "shadows": [
+      {
+        "name": "panel",
+        "value": "inset 0 1px 0 var(--ee-edge), 0 18px 40px -24px rgba(0, 0, 0, 0.7)",
+        "purpose": "Every panel; inset line is the risk-keyed edge light."
+      },
+      {
+        "name": "risk-edge-ok",
+        "value": "rgba(45, 212, 191, 0.6)",
+        "purpose": "--ee-edge for data-risk=ok."
+      },
+      {
+        "name": "risk-edge-warn",
+        "value": "rgba(245, 165, 36, 0.7)",
+        "purpose": "--ee-edge for data-risk=warn."
+      },
+      {
+        "name": "risk-edge-crit",
+        "value": "rgba(244, 63, 94, 0.75)",
+        "purpose": "--ee-edge for data-risk=crit."
+      },
+      {
+        "name": "risk-edge-gold",
+        "value": "rgba(226, 194, 117, 0.6)",
+        "purpose": "--ee-edge for data-risk=gold."
+      },
+      {
+        "name": "risk-edge-neutral",
+        "value": "rgba(154, 163, 181, 0.45)",
+        "purpose": "--ee-edge for data-risk=neutral; default edge is rgba(237, 234, 227, 0.14)."
+      },
+      {
+        "name": "menu",
+        "value": "0 24px 48px -16px rgba(0, 0, 0, 0.75)",
+        "purpose": "Menus and select lists, with backdrop-filter: blur(14px) saturate(1.2)."
+      },
+      {
+        "name": "dialog",
+        "value": "inset 0 1px 0 var(--ee-edge, rgba(237, 234, 227, 0.12)), 0 40px 80px -24px rgba(0, 0, 0, 0.85)",
+        "purpose": "Dialogs and the command palette; backdrop rgba(4, 6, 12, 0.62) with blur(3px)."
+      },
+      {
+        "name": "sheet",
+        "value": "-30px 0 60px -30px rgba(0, 0, 0, 0.8)",
+        "purpose": "Right-hand event sheet."
+      },
+      {
+        "name": "tooltip",
+        "value": "0 12px 28px -12px rgba(0, 0, 0, 0.8)",
+        "purpose": "Tooltips and chart tooltips."
+      },
+      {
+        "name": "toast",
+        "value": "inset 0 1px 0 var(--ee-edge), 0 20px 40px -16px rgba(0, 0, 0, 0.8)",
+        "purpose": "Toasts, risk-edged like panels."
+      },
+      {
+        "name": "focus-glow",
+        "value": "0 0 0 3px rgba(226, 194, 117, 0.18)",
+        "purpose": "Text input focus with a gold border."
+      },
+      {
+        "name": "focus-ring",
+        "value": "outline: 2px solid var(--ee-gold); outline-offset: 2px",
+        "purpose": "Every other interactive element on :focus-visible."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "--ee-ease: switch thumb, disclosure chevron, portal step entrance."
+      },
+      {
+        "name": "state",
+        "value": "140ms",
+        "purpose": "Hover/border/colour transitions on controls."
+      },
+      {
+        "name": "row",
+        "value": "120ms",
+        "purpose": "Table row and nav item hover."
+      },
+      {
+        "name": "toggle",
+        "value": "160ms",
+        "purpose": "Switch and disclosure rotation."
+      },
+      {
+        "name": "portal-enter",
+        "value": "320ms var(--ee-ease), translateY(6px) to 0",
+        "purpose": "The portal's one authored moment: each step settles in."
+      },
+      {
+        "name": "shimmer",
+        "value": "1.4s linear infinite",
+        "purpose": "Skeleton loading; disabled under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "640px"
+      },
+      {
+        "name": "lg",
+        "value": "1024px"
+      },
+      {
+        "name": "xl",
+        "value": "1280px"
+      },
+      {
+        "name": "portal-narrow",
+        "value": "479px (max)"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one gold action per view: Issue certificate, Publish, Continue.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Issue certificate</button>",
+      "css": ".ds-btn { font-family: var(--ee-sans, 'Hanken Grotesk Variable', 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif); display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 7px; font-size: 13px; font-weight: 560; white-space: nowrap; color: #edeae3; background: rgba(34,43,71,0.8); border: 1px solid rgba(237,234,227,0.15); cursor: pointer; transition: background-color 140ms, border-color 140ms, color 140ms; } .ds-btn:hover { background: #262f4d; border-color: rgba(237,234,227,0.24); } .ds-btn:focus-visible { outline: 2px solid #e2c275; outline-offset: 2px; } .ds-btn-primary { background: #e2c275; color: #14100a; border-color: transparent; font-weight: 620; } .ds-btn-primary:hover { background: #ecd396; border-color: transparent; }"
+    },
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "refersTo": "button-default",
+      "description": "Raised-glass secondary action: Test access, Disconnect, Retry.",
+      "html": "<button class=\"ds-btn\">Test access</button>",
+      "css": ".ds-btn { font-family: var(--ee-sans, 'Hanken Grotesk Variable', 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif); display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 7px; font-size: 13px; font-weight: 560; white-space: nowrap; color: #edeae3; background: rgba(34,43,71,0.8); border: 1px solid rgba(237,234,227,0.15); cursor: pointer; transition: background-color 140ms, border-color 140ms, color 140ms; } .ds-btn:hover { background: #262f4d; border-color: rgba(237,234,227,0.24); } .ds-btn:focus-visible { outline: 2px solid #e2c275; outline-offset: 2px; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Low-weight action: close, back, cancel in dialog footers.",
+      "html": "<button class=\"ds-btn ds-btn-ghost\">Keep certificate</button>",
+      "css": ".ds-btn { font-family: var(--ee-sans, 'Hanken Grotesk Variable', 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif); display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 7px; font-size: 13px; font-weight: 560; white-space: nowrap; color: #edeae3; background: rgba(34,43,71,0.8); border: 1px solid rgba(237,234,227,0.15); cursor: pointer; transition: background-color 140ms, border-color 140ms, color 140ms; } .ds-btn:hover { background: #262f4d; border-color: rgba(237,234,227,0.24); } .ds-btn:focus-visible { outline: 2px solid #e2c275; outline-offset: 2px; } .ds-btn-ghost { background: transparent; border-color: transparent; color: #b7b4ac; } .ds-btn-ghost:hover { background: rgba(237,234,227,0.045); color: #edeae3; border-color: transparent; }"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Outlined destructive action that opens a confirmation (Revoke). The filled crimson variant is only the final confirm.",
+      "html": "<button class=\"ds-btn ds-btn-danger\">Revoke</button>",
+      "css": ".ds-btn { font-family: var(--ee-sans, 'Hanken Grotesk Variable', 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif); display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 7px; font-size: 13px; font-weight: 560; white-space: nowrap; color: #edeae3; background: rgba(34,43,71,0.8); border: 1px solid rgba(237,234,227,0.15); cursor: pointer; transition: background-color 140ms, border-color 140ms, color 140ms; } .ds-btn:hover { background: #262f4d; border-color: rgba(237,234,227,0.24); } .ds-btn:focus-visible { outline: 2px solid #e2c275; outline-offset: 2px; } .ds-btn-danger { background: transparent; color: #ff7a8f; border-color: rgba(244,63,94,0.45); } .ds-btn-danger:hover { background: rgba(244,63,94,0.1); border-color: rgba(244,63,94,0.7); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Recessed well input with gold border and glow on focus.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">Common name</span><input class=\"ds-input\" placeholder=\"nina-laptop\"></label>",
+      "css": ".ds-field { font-family: var(--ee-sans, 'Hanken Grotesk Variable', 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif); display: flex; flex-direction: column; gap: 6px; color: #edeae3; } .ds-field-label { font-size: 13px; font-weight: 600; } .ds-input { font-family: var(--ee-sans, 'Hanken Grotesk Variable', 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif); height: 34px; width: 100%; padding: 0 11px; border-radius: 7px; background: rgba(6,9,17,0.45); border: 1px solid rgba(237,234,227,0.15); color: #edeae3; font-size: 13.5px; transition: border-color 140ms, background-color 140ms; } .ds-input::placeholder { color: #94918a; } .ds-input:hover { border-color: rgba(237,234,227,0.24); } .ds-input:focus-visible { outline: none; border-color: #e2c275; box-shadow: 0 0 0 3px rgba(226,194,117,0.18); }"
+    },
+    {
+      "name": "State Chips",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Tone-tinted status chips, always icon plus word.",
+      "html": "<div class=\"ds-chips\"><span class=\"ds-chip\" data-tone=\"valid\"><svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z\"/><path d=\"m9 12 2 2 4-4\"/></svg>Can connect</span><span class=\"ds-chip\" data-tone=\"crit\"><svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m4.9 4.9 14.2 14.2\"/></svg>Revoked</span><span class=\"ds-chip\" data-tone=\"warn\">Expiring</span><span class=\"ds-chip\" data-tone=\"gold\">Allowed · no certificate</span><span class=\"ds-chip\" data-tone=\"neutral\">Superseded</span></div>",
+      "css": ".ds-chips { display: flex; flex-wrap: wrap; gap: 8px; } .ds-chip { font-family: var(--ee-sans, 'Hanken Grotesk Variable', 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif); display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 5px; font-size: 12px; font-weight: 560; white-space: nowrap; background: rgba(237,234,227,0.06); color: #b7b4ac; } .ds-chip[data-tone=valid] { background: rgba(45,212,191,0.1); color: #5fe3d2; } .ds-chip[data-tone=warn] { background: rgba(245,165,36,0.11); color: #f7b955; } .ds-chip[data-tone=crit] { background: rgba(244,63,94,0.12); color: #ff7a8f; } .ds-chip[data-tone=gold] { background: rgba(226,194,117,0.1); color: #e2c275; } .ds-chip[data-tone=neutral] { background: rgba(154,163,181,0.1); color: #b9c0cd; }"
+    },
+    {
+      "name": "Risk-edged Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Smoked-glass panel; the 1px top edge light is keyed to data-risk.",
+      "html": "<section class=\"ds-panel\" data-risk=\"ok\"><h2 class=\"ds-h2\">Enforcement</h2><p class=\"ds-small\">RADIUS is on the latest snapshot. Policy, revocations and directory changes are enforced.</p></section>",
+      "css": ".ds-panel { font-family: var(--ee-sans, 'Hanken Grotesk Variable', 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif); --edge: rgba(237,234,227,0.14); background: rgba(24,32,58,0.7); border: 1px solid rgba(237,234,227,0.085); border-radius: 10px; padding: 20px; color: #edeae3; box-shadow: inset 0 1px 0 var(--edge), 0 18px 40px -24px rgba(0,0,0,0.7); max-width: 420px; } .ds-panel[data-risk=ok] { --edge: rgba(45,212,191,0.6); } .ds-panel[data-risk=warn] { --edge: rgba(245,165,36,0.7); } .ds-panel[data-risk=crit] { --edge: rgba(244,63,94,0.75); } .ds-panel[data-risk=gold] { --edge: rgba(226,194,117,0.6); } .ds-h2 { margin: 0 0 8px; font-size: 16px; font-weight: 640; letter-spacing: -0.01em; line-height: 1.3; } .ds-small { margin: 0; font-size: 12.5px; color: #b7b4ac; line-height: 1.45; }"
+    },
+    {
+      "name": "Sidebar Navigation",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "Sentence-case groups; current page gets a gold tint and gold icon.",
+      "html": "<nav class=\"ds-nav\"><p class=\"ds-nav-group\">Investigate</p><a class=\"ds-nav-item\" href=\"#\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect width=\"7\" height=\"9\" x=\"3\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"14\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"9\" x=\"14\" y=\"12\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"3\" y=\"16\" rx=\"1\"/></svg>Dashboard</a><a class=\"ds-nav-item\" aria-current=\"page\" href=\"#\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\"/><circle cx=\"9\" cy=\"7\" r=\"4\"/><path d=\"M22 21v-2a4 4 0 0 0-3-3.87\"/><path d=\"M16 3.13a4 4 0 0 1 0 7.75\"/></svg>Users</a></nav>",
+      "css": ".ds-nav { font-family: var(--ee-sans, 'Hanken Grotesk Variable', 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif); width: 240px; padding: 12px; background: linear-gradient(180deg, #0e1424 0%, #0d1322 100%); border-right: 1px solid rgba(237,234,227,0.085); } .ds-nav-group { margin: 0 0 5px; padding: 0 10px; font-size: 12px; color: #94918a; font-weight: 540; } .ds-nav-item { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: 7px; font-size: 13.5px; font-weight: 520; color: #b7b4ac; text-decoration: none; transition: background-color 120ms, color 120ms; } .ds-nav-item svg { color: #94918a; flex: none; } .ds-nav-item:hover { background: rgba(237,234,227,0.045); color: #edeae3; } .ds-nav-item:focus-visible { outline: 2px solid #e2c275; outline-offset: 2px; } .ds-nav-item[aria-current=page] { background: rgba(226,194,117,0.09); color: #edeae3; } .ds-nav-item[aria-current=page] svg { color: #e2c275; }"
+    },
+    {
+      "name": "Decision Ledger",
+      "kind": "custom",
+      "refersTo": "panel",
+      "description": "Gates on a spine ending in the RADIUS verdict; gold marks the deciding step.",
+      "html": "<ol class=\"ds-ledger\"><li><span class=\"ds-mk ds-pass\">&#10003;</span><div><p class=\"ds-t\">Account enabled</p><p class=\"ds-d\">Active Directory reports the account as enabled.</p></div><span class=\"ds-r\">Pass</span></li><li><span class=\"ds-mk ds-pass\">&#10003;</span><div><p class=\"ds-t\">Certificate valid</p><p class=\"ds-d\">nina-laptop · valid for 364 days</p></div><span class=\"ds-r\">Pass</span></li><li><span class=\"ds-mk ds-dec\">&#9733;</span><div><p class=\"ds-t\">Rule “IT staff” · Allow</p><p class=\"ds-d\">Member of IT Dept · position 1 among Allow rules</p></div><span class=\"ds-r\">Decides</span></li><li class=\"ds-end\"><span class=\"ds-mk ds-ok\">&#10003;</span><div><p class=\"ds-v\">Access-Accept <span class=\"ds-to\">to VLAN</span> <span class=\"ds-sw\"></span><b>120</b> <span class=\"ds-to\">IT</span></p></div></li></ol>",
+      "css": ".ds-ledger { font-family: var(--ee-sans, 'Hanken Grotesk Variable', 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif); list-style: none; margin: 0; padding: 0; color: #edeae3; max-width: 460px; } .ds-ledger li { position: relative; display: grid; grid-template-columns: 22px minmax(0,1fr) auto; column-gap: 12px; padding-bottom: 14px; } .ds-ledger li:not(.ds-end)::before { content: ''; position: absolute; left: 10.5px; top: 22px; bottom: 0; width: 1px; background: rgba(237,234,227,0.15); } .ds-mk { position: relative; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1px solid; background: #141b30; font-size: 11px; } .ds-pass { border-color: rgba(45,212,191,0.55); color: #2dd4bf; } .ds-dec { border-color: rgba(226,194,117,0.7); color: #e2c275; background: rgba(226,194,117,0.1); } .ds-ok { border: 0; background: #2dd4bf; color: #04201c; } .ds-t { margin: 2px 0 0; font-size: 13.5px; font-weight: 500; } .ds-d { margin: 2px 0 0; font-size: 12.5px; color: #b7b4ac; } .ds-r { font-size: 12.5px; color: #94918a; padding-top: 3px; } .ds-v { margin: 0; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 6px; } .ds-to { color: #94918a; font-weight: 400; } .ds-sw { width: 9px; height: 9px; border-radius: 2.5px; background: #4194f9; } .ds-v b { font-variant-numeric: tabular-nums; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Night Shift Ledger",
+    "overview": "EasyEAP is the console an MSP engineer keeps open while something is going wrong for a tenant: a midnight ground, panels of smoked glass, and bone-coloured type that stays readable at 13px for a whole shift. Every surface is a record of a decision. The house pattern is the ledger: a vertical sequence of gates, each marked pass, fail, not used or decides, ending in a verdict that names the exact outcome (Access-Accept to VLAN 120, or Access-Reject and why). The same ledger reads the same on the user record, in Test a user and in the policy preview.\n\nDensity is operational, not decorative. Tables run at 13px with 10px row padding, chips are 22px tall, buttons are 32px, and the page is a 12-column grid at desktop with 20px gutters. Colour carries state only: verdigris for valid and accepted, crimson for revoked and rejected, amber for expiring and warning, and gold for authority (the primary action, the current location, the deciding rule, the focus ring). Depth comes from translucency, a hairline bone border and a single 1px light along the top edge of each panel, whose colour is keyed to the risk of what the panel holds.\n\nThe enrollment portal is the same world, set larger and calmer for people who are not administrators: one 640px column, 15px body, 48px controls, a four-step progress bar and one authored entrance motion. It never introduces a new colour or font.",
+    "keyCharacteristics": [
+      "Midnight ground with two faint fixed radial glows (verdigris top right, gold bottom left).",
+      "Smoked-glass panels with a hairline border and a risk-keyed top edge light (`data-risk`).",
+      "Gold is authority: primary action, current nav item, focus ring, caret, selection, deciding ledger step.",
+      "State colour is semantic only, always paired with an icon and a word.",
+      "Tabular numerals everywhere numbers sit; validity remaining is right-aligned.",
+      "Hanken Grotesk for everything readable, Red Hat Mono for serials, MACs, attributes and secrets.",
+      "Sentence case throughout; no uppercase labels."
+    ],
+    "rules": [
+      {
+        "name": "The Gold Is Authority Rule",
+        "body": "Gold marks the action or location that belongs to the operator, and nothing else. It never signals state; a valid certificate is verdigris, not gold.",
+        "section": "colors"
+      },
+      {
+        "name": "The Colour Follows the Entity Rule",
+        "body": "A VLAN's colour is stored on the VLAN and travels with it. Charts never recolour by rank, and the label always names the VLAN as well.",
+        "section": "colors"
+      },
+      {
+        "name": "The Never Colour Alone Rule",
+        "body": "Every state chip, callout and health dot pairs its hue with an icon and a word (Active, Revoked, Can connect, Not enforceable yet).",
+        "section": "colors"
+      },
+      {
+        "name": "The Type Floor Rule",
+        "body": "Data never goes below 12px. 11px exists only for keyboard keys, the tenant monogram and the portal step number.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Rule",
+        "body": "Any number that can sit above another number (counts, days remaining, VLAN IDs, timestamps, chart axes) uses tabular numerals.",
+        "section": "typography"
+      },
+      {
+        "name": "The Sentence Case Rule",
+        "body": "Labels, headers and nav groups are sentence case in `ink-3`. There are no uppercase tracked labels anywhere in the product.",
+        "section": "typography"
+      },
+      {
+        "name": "The Edge Light Rule",
+        "body": "Risk is spoken by a container's 1px top edge, never by a filled background or a thick side stripe. A panel holding a revoked certificate glows crimson along its top; its body stays smoked glass.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** put risk on a panel's top edge with `data-risk` (ok, warn, crit, gold, neutral) and keep its body smoked glass.",
+      "**Do** keep a single gold primary per view and reserve gold for operator authority, focus and the deciding step.",
+      "**Do** pair every state colour with an icon and a word, using the fixed tone map in the chip family.",
+      "**Do** show VLANs with their stored identity colour, ID in tabular semibold and name in `ink-2`, everywhere they appear.",
+      "**Do** right-align validity remaining in tabular numerals, and say \"Not valid\" for revoked certificates.",
+      "**Do** set serials, MACs, reply attributes and secrets in Red Hat Mono.",
+      "**Do** keep console controls at 32 to 36px and portal controls at 44px minimum (48px for buttons and inputs).",
+      "**Do** give every interactive element the 2px gold focus outline at 2px offset (inputs use the gold border and glow instead).",
+      "**Do** use the decision ledger, unchanged, wherever an access decision is explained.",
+      "**Do** honour `prefers-reduced-motion`: transitions and the portal's 320ms step entrance drop to zero."
+    ],
+    "donts": [
+      "**Don't** use gold to mean valid, or verdigris to mean \"click here\".",
+      "**Don't** fill a panel's background with a state colour or add a thick coloured side stripe; the risk edge is a 1px top light.",
+      "**Don't** colour VLAN bars or swatches by rank or position.",
+      "**Don't** set data below 12px, or use uppercase, letter-spaced labels.",
+      "**Don't** add a third series colour to the authentication chart or reuse VLAN inks for non-VLAN data.",
+      "**Don't** load fonts or assets from a CDN; fonts are self-hosted to satisfy the `font-src 'self'` policy.",
+      "**Don't** introduce new colours or fonts in the enrollment portal; it scales the console's tokens up, it does not fork them."
+    ]
+  }
+}

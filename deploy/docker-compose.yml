@@ -1,0 +1,171 @@
+# EasyEAP — Enterprise Wi-Fi Authentication, Simplified.
+# Production stack. Run ./install.sh first (it creates ./secrets and .env), then: docker compose up -d
+name: easyeap
+
+x-api-env: &api-env
+  EASYEAP_ENVIRONMENT: production
+  EASYEAP_DB_APP_PASSWORD_FILE: /run/secrets/db_app_password
+  EASYEAP_DB_OWNER_PASSWORD_FILE: /run/secrets/db_owner_password
+  EASYEAP_OPENBAO_ADDR: http://easyeap-pki:8200
+  EASYEAP_AGENT_TOKEN: file:///run/secrets/agent_token
+  EASYEAP_SESSION_SECRET: file:///run/secrets/session_secret
+  EASYEAP_PUBLIC_URL: https://${EASYEAP_HOSTNAME:?set EASYEAP_HOSTNAME in .env}
+  EASYEAP_PKI_PUBLIC_URL: http://${EASYEAP_PKI_HOSTNAME:-${EASYEAP_HOSTNAME}}
+  EASYEAP_RADIUS_PUBLIC_ADDRESS: ${EASYEAP_RADIUS_ADDRESS:-}
+  EASYEAP_LAB_MODE: ${EASYEAP_LAB_MODE:-false}
+  EASYEAP_COOKIE_SECURE: "true"
+  EASYEAP_TRUSTED_PROXY: "*"
+
+services:
+  easyeap-db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: easyeap
+      POSTGRES_USER: easyeap
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_owner_password
+    secrets: [db_owner_password, db_app_password]
+    volumes:
+      - easyeap-db:/var/lib/postgresql
+      - ./db/10-easyeap-roles.sh:/docker-entrypoint-initdb.d/10-easyeap-roles.sh:ro
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U easyeap -d easyeap"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  easyeap-pki:
+    image: openbao/openbao:2.4.1
+    restart: unless-stopped
+    command: ["server", "-config=/openbao/config/config.hcl"]
+    secrets: [openbao_unseal_key]
+    volumes:
+      - ./openbao/config.hcl:/openbao/config/config.hcl:ro
+      - easyeap-pki:/openbao/file
+      - easyeap-pki-logs:/openbao/logs
+    networks: [pki]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- 'http://127.0.0.1:8200/v1/sys/health?uninitcode=200&sealedcode=503' >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  easyeap-api:
+    build: ../backend
+    image: easyeap-api:${EASYEAP_VERSION:-1.0.0}
+    restart: unless-stopped
+    command: ["/app/entrypoint.sh", "api"]
+    environment: *api-env
+    secrets: [db_app_password, db_owner_password, agent_token, session_secret]
+    volumes:
+      - easyeap-secrets:/var/lib/easyeap/secrets
+    networks: [app, data, pki, radius, egress]
+    depends_on:
+      easyeap-db: { condition: service_healthy }
+      easyeap-pki: { condition: service_started }
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)\""]
+      interval: 15s
+      timeout: 6s
+      retries: 10
+      start_period: 40s
+
+  easyeap-worker:
+    image: easyeap-api:${EASYEAP_VERSION:-1.0.0}
+    restart: unless-stopped
+    command: ["/app/entrypoint.sh", "worker"]
+    environment: *api-env
+    secrets: [db_app_password, db_owner_password, agent_token, session_secret]
+    volumes:
+      - easyeap-secrets:/var/lib/easyeap/secrets
+    networks: [data, pki, egress]   # egress: LDAPS to customer domain controllers
+    depends_on:
+      easyeap-api: { condition: service_healthy }
+
+  easyeap-radius:
+    build: ../services/radius
+    image: easyeap-radius:${EASYEAP_VERSION:-1.0.0}
+    restart: unless-stopped
+    environment:
+      EASYEAP_API_URL: http://easyeap-api:8000
+      EASYEAP_AGENT_TOKEN_FILE: /run/secrets/agent_token
+      EASYEAP_AGENT_ID: ${EASYEAP_RADIUS_NODE:-radius-1}
+    secrets: [agent_token]
+    volumes:
+      - easyeap-radius:/var/lib/easyeap-radius
+    ports:
+      - "${EASYEAP_RADIUS_BIND:-0.0.0.0}:1812:1812/udp"
+      - "${EASYEAP_RADIUS_BIND:-0.0.0.0}:1813:1813/udp"
+      # Dedicated per-tenant port pairs (RADIUS settings → Advanced) must fall inside this range.
+      - "${EASYEAP_RADIUS_BIND:-0.0.0.0}:1820-1839:1820-1839/udp"
+    networks: [radius, egress]      # egress: CoA/Disconnect to controllers
+    # No dependency on the API: RADIUS starts and authenticates from its local state.
+
+  easyeap-proxy:
+    build:
+      context: ..
+      dockerfile: deploy/proxy/Dockerfile
+    image: easyeap-proxy:${EASYEAP_VERSION:-1.0.0}
+    restart: unless-stopped
+    environment:
+      EASYEAP_HOSTNAME: ${EASYEAP_HOSTNAME}
+    volumes:
+      - ./secrets/tls.crt:/etc/easyeap/tls/tls.crt:ro
+      - ./secrets/tls.key:/etc/easyeap/tls/tls.key:ro
+    ports:
+      - "${EASYEAP_HTTP_BIND:-0.0.0.0}:${EASYEAP_HTTP_PORT:-80}:8080"
+      - "${EASYEAP_HTTPS_BIND:-0.0.0.0}:${EASYEAP_HTTPS_PORT:-443}:8443"
+    networks: [app, egress]
+    depends_on: [easyeap-api]
+
+  # ── Lab profile (docker compose --profile lab up): Samba AD + simulated Wi-Fi client ──
+  easyeap-lab-ad:
+    profiles: [lab]
+    build: ./lab/samba
+    image: easyeap-lab-ad:dev
+    hostname: dc1
+    environment:
+      LAB_REALM: LAB.EASYEAP.TEST
+      LAB_DOMAIN: LAB
+      LAB_ADMIN_PASSWORD_FILE: /run/secrets/lab_ad_password
+    secrets: [lab_ad_password]
+    volumes: [easyeap-lab-ad:/var/lib/samba]
+    networks:
+      egress:
+        aliases: [dc1.lab.easyeap.test]
+
+  easyeap-lab-client:
+    profiles: [lab]
+    build: ../services/lab-client
+    image: easyeap-lab-client:dev
+    entrypoint: ["sleep", "infinity"]
+    volumes: [./lab/certs:/certs]
+    networks: [egress]
+
+networks:
+  app:
+    internal: true
+  data:
+    internal: true
+  pki:
+    internal: true
+  radius:
+    internal: true
+  egress: {}
+
+volumes:
+  easyeap-db:
+  easyeap-pki:
+  easyeap-pki-logs:
+  easyeap-secrets:
+  easyeap-radius:
+  easyeap-lab-ad:
+
+secrets:
+  db_owner_password: { file: ./secrets/db_owner_password }
+  db_app_password: { file: ./secrets/db_app_password }
+  agent_token: { file: ./secrets/agent_token }
+  session_secret: { file: ./secrets/session_secret }
+  openbao_unseal_key: { file: ./secrets/openbao_unseal_key }
+  lab_ad_password: { file: ./secrets/lab_ad_password }

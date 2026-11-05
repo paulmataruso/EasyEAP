@@ -18,6 +18,8 @@ __pycache__/
 .env.*
 !.env.example
 deploy/secrets/
+# Lab client keys and certificates written by tests/e2e/run.sh
+deploy/lab/certs/
 *.key
 *.pem
 !**/fixtures/**/*.pem
@@ -30,3 +32,4 @@ design/screenshots/tmp/
 # Runtime data
 data/
 backups/
+.impeccable/review/

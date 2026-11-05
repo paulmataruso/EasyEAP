@@ -1,0 +1,65 @@
+{
+  "target": "http://localhost:5173/design.html#/c/a/certificates",
+  "consoleErrors": [],
+  "findings": [
+    {
+      "severity": "high",
+      "check": "focus-visible",
+      "message": "8/25 sampled interactive elements show no visible focus indicator.",
+      "viewports": [
+        "mobile-360"
+      ]
+    },
+    {
+      "severity": "high",
+      "check": "focus-visible",
+      "message": "7/25 sampled interactive elements show no visible focus indicator.",
+      "viewports": [
+        "tablet-768"
+      ]
+    },
+    {
+      "severity": "high",
+      "check": "focus-visible",
+      "message": "2/25 sampled interactive elements show no visible focus indicator.",
+      "viewports": [
+        "desktop-1440"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "tap-target",
+      "message": "242 interactive targets < 44×44px on mobile.",
+      "viewports": [
+        "mobile-360"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "contrast",
+      "message": "~106/120 sampled text nodes below WCAG AA contrast (approximate).",
+      "viewports": [
+        "mobile-360",
+        "tablet-768"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "headings",
+      "message": "No <h1> on the page.",
+      "viewports": [
+        "mobile-390",
+        "laptop-1024",
+        "wide-1920"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "contrast",
+      "message": "~75/120 sampled text nodes below WCAG AA contrast (approximate).",
+      "viewports": [
+        "desktop-1440"
+      ]
+    }
+  ]
+}

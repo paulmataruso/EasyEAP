@@ -69,7 +69,6 @@ export const revocationReasonLabels: Record<RevocationReason, string> = {
   affiliationChanged: 'User left or changed role',
   superseded: 'Replaced by a new certificate',
   cessationOfOperation: 'Device retired',
-  certificateHold: 'Temporary hold',
 }
 
 export const certStatusLabels: Record<CertStatus, string> = {

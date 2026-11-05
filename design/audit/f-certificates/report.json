@@ -1,0 +1,80 @@
+{
+  "target": "http://localhost:5173/design.html#/c/f/certificates",
+  "consoleErrors": [],
+  "findings": [
+    {
+      "severity": "high",
+      "check": "horizontal-overflow",
+      "message": "Page is 404px wide at 360px viewport (horizontal scroll).",
+      "detail": "g, path, div.f-seg, button.f-seg-item, span.f-count",
+      "viewports": [
+        "mobile-360"
+      ]
+    },
+    {
+      "severity": "high",
+      "check": "focus-visible",
+      "message": "10/25 sampled interactive elements show no visible focus indicator.",
+      "viewports": [
+        "mobile-360",
+        "mobile-390",
+        "tablet-768"
+      ]
+    },
+    {
+      "severity": "high",
+      "check": "horizontal-overflow",
+      "message": "Page is 404px wide at 390px viewport (horizontal scroll).",
+      "detail": "g, path, div.f-seg, button.f-seg-item, table.f-table",
+      "viewports": [
+        "mobile-390"
+      ]
+    },
+    {
+      "severity": "high",
+      "check": "focus-visible",
+      "message": "4/25 sampled interactive elements show no visible focus indicator.",
+      "viewports": [
+        "laptop-1024",
+        "desktop-1440",
+        "wide-1920"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "tap-target",
+      "message": "92 interactive targets < 44×44px on mobile.",
+      "viewports": [
+        "mobile-360",
+        "mobile-390"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "contrast",
+      "message": "~7/120 sampled text nodes below WCAG AA contrast (approximate).",
+      "viewports": [
+        "mobile-360",
+        "mobile-390",
+        "tablet-768"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "contrast",
+      "message": "~6/120 sampled text nodes below WCAG AA contrast (approximate).",
+      "viewports": [
+        "laptop-1024"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "contrast",
+      "message": "~18/120 sampled text nodes below WCAG AA contrast (approximate).",
+      "viewports": [
+        "desktop-1440",
+        "wide-1920"
+      ]
+    }
+  ]
+}

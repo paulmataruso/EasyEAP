@@ -21,6 +21,8 @@ for (const c of concepts) {
   page.on('console', (m) => m.type() === 'error' && errors.push(m.text()))
   for (const s of screens) {
     await page.goto(`${base}#/c/${c}/${s}`, { waitUntil: 'networkidle' })
+    // Concepts are lazy-loaded: wait until the screen has really rendered, not just the shell.
+    await page.waitForFunction(() => (document.querySelector('#root')?.textContent ?? '').length > 200, null, { timeout: 15000 })
     await page.evaluate(() => document.fonts.ready)
     await page.waitForTimeout(400)
     await page.screenshot({ path: resolve(out, c, `${s}.png`) })
@@ -29,6 +31,7 @@ for (const c of concepts) {
   for (const [w, h, name] of [[1920, 1080, 'dashboard-1920'], [390, 844, 'dashboard-390']]) {
     await page.setViewportSize({ width: w, height: h })
     await page.goto(`${base}#/c/${c}/dashboard`, { waitUntil: 'networkidle' })
+    await page.waitForFunction(() => (document.querySelector('#root')?.textContent ?? '').length > 200, null, { timeout: 15000 })
     await page.waitForTimeout(400)
     await page.screenshot({ path: resolve(out, c, `${name}.png`), fullPage: name.endsWith('390') })
   }

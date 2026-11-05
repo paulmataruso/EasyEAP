@@ -1,0 +1,55 @@
+{
+  "target": "http://localhost:5173/design.html#/c/f/dashboard",
+  "consoleErrors": [],
+  "findings": [
+    {
+      "severity": "high",
+      "check": "focus-visible",
+      "message": "9/25 sampled interactive elements show no visible focus indicator.",
+      "viewports": [
+        "mobile-360",
+        "mobile-390",
+        "tablet-768"
+      ]
+    },
+    {
+      "severity": "high",
+      "check": "focus-visible",
+      "message": "3/25 sampled interactive elements show no visible focus indicator.",
+      "viewports": [
+        "laptop-1024",
+        "desktop-1440",
+        "wide-1920"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "tap-target",
+      "message": "20 interactive targets < 44×44px on mobile.",
+      "viewports": [
+        "mobile-360",
+        "mobile-390"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "contrast",
+      "message": "~4/120 sampled text nodes below WCAG AA contrast (approximate).",
+      "viewports": [
+        "mobile-360",
+        "mobile-390",
+        "tablet-768"
+      ]
+    },
+    {
+      "severity": "medium",
+      "check": "contrast",
+      "message": "~6/120 sampled text nodes below WCAG AA contrast (approximate).",
+      "viewports": [
+        "laptop-1024",
+        "desktop-1440",
+        "wide-1920"
+      ]
+    }
+  ]
+}

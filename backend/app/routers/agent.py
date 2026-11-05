@@ -1,0 +1,123 @@
+"""radius-agent channel (bearer token). The agent pulls desired state and snapshots and pushes events; RADIUS keeps
+authenticating from its local copy whenever this channel is unavailable."""
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app import models as m
+from app.db import set_platform
+from app.deps import agent_auth, db
+from app.pki.openbao import OpenBao
+from app.policy.service import snapshot
+from app.radius import events as ev
+from app.radius.state import desired_state
+
+router = APIRouter(prefix="/api/agent", tags=["agent"], dependencies=[Depends(agent_auth)])
+
+
+@router.get("/config")
+def config(s: Session = Depends(db)) -> dict:
+    set_platform(s)
+    return desired_state(s, OpenBao())
+
+
+@router.get("/snapshots")
+def snapshots(have: str = "", s: Session = Depends(db)) -> dict:
+    """`have` = comma-separated tenant:version pairs the agent already applied; only changed snapshots are returned."""
+    set_platform(s)
+    known: dict[str, int] = {}
+    for part in have.split(","):
+        if ":" in part:
+            t, v = part.split(":", 1)
+            if v.isdigit():
+                known[t] = int(v)
+    out = []
+    versions = {}
+    for rs in s.scalars(select(m.RadiusSettings).join(m.Tenant, m.Tenant.id == m.RadiusSettings.tenant_id).where(m.Tenant.status == "active")):
+        versions[str(rs.tenant_id)] = rs.snapshot_version
+        if known.get(str(rs.tenant_id)) != rs.snapshot_version or rs.snapshot_built_at is None:
+            out.append(snapshot(s, rs.tenant_id))
+        else:
+            # Unchanged entries: still refresh validity so a healthy system never trips the staleness limit.
+            ps = s.get(m.PolicySettings, rs.tenant_id)
+            out.append({"tenant_id": str(rs.tenant_id), "version": rs.snapshot_version, "unchanged": True,
+                        "built_at": int(rs.snapshot_built_at.timestamp()),
+                        "valid_until": int(rs.snapshot_built_at.timestamp()) + (ps.max_snapshot_age_seconds if ps else 86_400)})
+    return {"snapshots": out, "tenants": list(versions)}
+
+
+class Batch(BaseModel):
+    items: list[dict[str, Any]] = Field(max_length=5000)
+
+
+@router.post("/events")
+def push_events(body: Batch, s: Session = Depends(db)) -> dict:
+    set_platform(s)
+    return {"stored": ev.ingest_auth(s, body.items)}
+
+
+@router.post("/accounting")
+def push_accounting(body: Batch, s: Session = Depends(db)) -> dict:
+    set_platform(s)
+    return {"stored": ev.ingest_accounting(s, body.items)}
+
+
+@router.get("/coa")
+def pending_coa(s: Session = Depends(db)) -> dict:
+    set_platform(s)
+    rows = s.execute(select(m.CoaRequest, m.RadiusClient).join(m.RadiusClient, m.RadiusClient.id == m.CoaRequest.nas_client_id)
+                     .where(m.CoaRequest.status == "pending").order_by(m.CoaRequest.created_at).limit(100)).all()
+    out = []
+    for r, c in rows:
+        r.status = "sent"
+        # Send to the NAS that reported the session; fall back to the client address when it is a single host.
+        target = (r.attributes or {}).get("NAS-IP-Address") or (c.address if "/" not in c.address else "")
+        if not target:
+            r.status, r.result_detail = "failed", "No NAS address known for this session"
+            continue
+        out.append({"id": str(r.id), "tenant_id": str(r.tenant_id), "nas_client_id": str(c.id), "address": target, "port": c.coa_port,
+                    "kind": r.kind, "attributes": r.attributes})
+    return {"requests": out}
+
+
+class CoaResult(BaseModel):
+    status: str = Field(pattern="^(acked|nak|failed)$")
+    detail: str = Field(default="", max_length=2000)
+
+
+@router.post("/coa/{request_id}")
+def coa_result(request_id: uuid.UUID, body: CoaResult, s: Session = Depends(db)) -> dict:
+    set_platform(s)
+    r = s.get(m.CoaRequest, request_id)
+    if r is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown request")
+    r.status, r.result_detail, r.completed_at = body.status, body.detail, datetime.now(UTC)
+    return {"ok": True}
+
+
+class StatusIn(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=64)
+    config_version: str = ""
+    config_ok: bool = True
+    config_error: str | None = Field(default=None, max_length=4000)
+    snapshot_versions: dict[str, int] = {}
+    radius_running: bool = False
+    detail: dict[str, Any] = {}
+
+
+@router.post("/status")
+def push_status(body: StatusIn, s: Session = Depends(db)) -> dict:
+    set_platform(s)
+    a = s.get(m.AgentStatus, body.agent_id) or m.AgentStatus(agent_id=body.agent_id)
+    a.last_seen_at, a.config_ok, a.config_error = datetime.now(UTC), body.config_ok, body.config_error
+    a.snapshot_versions, a.radius_running = body.snapshot_versions, body.radius_running
+    a.detail = {**body.detail, "config_digest": body.config_version}
+    s.add(a)
+    return {"ok": True}

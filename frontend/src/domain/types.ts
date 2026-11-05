@@ -112,14 +112,13 @@ export interface CertificateTemplate {
 
 export type CertStatus = 'active' | 'expiring' | 'expired' | 'revoked' | 'pending'
 
-/** RFC 5280 CRLReason values exposed in the UI */
+/** RFC 5280 CRLReason values exposed in the UI. certificateHold is deliberately absent: revocation is permanent. */
 export type RevocationReason =
   | 'unspecified'
   | 'keyCompromise'
   | 'affiliationChanged'
   | 'superseded'
   | 'cessationOfOperation'
-  | 'certificateHold'
 
 export type KeyOrigin = 'device' | 'browser' | 'csr' | 'server'
 

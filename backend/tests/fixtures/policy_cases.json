@@ -1,0 +1,28 @@
+{
+  "description": "Shared policy-precedence fixtures. Run by backend/tests/test_policy_engine.py and frontend/src/domain/policy.test.ts.",
+  "now": "2026-11-05T10:42:00Z",
+  "rules": [
+    {"id": "r-deny-contractors", "name": "Block contractors", "priority": 5, "enabled": true, "action": "deny", "groups": ["g-contractors"], "purposes": [], "vlan": null},
+    {"id": "r-it", "name": "IT staff", "priority": 10, "enabled": true, "action": "allow", "groups": ["g-it"], "purposes": [], "vlan": 120},
+    {"id": "r-staff", "name": "Staff", "priority": 20, "enabled": true, "action": "allow", "groups": ["g-staff"], "purposes": [], "vlan": 100},
+    {"id": "r-devices", "name": "Device certs", "priority": 30, "enabled": true, "action": "allow", "groups": ["g-staff"], "purposes": ["device"], "vlan": 150},
+    {"id": "r-disabled", "name": "Disabled guest rule", "priority": 1, "enabled": false, "action": "allow", "groups": ["g-guests"], "purposes": [], "vlan": 999},
+    {"id": "r-guest-deny", "name": "Guests devices blocked", "priority": 40, "enabled": true, "action": "deny", "groups": ["g-guests"], "purposes": ["device"], "vlan": null}
+  ],
+  "cases": [
+    {"name": "IT member gets IT VLAN", "account": "enabled", "groups": ["g-it", "g-staff"], "expect": {"outcome": "allow", "vlan": 120, "rule": "r-it", "reason": null}},
+    {"name": "Staff only gets staff VLAN", "account": "enabled", "groups": ["g-staff"], "expect": {"outcome": "allow", "vlan": 100, "rule": "r-staff", "reason": null}},
+    {"name": "Deny wins over a better allow", "account": "enabled", "groups": ["g-it", "g-contractors"], "expect": {"outcome": "deny", "vlan": null, "rule": "r-deny-contractors", "reason": "policy_deny"}},
+    {"name": "Deny wins even with higher priority number", "account": "enabled", "groups": ["g-guests", "g-staff"], "purpose": "device", "expect": {"outcome": "deny", "vlan": null, "rule": "r-guest-deny", "reason": "policy_deny"}},
+    {"name": "Purpose-scoped deny ignored for user certs", "account": "enabled", "groups": ["g-guests", "g-staff"], "purpose": "user", "expect": {"outcome": "allow", "vlan": 100, "rule": "r-staff", "reason": null}},
+    {"name": "Disabled rules never match", "account": "enabled", "groups": ["g-guests"], "purpose": "user", "expect": {"outcome": "deny", "vlan": null, "rule": null, "reason": "identity_unauthorized"}},
+    {"name": "Disabled account is denied regardless of groups", "account": "disabled", "groups": ["g-it"], "expect": {"outcome": "deny", "vlan": null, "rule": null, "reason": "account_disabled"}},
+    {"name": "Locked account is denied", "account": "locked", "groups": ["g-it"], "expect": {"outcome": "deny", "vlan": null, "rule": null, "reason": "account_disabled"}},
+    {"name": "Deleted account is denied", "account": "deleted", "groups": ["g-it"], "expect": {"outcome": "deny", "vlan": null, "rule": null, "reason": "account_disabled"}},
+    {"name": "Revoked certificate is denied", "account": "enabled", "groups": ["g-it"], "cert": {"status": "revoked", "not_after": "2027-01-01T00:00:00Z", "purpose": "user"}, "expect": {"outcome": "deny", "vlan": null, "rule": null, "reason": "cert_revoked"}},
+    {"name": "Expired certificate is denied", "account": "enabled", "groups": ["g-it"], "cert": {"status": "active", "not_after": "2026-11-01T00:00:00Z", "purpose": "user"}, "expect": {"outcome": "deny", "vlan": null, "rule": null, "reason": "cert_expired"}},
+    {"name": "No group matches: tenant default deny", "account": "enabled", "groups": ["g-unknown"], "expect": {"outcome": "deny", "vlan": null, "rule": null, "reason": "identity_unauthorized"}},
+    {"name": "Default allow assigns default VLAN", "account": "enabled", "groups": ["g-unknown"], "default": {"action": "allow", "vlan": 300}, "expect": {"outcome": "allow", "vlan": 300, "rule": null, "reason": null}},
+    {"name": "Device purpose allows the device rule only when the user rules don't match first", "account": "enabled", "groups": ["g-staff"], "purpose": "device", "expect": {"outcome": "allow", "vlan": 100, "rule": "r-staff", "reason": null}}
+  ]
+}

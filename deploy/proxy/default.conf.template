@@ -1,0 +1,79 @@
+# Generated from default.conf.template (envsubst: EASYEAP_HOSTNAME).
+limit_req_zone $binary_remote_addr zone=easyeap_login:10m rate=10r/m;
+limit_req_zone $binary_remote_addr zone=easyeap_enroll:10m rate=30r/m;
+limit_req_zone $binary_remote_addr zone=easyeap_api:10m rate=20r/s;
+server_tokens off;
+
+upstream easyeap_api {
+    server easyeap-api:8000;
+    keepalive 16;
+}
+
+# Plain HTTP: CRL / OCSP / CA certificates (relying parties fetch these without TLS) and a redirect for everything else.
+server {
+    listen 8080 default_server;
+    server_name _;
+
+    location /pki/ {
+        proxy_pass http://easyeap_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        client_max_body_size 16k;
+        limit_except GET POST { deny all; }
+    }
+    location / {
+        return 301 https://${EASYEAP_HOSTNAME}$request_uri;
+    }
+}
+
+server {
+    listen 8443 ssl default_server;
+    http2 on;
+    server_name ${EASYEAP_HOSTNAME};
+
+    ssl_certificate     /etc/easyeap/tls/tls.crt;
+    ssl_certificate_key /etc/easyeap/tls/tls.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:easyeap_tls:10m;
+    ssl_session_tickets off;
+
+    root /usr/share/nginx/html;
+    include /etc/nginx/snippets/security-headers.conf;
+
+    # The radius-agent channel is internal-only (it uses the private radius network directly).
+    location /api/agent/ { return 404; }
+
+    location = /api/auth/login {
+        limit_req zone=easyeap_login burst=5 nodelay;
+        proxy_pass http://easyeap_api;
+        include /etc/nginx/snippets/proxy-params.conf;
+    }
+    location /api/enroll/ {
+        limit_req zone=easyeap_enroll burst=10 nodelay;
+        proxy_pass http://easyeap_api;
+        include /etc/nginx/snippets/proxy-params.conf;
+    }
+    location /api/ {
+        limit_req zone=easyeap_api burst=60 nodelay;
+        proxy_pass http://easyeap_api;
+        include /etc/nginx/snippets/proxy-params.conf;
+    }
+    location /pki/ {
+        proxy_pass http://easyeap_api;
+        include /etc/nginx/snippets/proxy-params.conf;
+    }
+    location /assets/ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        include /etc/nginx/snippets/security-headers.conf;
+        try_files $uri =404;
+    }
+    location = /enroll.html { add_header Cache-Control "no-store"; include /etc/nginx/snippets/security-headers.conf; }
+    location / {
+        add_header Cache-Control "no-store";
+        include /etc/nginx/snippets/security-headers.conf;
+        try_files $uri /index.html;
+    }
+}
