@@ -1,0 +1,31 @@
+// Platform system health (GET /api/system/health, platform:read). Shape mirrors backend/app/routers/system.py.
+import { useQuery } from '@tanstack/react-query'
+import { api } from './client'
+import { qk } from './keys'
+
+export type ServiceName = 'database' | 'pki' | 'radius' | 'worker'
+
+export interface HealthCheck {
+  service: ServiceName | string
+  ok: boolean
+  detail: string
+  /** Heartbeat time for services that report in (radius, worker). Probed services (database, pki) are checked live. */
+  last_seen_at?: string | null
+}
+
+export interface SystemHealth {
+  version: string
+  checks: HealthCheck[]
+  jobs: { queued: number; failed_24h: number; recent_failed: Array<{ kind: string; error: string; at: string | null }> }
+  /** Written by deploy/backup.sh through `easyeap record-backup`. */
+  backup: { at: string; file: string; size: number; encrypted: boolean } | null
+}
+
+export function useSystemHealth(enabled = true) {
+  return useQuery({
+    queryKey: qk.systemHealth(),
+    queryFn: ({ signal }) => api.get<SystemHealth>('/api/system/health', signal),
+    refetchInterval: 30_000,
+    enabled,
+  })
+}
