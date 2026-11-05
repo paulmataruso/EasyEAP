@@ -67,7 +67,7 @@ export function GuideBody({ guide, settings, secret, onCopied, compact }: { guid
   const inputs: ReactNode[] = []
   if (has(ADDRESS_PLACEHOLDER) || !settings.radius_address) {
     inputs.push(
-      <Field key="addr" label="RADIUS address" htmlFor={`${id}-addr`} hint="This EasyEAP server has no public RADIUS address configured (EASYEAP_RADIUS_PUBLIC_ADDRESS). Enter the address your controllers reach it on.">
+      <Field key="addr" label="RADIUS address" htmlFor={`${id}-addr`} hint={settings.radius_address_problem ?? 'This EasyEAP server has no RADIUS address configured (EASYEAP_RADIUS_ADDRESS in the deploy .env). Enter the address your controllers reach it on.'}>
         <input id={`${id}-addr`} className="ee-input ee-mono" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="10.0.0.10" autoComplete="off" spellCheck={false} />
       </Field>,
     )

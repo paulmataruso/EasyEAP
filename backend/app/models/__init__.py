@@ -403,6 +403,9 @@ class AccountingSession(Base):
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
     acct_session_id: Mapped[str] = mapped_column(String(128))
     nas_ip: Mapped[str] = mapped_column(String(64))
+    # The controller the accounting came from (by packet source). No foreign key, like AuthEvent: history outlives a
+    # deleted controller.
+    nas_client_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     username: Mapped[str | None] = mapped_column(String(256), nullable=True)
     calling_station_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     called_station_id: Mapped[str | None] = mapped_column(String(128), nullable=True)

@@ -48,7 +48,7 @@ def ingest_auth(session: Session, events: list[dict[str, Any]]) -> int:
         nas_ip = _clean(e.get("nas_ip"), 64)
         if tid not in clients_by_tenant:
             clients_by_tenant[tid] = list(session.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == tenant_id)))
-        nas = _match_client(clients_by_tenant[tid], nas_ip)
+        nas = attribute_client(clients_by_tenant[tid], _clean(e.get("src_ip"), 64), nas_ip)
         vlan = _clean(e.get("vlan"), 8)
         rule = _clean(e.get("rule"), 36)
         at = _ts(e.get("ts"))
@@ -73,6 +73,7 @@ def ingest_auth(session: Session, events: list[dict[str, Any]]) -> int:
 
 def ingest_accounting(session: Session, records: list[dict[str, Any]]) -> int:
     tenants = {str(t) for t in session.scalars(select(m.Tenant.id))}
+    clients_by_tenant: dict[str, list[m.RadiusClient]] = {}
     n = 0
     for r in records:
         tid = str(r.get("tenant") or "")
@@ -88,6 +89,12 @@ def ingest_accounting(session: Session, records: list[dict[str, Any]]) -> int:
         if row is None:
             row = m.AccountingSession(tenant_id=tenant_id, acct_session_id=sid, nas_ip=nas_ip, started_at=at)
             session.add(row)
+        if tid not in clients_by_tenant:
+            clients_by_tenant[tid] = list(session.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == tenant_id)))
+        nas = attribute_client(clients_by_tenant[tid], _clean(r.get("src_ip"), 64), nas_ip)
+        if nas:
+            row.nas_client_id = nas.id
+            nas.last_request_at = max(nas.last_request_at or at, at)
         row.username = _clean(r.get("user"), 256) or row.username
         row.calling_station_id = _clean(r.get("mac"), 64) or row.calling_station_id
         row.called_station_id = _clean(r.get("called"), 128) or row.called_station_id
@@ -103,6 +110,12 @@ def ingest_accounting(session: Session, records: list[dict[str, Any]]) -> int:
             row.terminate_cause = _clean(r.get("cause"), 64)
         n += 1
     return n
+
+
+def attribute_client(clients: list[m.RadiusClient], src_ip: str | None, nas_ip: str | None) -> m.RadiusClient | None:
+    """The controller a request came from: by the packet's source address (what FreeRADIUS matched the client on),
+    then by the NAS-IP-Address it reported. None when neither falls inside a registered controller's range."""
+    return _match_client(clients, src_ip) or _match_client(clients, nas_ip)
 
 
 def _match_client(clients: list[m.RadiusClient], ip: str | None) -> m.RadiusClient | None:

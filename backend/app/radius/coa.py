@@ -38,12 +38,14 @@ def _disconnect_macs(session: Session, tenant_id: uuid.UUID, macs: set[str], rea
     sessions = session.scalars(select(m.AccountingSession).where(
         m.AccountingSession.tenant_id == tenant_id, m.AccountingSession.calling_station_id.in_(macs),
         m.AccountingSession.stopped_at.is_(None))).all()
-    clients = {c.address: c for c in session.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == tenant_id))}
+    tenant_clients = list(session.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == tenant_id)))
+    by_id = {c.id: c for c in tenant_clients}
+    clients = {c.address: c for c in tenant_clients}
     queued = without = 0
     targets: list[tuple[m.RadiusClient | None, dict]] = []
     if sessions:
         for s in sessions:
-            nas = _client_for(clients, s.nas_ip)
+            nas = by_id.get(s.nas_client_id) if s.nas_client_id else _client_for(clients, s.nas_ip)
             targets.append((nas, {"NAS-IP-Address": s.nas_ip, "Acct-Session-Id": s.acct_session_id,
                                   "Calling-Station-Id": s.calling_station_id or "", "User-Name": s.username or ""}))
     else:

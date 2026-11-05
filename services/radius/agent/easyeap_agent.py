@@ -223,10 +223,11 @@ def transform(kind: str, item: dict) -> dict:
         return {"uid": item.get("uid"), "ts": item.get("ts"), "result": item.get("result"), "tenant": _v(rec, "EasyEAP-Tenant"),
                 "user": _v(rec, "User-Name"), "serial": _v(rec, "EasyEAP-Serial", "TLS-Client-Cert-Serial"), "issuer": _v(rec, "TLS-Client-Cert-Issuer"),
                 "mac": _v(rec, "Calling-Station-Id"), "called": _v(rec, "Called-Station-Id"), "nas_ip": _v(rec, "NAS-IP-Address", "Packet-Src-IP-Address"),
+                "src_ip": _v(rec, "EasyEAP-Source", "Packet-Src-IP-Address"),
                 "vlan": _v(rec, "EasyEAP-Vlan"), "rule": _v(rec, "EasyEAP-Rule"), "reason": _v(rec, "EasyEAP-Reason"), "message": _v(rec, "Module-Failure-Message")}
     return {"ts": item.get("ts"), "tenant": _v(rec, "EasyEAP-Tenant"), "status": _v(rec, "Acct-Status-Type"), "session_id": _v(rec, "Acct-Session-Id"),
-            "nas_ip": _v(rec, "NAS-IP-Address", "Packet-Src-IP-Address"), "user": _v(rec, "User-Name"), "mac": _v(rec, "Calling-Station-Id"),
-            "called": _v(rec, "Called-Station-Id"), "framed_ip": _v(rec, "Framed-IP-Address"), "vlan": _v(rec, "Tunnel-Private-Group-Id"),
+            "nas_ip": _v(rec, "NAS-IP-Address", "Packet-Src-IP-Address"), "src_ip": _v(rec, "EasyEAP-Source", "Packet-Src-IP-Address"),
+            "user": _v(rec, "User-Name"), "mac": _v(rec, "Calling-Station-Id"), "called": _v(rec, "Called-Station-Id"), "framed_ip": _v(rec, "Framed-IP-Address"), "vlan": _v(rec, "Tunnel-Private-Group-Id"),
             "in_octets": _v(rec, "Acct-Input-Octets"), "out_octets": _v(rec, "Acct-Output-Octets"), "cause": _v(rec, "Acct-Terminate-Cause")}
 
 

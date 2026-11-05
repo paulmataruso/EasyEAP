@@ -118,14 +118,16 @@ ATTRIBUTE	EasyEAP-Serial		3504	string
 ATTRIBUTE	EasyEAP-Vlan		3505	string
 ATTRIBUTE	EasyEAP-Lookup		3506	string
 ATTRIBUTE	EasyEAP-Extra		3507	string
+ATTRIBUTE	EasyEAP-Source		3508	string
 """
 
 
 AUTH_ATTRS = ("&User-Name &Calling-Station-Id &Called-Station-Id &NAS-IP-Address &Packet-Src-IP-Address &TLS-Client-Cert-Serial "
               "&TLS-Client-Cert-Issuer &Module-Failure-Message &control:EasyEAP-Tenant &control:EasyEAP-Serial &control:EasyEAP-Vlan "
-              "&control:EasyEAP-Rule &control:EasyEAP-Reason")
+              "&control:EasyEAP-Rule &control:EasyEAP-Reason &control:EasyEAP-Source")
 ACCT_ATTRS = ("&Acct-Status-Type &Acct-Session-Id &NAS-IP-Address &Packet-Src-IP-Address &User-Name &Calling-Station-Id &Called-Station-Id "
-              "&Framed-IP-Address &Tunnel-Private-Group-Id &Acct-Input-Octets &Acct-Output-Octets &Acct-Terminate-Cause &control:EasyEAP-Tenant")
+              "&Framed-IP-Address &Tunnel-Private-Group-Id &Acct-Input-Octets &Acct-Output-Octets &Acct-Terminate-Cause &control:EasyEAP-Tenant "
+              "&control:EasyEAP-Source")
 UID = "%{md5:%{Packet-Src-IP-Address}%{Packet-Src-Port}%{Packet-Dst-Port}%{Calling-Station-Id}%l%M%{reply:Packet-Type}}"
 
 
@@ -255,6 +257,7 @@ server t_{s} {{{listen}
 	authorize {{
 		update control {{
 			&EasyEAP-Tenant := "{tid}"
+			&EasyEAP-Source := "%{{%{{Packet-Src-IP-Address}}:-%{{Packet-Src-IPv6-Address}}}}"
 		}}
 		# EAP-TLS only: anything else is rejected.
 		if (!&EAP-Message) {{
@@ -274,6 +277,7 @@ server t_{s} {{{listen}
 	preacct {{
 		update control {{
 			&EasyEAP-Tenant := "{tid}"
+			&EasyEAP-Source := "%{{%{{Packet-Src-IP-Address}}:-%{{Packet-Src-IPv6-Address}}}}"
 		}}
 	}}
 	accounting {{
@@ -283,6 +287,7 @@ server t_{s} {{{listen}
 	post-auth {{
 		update control {{
 			&EasyEAP-Tenant := "{tid}"
+			&EasyEAP-Source := "%{{%{{Packet-Src-IP-Address}}:-%{{Packet-Src-IPv6-Address}}}}"
 		}}
 		if (!&reply:Session-Timeout) {{
 			update reply {{
@@ -294,6 +299,7 @@ server t_{s} {{{listen}
 		Post-Auth-Type REJECT {{
 			update control {{
 				&EasyEAP-Tenant := "{tid}"
+				&EasyEAP-Source := "%{{%{{Packet-Src-IP-Address}}:-%{{Packet-Src-IPv6-Address}}}}"
 			}}
 			linelog_auth
 			eap_{s}

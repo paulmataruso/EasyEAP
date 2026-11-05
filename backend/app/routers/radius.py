@@ -1,12 +1,13 @@
 """RADIUS settings, server certificate, wireless controllers (NAS clients) and vendor guides."""
 from __future__ import annotations
 
+import ipaddress
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import audit
 from app import models as m
@@ -33,7 +34,23 @@ def settings_out(rs: m.RadiusSettings | None, s) -> dict | None:
             "server_certificate": {"id": str(cert.id), "serial": cert.serial, "common_name": cert.common_name, "not_after": cert.not_after.isoformat(),
                                    "fingerprint_sha256": cert.fingerprint_sha256} if cert else None,
             "snapshot_version": rs.snapshot_version, "snapshot_built_at": rs.snapshot_built_at.isoformat() if rs.snapshot_built_at else None,
-            "radius_address": get_settings().radius_public_address}
+            **controller_address()}
+
+
+def controller_address() -> dict:
+    """The address controllers are told to send RADIUS to. A loopback or unspecified address (a lab default, or a
+    bind address copied by mistake) can't be reached by a controller, so it is withheld and the reason reported."""
+    raw = get_settings().radius_public_address.strip()
+    try:
+        ip = ipaddress.ip_address(raw)
+        unusable = ip.is_loopback or ip.is_unspecified
+    except ValueError:
+        unusable = raw.lower() in ("localhost", "localhost.localdomain")
+    if unusable:
+        return {"radius_address": "", "radius_address_problem":
+                f"EASYEAP_RADIUS_ADDRESS is set to {raw}, which a wireless controller can't reach. Set it in the deploy .env file "
+                "to the address controllers use for this server, then restart the stack."}
+    return {"radius_address": raw, "radius_address_problem": None}
 
 
 def client_out(c: m.RadiusClient) -> dict:
@@ -57,13 +74,26 @@ def get_radius(ctx: TenantCtx = Depends(require("radius:read"))) -> dict:
     s = ctx.session
     rs = s.get(m.RadiusSettings, ctx.id)
     clients = s.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == ctx.id).order_by(m.RadiusClient.name)).all()
-    out = {"settings": settings_out(rs, s), "clients": [client_out(c) for c in clients]}
+    out = {"settings": settings_out(rs, s), "clients": [client_out(c) for c in clients], "unattributed": unattributed(s, ctx.id)}
     out["agent"] = agent_out(s)
     if out["agent"] and rs:
         applied = (out["agent"]["snapshot_versions"] or {}).get(str(ctx.id))
         out["agent"]["tenant_snapshot_applied"] = applied
         out["agent"]["tenant_in_sync"] = applied == rs.snapshot_version
     return out
+
+
+def unattributed(s, tenant_id: uuid.UUID) -> dict | None:
+    """Requests from the last 7 days that couldn't be tied to a controller, so the console never says "no requests"
+    while RADIUS is answering them."""
+    since = datetime.now(UTC) - timedelta(days=7)
+    rows = s.execute(select(m.AuthEvent.nas_ip, func.count(), func.max(m.AuthEvent.at))
+                     .where(m.AuthEvent.tenant_id == tenant_id, m.AuthEvent.nas_client_id.is_(None), m.AuthEvent.at >= since)
+                     .group_by(m.AuthEvent.nas_ip).order_by(func.count().desc())).all()
+    if not rows:
+        return None
+    return {"count": sum(n for _, n, _ in rows), "last_at": max(at for _, _, at in rows).isoformat(),
+            "nas_addresses": [ip for ip, _, _ in rows if ip][:5], "days": 7}
 
 
 class SettingsIn(BaseModel):
@@ -211,7 +241,7 @@ def guide(vendor: str, ctx: TenantCtx = Depends(require("radius:read")), client_
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Save RADIUS settings first.")
     client = s.get(m.RadiusClient, client_id) if client_id else None
     vlans = list(s.scalars(select(m.Vlan).where(m.Vlan.tenant_id == ctx.id)))
-    return guides.guide(vendor, client=client, settings=rs, radius_ip=get_settings().radius_public_address, vlans=vlans, tenant=ctx.tenant)
+    return guides.guide(vendor, client=client, settings=rs, radius_ip=controller_address()["radius_address"], vlans=vlans, tenant=ctx.tenant)
 
 
 @router.get("/coa")

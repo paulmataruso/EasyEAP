@@ -8,7 +8,7 @@ import { BookOpen, Ellipsis, Pencil, Plus, RotateCw, Router, Send, Trash2 } from
 import { cn } from '@/ui/lib'
 import { api } from '../api/client'
 import { qk } from '../api/keys'
-import { useCoa, useRadius, vendorLabels, type CoaRequest, type RadiusClient, type RadiusResponse } from '../api/radius'
+import { useCoa, useRadius, vendorLabels, type CoaRequest, type RadiusClient, type RadiusResponse, type Unattributed } from '../api/radius'
 import { useTenant } from '../api/tenant'
 import type { Enforcement } from '../api/types'
 import { ago, fmtDateTime } from '../lib/format'
@@ -86,12 +86,13 @@ export default function Radius() {
       <PageHeader
         title="RADIUS"
         lede={s
-          ? <>Devices validate <span className="ee-mono text-[13px]">{s.server_hostname}</span>. Controllers send requests to <span className="ee-mono text-[13px]">{s.radius_address || 'this EasyEAP server'}</span> on UDP <span className="ee-num">{s.dedicated_ports ? s.auth_port : 1812}</span> and <span className="ee-num">{s.dedicated_ports ? s.acct_port : 1813}</span>.</>
+          ? <>Devices validate <span className="ee-mono text-[13px]">{s.server_hostname}</span>. Controllers send requests to {s.radius_address ? <span className="ee-mono text-[13px]">{s.radius_address}</span> : 'this EasyEAP server’s address'} on UDP <span className="ee-num">{s.dedicated_ports ? s.auth_port : 1812}</span> and <span className="ee-num">{s.dedicated_ports ? s.acct_port : 1813}</span>.</>
           : <>Set up the RADIUS server for {tenant.name}, then register each wireless controller that will send it requests.</>}
         actions={s && can('radius:write') ? <Btn variant="primary" onClick={() => setAdding(true)}><Plus aria-hidden />Add controller</Btn> : undefined}
       />
 
       <div className="space-y-6">
+        {s?.radius_address_problem && <Callout tone="warn" title="Controllers can’t reach the configured RADIUS address">{s.radius_address_problem} Until then the setup guides leave the address for you to fill in.</Callout>}
         <ServiceStatus data={data} />
 
         {!s ? (
@@ -129,8 +130,9 @@ export default function Radius() {
             </Empty>
           ) : (
             <ControllerList clients={data.clients} selectedId={selectedId} onSelect={select} canWrite={can('radius:write')} canSecrets={can('radius:secrets') && !!s}
-              onRotate={openRotate} onEdit={openEdit} onDelete={openDelete} />
+              onRotate={openRotate} onEdit={openEdit} onDelete={openDelete} unmatched={!!data.unattributed} />
           )}
+          {data.unattributed && <UnattributedNote u={data.unattributed} />}
           {data.clients.length > 0 && can('radius:write') && !can('radius:secrets') && (
             <p className="ee-small ee-ink-3 mt-3">Rotating shared secrets needs the Tenant Administrator role.</p>
           )}
@@ -215,11 +217,25 @@ interface ListProps {
   onRotate: (c: RadiusClient) => void
   onEdit: (c: RadiusClient) => void
   onDelete: (c: RadiusClient) => void
+  unmatched?: boolean
 }
 
-function LastRequest({ at, now }: { at: string | null; now: Date }) {
-  if (!at) return <span className="ee-ink-3">No requests yet</span>
+function LastRequest({ at, now, unmatched }: { at: string | null; now: Date; unmatched?: boolean }) {
+  // "No requests yet" only when that's true: if RADIUS answered requests EasyEAP couldn't attribute, say so instead.
+  if (!at) return <span className="ee-ink-3">{unmatched ? 'None matched' : 'No requests yet'}</span>
   return <span title={fmtDateTime(at)}>{ago(at, now)}</span>
+}
+
+function UnattributedNote({ u }: { u: Unattributed }) {
+  const now = useNow()
+  const addrs = u.nas_addresses
+  return (
+    <Callout tone="warn" className="mt-4" title={`${u.count.toLocaleString()} ${u.count === 1 ? 'request wasn’t' : 'requests weren’t'} matched to a controller`}>
+      In the last {u.days} days RADIUS answered {u.count === 1 ? 'a request' : 'requests'} (latest {ago(u.last_at, now)}) that EasyEAP couldn’t tie to a registered controller.
+      {addrs.length > 0 && <> {addrs.length === 1 ? 'It' : 'They'} reported NAS address{addrs.length === 1 ? '' : 'es'} {addrs.map((ip, i) => <span key={ip}>{i > 0 && ', '}<span className="ee-mono text-[12.5px]">{ip}</span></span>)}, which {addrs.length === 1 ? 'isn’t' : 'aren’t'} inside any controller’s source address.</>}
+      {' '}If that’s one of your controllers, edit its source address to cover it. Until then EasyEAP can’t show when it last sent a request, or send it a CoA disconnect.
+    </Callout>
+  )
 }
 
 function RowActions({ c, ...p }: { c: RadiusClient } & Omit<ListProps, 'clients' | 'selectedId'>) {
@@ -267,7 +283,7 @@ function ControllerList(p: ListProps) {
                 <td className="ee-mono whitespace-nowrap text-[12.5px]">{c.address}</td>
                 <td className="whitespace-nowrap">{coa(c)}</td>
                 <td className="whitespace-nowrap ee-ink-2" title={fmtDateTime(c.secret_set_at)}>{c.secret_set_at ? ago(c.secret_set_at, now) : '—'}</td>
-                <td className="whitespace-nowrap"><LastRequest at={c.last_request_at} now={now} /></td>
+                <td className="whitespace-nowrap"><LastRequest at={c.last_request_at} now={now} unmatched={p.unmatched} /></td>
                 <td className="text-right"><RowActions c={c} {...p} /></td>
               </tr>
             ))}
@@ -287,7 +303,7 @@ function ControllerList(p: ListProps) {
             <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 text-[13px]">
               <div className="col-span-2"><dt className="ee-label">Source address</dt><dd className="ee-mono text-[12.5px] break-all">{c.address}</dd></div>
               <div><dt className="ee-label">CoA</dt><dd>{coa(c)}</dd></div>
-              <div><dt className="ee-label">Last request</dt><dd><LastRequest at={c.last_request_at} now={now} /></dd></div>
+              <div><dt className="ee-label">Last request</dt><dd><LastRequest at={c.last_request_at} now={now} unmatched={p.unmatched} /></dd></div>
             </dl>
           </li>
         ))}

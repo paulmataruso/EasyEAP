@@ -37,6 +37,11 @@ def test_render_tree(tmp_path):
     assert "valid_until > %l" in check, "freshness is enforced by RADIUS itself"
     ca = (tmp_path / "tenants" / s / "ca.pem").read_text()
     assert "X509 CRL" in ca
+    # Events carry the address the packet came from, so EasyEAP can tell which controller sent it even when the
+    # controller reports a different NAS-IP-Address.
+    main = (tmp_path / "sites-enabled" / f"t_{s}").read_text()
+    assert main.count('&EasyEAP-Source := "%{%{Packet-Src-IP-Address}:-%{Packet-Src-IPv6-Address}}"') == 4
+    assert "&control:EasyEAP-Source" in render.AUTH_ATTRS and "&control:EasyEAP-Source" in render.ACCT_ATTRS
 
 
 def test_dedicated_ports_scope_clients(tmp_path):

@@ -34,8 +34,10 @@ export interface RadiusSettings {
   server_certificate: ServerCertificate | null
   snapshot_version: number | null
   snapshot_built_at: string | null
-  /** Address controllers use to reach RADIUS (server setting EASYEAP_RADIUS_PUBLIC_ADDRESS); may be empty. */
+  /** Address controllers use to reach RADIUS (EASYEAP_RADIUS_ADDRESS in the deploy .env); empty when unset or unusable. */
   radius_address: string
+  /** Why a configured address was withheld (loopback, unspecified); null when there's nothing wrong. */
+  radius_address_problem: string | null
 }
 
 export interface RadiusClient {
@@ -56,7 +58,9 @@ export interface RadiusAgent extends AgentStatus {
   tenant_in_sync?: boolean
 }
 
-export interface RadiusResponse { settings: RadiusSettings | null; clients: RadiusClient[]; agent: RadiusAgent | null }
+/** Recent requests that couldn't be tied to a registered controller (their source and NAS address are in no range). */
+export interface Unattributed { count: number; last_at: string; nas_addresses: string[]; days: number }
+export interface RadiusResponse { settings: RadiusSettings | null; clients: RadiusClient[]; agent: RadiusAgent | null; unattributed: Unattributed | null }
 
 export interface SettingsIn {
   server_hostname: string
