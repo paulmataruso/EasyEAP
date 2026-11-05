@@ -7,10 +7,10 @@ import { api, saveBlob } from '../api/client'
 import { qk } from '../api/keys'
 import {
   KEY_ALGORITHMS, TEMPLATE_FIELDS, chainUrl, keyAlgorithmLabels, purposeLabels, usePki, useRotateCrl, useSaveTemplate,
-  type CertificateAuthority, type CertificateTemplate, type PkiOverview, type TemplateIn,
+  type CertificateAuthority, type CertificateTemplate, type IssuingCrl, type PkiOverview, type TemplateIn,
 } from '../api/pki'
 import { useTenant } from '../api/tenant'
-import { ago, fmtDate, fmtDateTime, fmtFingerprint, fmtSerial, relative, remaining } from '../lib/format'
+import { ago, fmtDate, fmtDateTime, fmtFingerprint, fmtSerial, plural, relative, remaining } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import {
   Btn, Callout, Chip, CopyButton, EDialog, ESelect, ESwitch, ErrorState, Field, LoadingBlock, PageHeader, Panel, SectionHeader, Seg,
@@ -52,7 +52,7 @@ function Initialized({ d }: { d: PkiOverview }) {
         </div>
         <div className="grid items-start gap-6 xl:grid-cols-12">
           <Distribution d={d} />
-          <Crl root={root} crlUrl={d.urls.crl} />
+          <Crl root={root} crl={d.crl} crlUrl={d.urls.crl} />
         </div>
         <Templates templates={d.templates} />
       </div>
@@ -142,7 +142,16 @@ function Distribution({ d }: { d: PkiOverview }) {
 
 interface AuditLite { items: Array<{ at: string; actor: string; action: string }> }
 
-function Crl({ root, crlUrl }: { root?: CertificateAuthority; crlUrl: string }) {
+/** Edge light: crit once the list has expired (RADIUS rejects everything), warn inside its last 12 hours or when unreadable. */
+function crlRisk(crl: IssuingCrl | null, now: Date): 'crit' | 'warn' | undefined {
+  if (!crl) return undefined
+  if (!crl.available) return 'warn'
+  if (!crl.next_update) return undefined
+  const left = new Date(crl.next_update).getTime() - now.getTime()
+  return left <= 0 ? 'crit' : left < 12 * 3600_000 ? 'warn' : undefined
+}
+
+function Crl({ root, crl, crlUrl }: { root?: CertificateAuthority; crl: IssuingCrl | null; crlUrl: string }) {
   const { tid, can } = useTenant()
   const now = useNow()
   const rotate = useRotateCrl(tid)
@@ -154,7 +163,7 @@ function Crl({ root, crlUrl }: { root?: CertificateAuthority; crlUrl: string }) 
   })
   const lastManual = last.data?.items[0]
   return (
-    <Panel className="min-w-0 p-5 sm:p-6 xl:col-span-5" aria-labelledby="pki-crl-h">
+    <Panel className="min-w-0 p-5 sm:p-6 xl:col-span-5" aria-labelledby="pki-crl-h" risk={crlRisk(crl, now)}>
       <SectionHeader id="pki-crl-h" title="Revocation list"
         actions={can('ca:manage') ? <Btn size="sm" busy={rotate.isPending} onClick={() => rotate.mutate(undefined, {
           onSuccess: () => toast('Revocation list rebuilt', 'RADIUS loads it with its next configuration refresh, usually within seconds.'),
@@ -162,7 +171,17 @@ function Crl({ root, crlUrl }: { root?: CertificateAuthority; crlUrl: string }) 
         })}><RefreshCw aria-hidden />Rebuild now</Btn> : undefined} />
       <div className="space-y-3 text-[13.5px]">
         <p className="ee-ink-2">EasyEAP rebuilds the issuing CA’s revocation list after every revocation and every 24 hours. Each list is valid for 72 hours, and RADIUS checks devices against it on every full handshake.</p>
+        {crl && !crl.available && <Callout tone="warn" title="The current revocation list couldn’t be read">The certificate authority didn’t answer. RADIUS keeps the last list it loaded; check System health.</Callout>}
+        {crl?.next_update && new Date(crl.next_update).getTime() <= now.getTime() && (
+          <Callout tone="crit" title="The revocation list has expired">RADIUS rejects every certificate from this CA until a new list is published. Rebuild it now (Tenant or PKI Administrator), then check System health for the worker.</Callout>
+        )}
         <dl className="ee-divide border-y border-[var(--ee-line)]">
+          {crl?.this_update && (
+            <Row k="Published"><span title={fmtDateTime(crl.this_update)}>{ago(crl.this_update, now)}</span>{crl.revoked_count !== null && <span className="ee-ink-3"> · {plural(crl.revoked_count, 'revoked certificate')}</span>}</Row>
+          )}
+          {crl?.next_update && (
+            <Row k="Valid until">{fmtDateTime(crl.next_update)} <span className="ee-ink-3">({relative(crl.next_update, now)})</span></Row>
+          )}
           <Row k="Last manual rebuild">
             {!can('audit:read') ? <span className="ee-ink-3">Needs audit access</span>
               : last.isLoading ? <span className="ee-ink-3">Loading…</span>
@@ -174,7 +193,6 @@ function Crl({ root, crlUrl }: { root?: CertificateAuthority; crlUrl: string }) 
           )}
           <Row k="Published at"><span className="ee-mono text-[12.5px] break-all">{crlUrl}</span></Row>
         </dl>
-        <p className="ee-small ee-ink-3">The automatic rebuild time isn’t reported by the API, so only rebuilds started here are listed.</p>
       </div>
     </Panel>
   )

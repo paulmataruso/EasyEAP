@@ -38,7 +38,10 @@ export interface CertificateTemplate {
 
 export interface PkiUrls { ca: string; crl: string; ocsp: string; root_ca: string; root_crl: string }
 
-export interface PkiOverview { initialized: boolean; authorities: CertificateAuthority[]; templates: CertificateTemplate[]; urls: PkiUrls; lab_mode: boolean }
+/** The issuing CA's current CRL as OpenBao publishes it (the one RADIUS checks). */
+export interface IssuingCrl { available: boolean; this_update: string | null; next_update: string | null; revoked_count: number | null }
+
+export interface PkiOverview { initialized: boolean; authorities: CertificateAuthority[]; templates: CertificateTemplate[]; urls: PkiUrls; lab_mode: boolean; crl: IssuingCrl | null }
 
 export interface CeremonyIn {
   organization: string
