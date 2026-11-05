@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
             if (s.scalar(select(func.count()).select_from(m.Admin)) or 0) == 0:
                 from app.secrets_store import ensure_setup_token
                 ensure_setup_token()
-                print("EasyEAP is ready for first-run setup. Print the setup token with: docker compose exec easyeap-api easyeap setup-token")
+                print("EasyEAP is ready for first-run setup. Print the setup token with: docker compose exec easyeap-api easyeap setup-token", file=sys.stderr)
         return 0
     if args.cmd == "setup-token":
         with platform_session() as s:
