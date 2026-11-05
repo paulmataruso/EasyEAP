@@ -60,7 +60,8 @@ def windows_wlan_xml(ssid: str, server_name: str, root_pem: str, wpa3: bool = Fa
 
 
 def windows_powershell(api_base: str, token: str, ssid: str, server_name: str, root_pem: str, issuing_pem: str, wpa3: bool = False) -> str:
-    """Enrollment helper: TPM-backed key via certreq when available, CSR to EasyEAP, install cert + CA + Wi-Fi profile."""
+    """Enrollment helper: non-exportable key in the TPM when Windows can create one there (the software key store
+    otherwise), CSR to EasyEAP, then the certificate, the CA chain and the Wi-Fi profile. Runs as a standard user."""
     xml = windows_wlan_xml(ssid, server_name, root_pem, wpa3).replace("'", "''")
     return f"""# EasyEAP Wi-Fi enrollment for Windows. Run in PowerShell as the user who will connect (no admin rights needed).
 # The private key is created on this computer (in the TPM when available) and never leaves it.
@@ -69,10 +70,8 @@ $Api = '{api_base.rstrip('/')}'
 $Token = '{token}'
 $Work = Join-Path $env:TEMP ('easyeap-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $Work | Out-Null
-try {{
-  $Provider = 'Microsoft Software Key Storage Provider'
-  try {{ if ((Get-Tpm -ErrorAction Stop).TpmReady) {{ $Provider = 'Microsoft Platform Crypto Provider' }} }} catch {{ }}
-  Write-Host "Creating key with: $Provider"
+
+function New-EasyEapRequest([string]$Provider) {{
 @"
 [Version]
 Signature="`$Windows NT`$"
@@ -86,7 +85,19 @@ MachineKeySet = FALSE
 ProviderName = "$Provider"
 RequestType = PKCS10
 "@ | Set-Content -Path "$Work\\req.inf" -Encoding ASCII
-  certreq.exe -q -new "$Work\\req.inf" "$Work\\req.csr" | Out-Null
+  Remove-Item "$Work\\req.csr" -ErrorAction SilentlyContinue
+  certreq.exe -q -new "$Work\\req.inf" "$Work\\req.csr" 2>&1 | Out-Null
+  return ($LASTEXITCODE -eq 0) -and (Test-Path "$Work\\req.csr")
+}}
+
+try {{
+  # Try the TPM first (no admin rights needed to create a key there); fall back to the software key store.
+  $Provider = 'Microsoft Platform Crypto Provider'
+  if (-not (New-EasyEapRequest $Provider)) {{
+    $Provider = 'Microsoft Software Key Storage Provider'
+    if (-not (New-EasyEapRequest $Provider)) {{ throw 'Windows could not create a key for the certificate request.' }}
+  }}
+  Write-Host "Key created with: $Provider"
   $Csr = Get-Content "$Work\\req.csr" -Raw
   $Body = @{{ csr = $Csr; key_origin = 'device'; device_hint = $env:COMPUTERNAME }} | ConvertTo-Json
   $Resp = Invoke-RestMethod -Method Post -Uri "$Api/api/enroll/$Token/csr" -ContentType 'application/json' -Body $Body
@@ -104,10 +115,19 @@ RequestType = PKCS10
 {xml}
 '@ | Set-Content -Path "$Work\\wifi.xml" -Encoding UTF8
   netsh wlan add profile filename="$Work\\wifi.xml" user=current | Out-Null
-  Write-Host "Done. Connect to '{ssid}' — no password needed." -ForegroundColor Green
+  Write-Host "Done. Connect to '{ssid}'. No password is needed." -ForegroundColor Green
+}} catch {{
+  $Err = $_
+  $Msg = $Err.Exception.Message
+  if ($Err.ErrorDetails -and $Err.ErrorDetails.Message) {{
+    try {{ $Msg = ($Err.ErrorDetails.Message | ConvertFrom-Json).detail }} catch {{ $Msg = $Err.ErrorDetails.Message }}
+  }}
+  Write-Host "Setup did not finish: $Msg" -ForegroundColor Red
+  Write-Host 'Nothing else was changed. Ask your IT team for help, and include this message.'
 }} finally {{
   Remove-Item -Recurse -Force $Work -ErrorAction SilentlyContinue
 }}
+Read-Host 'Press Enter to close' | Out-Null
 """
 
 
@@ -193,13 +213,15 @@ def instructions(platform: str, ssid: str, server_name: str) -> list[str]:
                 f"Connect to “{ssid}”. No password is needed."]
     if platform in ("macos", "ios"):
         return ["Download the profile on this device.",
-                "iPhone/iPad: open Settings → Profile Downloaded → Install. Mac: open System Settings → Privacy & Security → Profiles.",
+                "iPhone/iPad: open Settings → Profile Downloaded → Install. "
+                "Mac: open System Settings → General → Device Management (Privacy & Security → Profiles before macOS 15).",
                 "When asked for the certificate password, enter the one shown on this page.",
                 f"Join “{ssid}”."]
     if platform == "android":
         return ["Download the certificate file on this device.",
                 "Open Settings → Security → More security settings → Install from device storage → Wi-Fi certificate, and pick the file.",
-                f"Open Wi-Fi → “{ssid}”: EAP method TLS, CA certificate = the one you installed, Domain = {server_name}, Identity = your email.",
+                f"Open Wi-Fi → “{ssid}”: EAP method TLS, CA certificate = the one you installed, Domain = {server_name}, "
+                "Identity = your sign-in name (shown on this page).",
                 "Save and connect."]
     return ["Save the certificate, key and CA chain under /etc/easyeap/ (key mode 600).",
             "Install the NetworkManager profile or add the wpa_supplicant block.",

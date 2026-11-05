@@ -92,7 +92,7 @@ def cancel(enrollment_id: uuid.UUID, ctx: TenantCtx = Depends(require("enrollmen
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Enrollment not found.")
     if e.status != "pending":
         raise HTTPException(status.HTTP_409_CONFLICT, "Only pending enrollments can be cancelled.")
-    e.status, e.token_hash = "cancelled", None
+    e.status = "cancelled"
     esc = s.scalars(select(m.KeyEscrow).where(m.KeyEscrow.enrollment_id == e.id)).first()
     if esc:
         s.delete(esc)

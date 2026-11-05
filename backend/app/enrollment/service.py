@@ -105,7 +105,7 @@ def complete_with_csr(session: Session, bao: OpenBao, e: m.Enrollment, csr_pem: 
 
 
 def _finish(session: Session, e: m.Enrollment, cert: m.Certificate, identity: m.Identity) -> None:
-    e.status, e.completed_at, e.certificate_id, e.token_hash = "completed", datetime.now(UTC), cert.id, None
+    e.status, e.completed_at, e.certificate_id = "completed", datetime.now(UTC), cert.id
     identity.enrolled = True
     if e.renewal_of:
         old = session.get(m.Certificate, e.renewal_of)
@@ -177,7 +177,7 @@ def take_escrow(session: Session, bao: OpenBao, e: m.Enrollment) -> bytes:
         raise EnrollmentError("This download has expired. Ask your IT team for a new one.")
     data = crypto.decrypt(e.tenant_id, esc.p12_ct, bao)
     session.delete(esc)
-    e.status, e.completed_at, e.token_hash = "completed", datetime.now(UTC), None
+    e.status, e.completed_at = "completed", datetime.now(UTC)
     return data
 
 
@@ -189,7 +189,7 @@ def purge_expired(session: Session) -> int:
         session.delete(esc)
         n += 1
     for e in session.scalars(select(m.Enrollment).where(m.Enrollment.status == "pending", m.Enrollment.expires_at <= now)):
-        e.status, e.token_hash = "expired", None
+        e.status = "expired"
     return n
 
 
