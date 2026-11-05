@@ -29,6 +29,13 @@ Some failures never produce an authentication event:
   secret in EasyEAP and paste the new one into the controller.
 - **Tenant not enforceable.** A tenant without a CA, a RADIUS server certificate and at least one controller isn't
   served. The dashboard lists exactly what's missing.
+- **"Requests weren't matched to a controller."** The RADIUS screen shows this when RADIUS answered requests that
+  EasyEAP couldn't tie to a registered controller. Requests are matched by the address they arrive from, then by the
+  NAS-IP-Address the controller reports. Widen or correct the controller's source address. Until then its last
+  request isn't shown and it can't receive a CoA disconnect.
+- **"Controllers can't reach the configured RADIUS address."** `EASYEAP_RADIUS_ADDRESS` is a loopback or unspecified
+  address. Set it in `deploy/.env` to the address controllers use for this server and restart the stack. The setup
+  guides leave the address as a placeholder until then.
 
 ## Useful commands
 

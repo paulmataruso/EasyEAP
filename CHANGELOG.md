@@ -48,6 +48,10 @@ The first complete release: multi-tenant EAP-TLS with PKI, Active Directory, RAD
 - **Monitoring.**
   - Authentication events in plain language, with fixes.
   - Tenant posture: enforceability, the fail-closed deadline, a needs-action queue.
+  - A platform needs-action queue for backups and administrator two-factor.
+  - Controller attribution by packet source, so last-request times and CoA targets are right when a controller
+    reports a different NAS-IP-Address.
+  - The issuing CA's revocation list: publish time, revoked count and validity.
   - Dashboard trends.
 - **Console.**
   - React 19 with a search-first shell and a tenant-scoped search.

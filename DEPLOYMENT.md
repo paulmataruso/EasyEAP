@@ -56,7 +56,7 @@ Put your certificate chain and key at `deploy/secrets/tls.crt` and `deploy/secre
 |---|---|
 | `EASYEAP_HOSTNAME` | Console and enrollment hostname. Enrollment links use it. |
 | `EASYEAP_PKI_HOSTNAME` | Host in the CRL and OCSP URLs embedded in every certificate (port 80). Defaults to `EASYEAP_HOSTNAME`. It must stay stable for the life of the certificates. |
-| `EASYEAP_RADIUS_ADDRESS` | The IP controllers use to reach RADIUS, shown in the controller guides and snippets. |
+| `EASYEAP_RADIUS_ADDRESS` | The IP controllers use to reach RADIUS, shown in the controller guides and snippets. Loopback and unspecified addresses (`127.0.0.1`, `0.0.0.0`) are not shown to controllers; the console warns instead. |
 | `EASYEAP_*_BIND`, `EASYEAP_HTTP_PORT`, `EASYEAP_HTTPS_PORT` | Published interfaces and ports. Certificates assume CRLs are on port 80. |
 | `EASYEAP_RADIUS_NODE` | Agent identifier shown in System health. |
 | `EASYEAP_LAB_MODE` | `true` enables insecure test options (keeping a root CA online, plain LDAP). Never in production. |
