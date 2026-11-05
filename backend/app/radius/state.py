@@ -99,7 +99,7 @@ def desired_state(session: Session, bao: OpenBao) -> dict:
             "tls_session_cache": rs.tls_session_cache, "session_timeout": rs.session_timeout_seconds,
             "server_cert_pem": server_cert.certificate_pem if server_cert else "",
             "server_key_pem": crypto.decrypt_str(t.id, rs.server_key_ct, bao),
-            "ca_pem": issuing + (root or ""), "crl_pem": crl + ((root_ca.crl_pem or "") if root_ca else ""),
+            "ca_pem": issuing + (root or ""), "crl_pem": "\n".join(x.strip() for x in (crl, root_ca.crl_pem if root_ca else None) if x and x.strip()) + "\n",
             "clients": clients, "config_version": rs.config_version, "snapshot_version": rs.snapshot_version,
         })
     # Content digest: the agent re-renders FreeRADIUS only when something it uses changed (clients, certs, CRL).

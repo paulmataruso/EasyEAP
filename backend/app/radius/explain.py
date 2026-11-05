@@ -41,9 +41,9 @@ EXPLANATIONS: dict[str, dict[str, str]] = {
 
 # FreeRADIUS / OpenSSL messages → failure codes (first match wins).
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"certificate has expired|cert(ificate)? expired", re.I), "cert_expired"),
-    (re.compile(r"certificate revoked|revoked", re.I), "cert_revoked"),
-    (re.compile(r"unable to get (local )?issuer|unknown ca|self.signed certificate in certificate chain|unable to verify the first certificate", re.I), "unknown_ca"),
+    (re.compile(r"error 10 |certificate has expired|cert(ificate)? expired", re.I), "cert_expired"),
+    (re.compile(r"error 23 |certificate revoked|revoked", re.I), "cert_revoked"),
+    (re.compile(r"error (18|19|20|21) |unable to get (local )?issuer|unknown ca|self.signed certificate|unable to verify the first certificate", re.I), "unknown_ca"),
     (re.compile(r"no eap.?start|no response|timed? ?out|client didn't|expired session|did not finish", re.I), "client_timeout"),
     (re.compile(r"tls alert|ssl3?_|handshake|tls_|eap-tls", re.I), "tls_handshake"),
 ]
