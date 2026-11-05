@@ -1,0 +1,82 @@
+"""Tenant dashboard and MSP overview, computed from real events, certificates and service health."""
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import func, select, text
+from sqlalchemy.orm import Session
+
+from app import models as m
+from app.db import set_platform
+from app.deps import Principal, TenantCtx, db, principal, require
+from app.policy.service import policy_settings
+from app.radius.explain import explain
+from app.routers.events import event_out
+from app.routers.radius import agent_out
+from app.routers.tenants import health_for, tenant_out
+
+router = APIRouter(prefix="/api", tags=["dashboard"])
+
+
+@router.get("/tenants/{tenant_id}/dashboard")
+def dashboard(ctx: TenantCtx = Depends(require("tenant:read"))) -> dict:
+    s = ctx.session
+    now = datetime.now(UTC)
+    start = (now - timedelta(hours=23)).replace(minute=0, second=0, microsecond=0)
+    hourly_rows = s.execute(text(
+        "SELECT date_trunc('hour', at) AS h, result, count(*) FROM auth_events WHERE tenant_id = :t AND at >= :since GROUP BY 1, 2"
+    ), {"t": ctx.id, "since": start}).all()
+    buckets = {start + timedelta(hours=i): {"accept": 0, "reject": 0} for i in range(24)}
+    for h, result, n in hourly_rows:
+        key = h.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+        if key in buckets:
+            buckets[key][result] = n
+    hourly = [{"hour": k.isoformat(), **v} for k, v in sorted(buckets.items())]
+    day = now - timedelta(hours=24)
+    reasons = s.execute(select(m.AuthEvent.reason_code, func.count()).where(m.AuthEvent.tenant_id == ctx.id, m.AuthEvent.result == "reject",
+                                                                            m.AuthEvent.at >= day).group_by(m.AuthEvent.reason_code).order_by(func.count().desc())).all()
+    vlans = {v.vlan_id: v for v in s.scalars(select(m.Vlan).where(m.Vlan.tenant_id == ctx.id))}
+    vlan_usage = s.execute(select(m.AuthEvent.vlan_id, func.count()).where(m.AuthEvent.tenant_id == ctx.id, m.AuthEvent.result == "accept",
+                                                                           m.AuthEvent.at >= day).group_by(m.AuthEvent.vlan_id)).all()
+    warn = policy_settings(s, ctx.id).expiry_warning_days
+    expiring = s.execute(select(m.Certificate, m.Identity).outerjoin(m.Identity, m.Identity.id == m.Certificate.identity_id).where(
+        m.Certificate.tenant_id == ctx.id, m.Certificate.status == "active", m.Certificate.not_after > now,
+        m.Certificate.not_after <= now + timedelta(days=warn), m.Certificate.purpose.in_(("user", "device"))).order_by(m.Certificate.not_after).limit(10)).all()
+    recent = s.scalars(select(m.AuthEvent).where(m.AuthEvent.tenant_id == ctx.id).order_by(m.AuthEvent.id.desc()).limit(12)).all()
+    rs = s.get(m.RadiusSettings, ctx.id)
+    issuing = s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == ctx.id, m.CertificateAuthority.role == "issuing")).first()
+    agent = agent_out(s)
+    snapshot_age = (now - rs.snapshot_built_at).total_seconds() if rs and rs.snapshot_built_at else None
+    return {
+        "tenant": tenant_out(ctx.tenant), "generated_at": now.isoformat(), "health": health_for(s, ctx.tenant),
+        "hourly": hourly,
+        "failure_reasons": [{"reason_code": r, "count": n, "title": (explain(r) or {}).get("title", r or "Unknown")} for r, n in reasons],
+        "vlan_usage": [{"vlan_id": v, "name": vlans[v].name if v in vlans else None, "count": n} for v, n in vlan_usage if v is not None],
+        "expiring": [{"id": str(c.id), "common_name": c.common_name, "serial": c.serial, "not_after": c.not_after.isoformat(),
+                      "identity": {"id": str(i.id), "display_name": i.display_name} if i else None} for c, i in expiring],
+        "recent_events": [event_out(e) for e in recent],
+        "services": {
+            "radius_agent": agent,
+            "snapshot": {"built_at": rs.snapshot_built_at.isoformat() if rs and rs.snapshot_built_at else None, "age_seconds": snapshot_age,
+                         "max_age_seconds": policy_settings(s, ctx.id).max_snapshot_age_seconds,
+                         "applied": ((agent or {}).get("snapshot_versions") or {}).get(str(ctx.id)) == (rs.snapshot_version if rs else None)},
+            "issuing_ca": {"common_name": issuing.common_name, "not_after": issuing.not_after.isoformat()} if issuing else None,
+        },
+    }
+
+
+@router.get("/overview")
+def overview(p: Principal = Depends(principal), s: Session = Depends(db)) -> dict:
+    set_platform(s)
+    allowed = p.accessible_tenant_ids()
+    q = select(m.Tenant).order_by(m.Tenant.name)
+    if allowed is not None:
+        q = q.where(m.Tenant.id.in_(allowed)) if allowed else q.where(False)
+    tenants = [{**tenant_out(t), "health": health_for(s, t)} for t in s.scalars(q)]
+    totals = {"tenants": len(tenants), "accept_24h": sum(t["health"]["auth_24h"]["accept"] for t in tenants),
+              "reject_24h": sum(t["health"]["auth_24h"]["reject"] for t in tenants),
+              "active_certificates": sum(t["health"]["certificates"]["active"] for t in tenants),
+              "expiring_certificates": sum(t["health"]["certificates"]["expiring"] for t in tenants),
+              "critical_issues": sum(1 for t in tenants for i in t["health"]["issues"] if i["severity"] == "critical")}
+    return {"tenants": tenants, "totals": totals, "radius_agent": agent_out(s)}
