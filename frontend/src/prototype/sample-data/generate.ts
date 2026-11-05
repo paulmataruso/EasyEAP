@@ -177,10 +177,13 @@ export function generateSampleData(): SampleData {
     // Identities, devices and certificates
     const tenantIdentities: Identity[] = []
     for (let i = 0; i < ts.users; i++) {
+      // First pass pairs FIRST[i] with LAST[i]; later passes shift the surname so every name is new.
       const first = FIRST[nameCursor % FIRST.length]
-      const last = LAST[(nameCursor * 7) % LAST.length]
+      const last = LAST[(nameCursor + Math.floor(nameCursor / LAST.length) * 5) % LAST.length]
       nameCursor++
-      const username = `${first[0]}${last}`.toLowerCase().normalize('NFD').replace(/[^a-z]/g, '')
+      const baseUsername = `${first[0]}${last}`.toLowerCase().normalize('NFD').replace(/[^a-z]/g, '')
+      let username = baseUsername
+      for (let n = 2; tenantIdentities.some((u) => u.username === username); n++) username = `${baseUsername}${n}` // as AD would
       const roll = rnd()
       const groupIds = [G.du]
       let department = 'Operations'
@@ -279,6 +282,10 @@ export function generateSampleData(): SampleData {
     }
   }
   data.authEvents.sort((a, b) => b.at.localeCompare(a.at))
+  // "Last authentication" always agrees with the RADIUS log.
+  const latest = new Map<string, string>()
+  for (const e of data.authEvents) if (e.identityId && !latest.has(e.identityId)) latest.set(e.identityId, e.at)
+  for (const ident of data.identities) ident.lastAuthAt = latest.get(ident.id) ?? null
 
   // Audit trail (platform + Harborview)
   const auditRows: Array<[number, string | null, string, string, string, string]> = [

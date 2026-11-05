@@ -19,10 +19,14 @@ type Action =
 
 const ACTOR = 'm.okafor@brightline.example'
 
+// The demo clock starts at DEMO_NOW and advances in real time, so actions read "just now" against the sample data.
+const BOOT = Date.now()
+const clockIso = () => new Date(DEMO_NOW.getTime() + (Date.now() - BOOT)).toISOString()
+
 function audit(state: State, action: string, target: string, detail: string): State {
   return {
     ...state,
-    audit: [{ id: `au-${state.audit.length + 1}-${Date.now()}`, tenantId: state.tenantId, at: new Date().toISOString(), actor: ACTOR, action, target, detail }, ...state.audit],
+    audit: [{ id: `au-${state.audit.length + 1}-${Date.now()}`, tenantId: state.tenantId, at: clockIso(), actor: ACTOR, action, target, detail }, ...state.audit],
   }
 }
 
@@ -33,7 +37,7 @@ function reducer(state: State, action: Action): State {
     case 'certificate.revoke': {
       const cert = state.certificates.find((c) => c.id === action.id)
       if (!cert || cert.status === 'revoked') return state
-      const next = { ...state, certificates: state.certificates.map((c) => (c.id === action.id ? { ...c, status: 'revoked' as const, revokedAt: new Date().toISOString(), revocationReason: action.reason, revokedBy: ACTOR } : c)) }
+      const next = { ...state, certificates: state.certificates.map((c) => (c.id === action.id ? { ...c, status: 'revoked' as const, revokedAt: clockIso(), revocationReason: action.reason, revokedBy: ACTOR } : c)) }
       return audit(next, 'certificate.revoke', cert.commonName, `Revoked serial ${cert.serial} (${action.reason}); CRL regenerated, authorization snapshot updated`)
     }
     case 'rule.move': {
@@ -53,13 +57,13 @@ function reducer(state: State, action: Action): State {
     }
     case 'radiusClient.add': {
       const id = `${state.tenantId}:nas-${state.radiusClients.length}-${Date.now()}`
-      const client: RadiusClient = { ...action.client, id, tenantId: state.tenantId, secretSetAt: new Date().toISOString(), lastRequestAt: null, status: 'unconfigured' }
+      const client: RadiusClient = { ...action.client, id, tenantId: state.tenantId, secretSetAt: clockIso(), lastRequestAt: null, status: 'unconfigured' }
       return audit({ ...state, radiusClients: [...state.radiusClients, client] }, 'radius.client.create', client.name, `Registered ${client.address}`)
     }
     case 'radiusClient.rotate': {
       const c = state.radiusClients.find((x) => x.id === action.id)
       if (!c) return state
-      return audit({ ...state, radiusClients: state.radiusClients.map((x) => (x.id === action.id ? { ...x, secretSetAt: new Date().toISOString() } : x)) }, 'radius.client.rotate_secret', c.name, 'Shared secret rotated')
+      return audit({ ...state, radiusClients: state.radiusClients.map((x) => (x.id === action.id ? { ...x, secretSetAt: clockIso() } : x)) }, 'radius.client.rotate_secret', c.name, 'Shared secret rotated')
     }
   }
 }
