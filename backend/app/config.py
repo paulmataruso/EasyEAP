@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote
 
-from pydantic import Field, field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +23,12 @@ class Settings(BaseSettings):
     # Application role (subject to row-level security) and owner role (migrations only).
     database_url: str = "postgresql+psycopg://easyeap_app:easyeap@db:5432/easyeap"
     database_owner_url: str = "postgresql+psycopg://easyeap:easyeap@db:5432/easyeap"
+    # In Docker the passwords come from secret files; the URLs are then built here, for every process
+    # (api, worker, and `docker compose exec easyeap-api easyeap …`), so they never appear in the environment.
+    db_app_password_file: str | None = None
+    db_owner_password_file: str | None = None
+    db_host: str = "easyeap-db"
+    db_name: str = "easyeap"
 
     openbao_addr: str = "http://pki:8200"
     openbao_token: str | None = None  # file:// path to the API's OpenBao token
@@ -46,6 +53,15 @@ class Settings(BaseSettings):
     @classmethod
     def _secrets(cls, v: str | None) -> str | None:
         return _read_secret(v)
+
+    @model_validator(mode="after")
+    def _database_urls_from_secrets(self) -> "Settings":
+        for attr, user, f in (("database_url", "easyeap_app", self.db_app_password_file),
+                              ("database_owner_url", "easyeap", self.db_owner_password_file)):
+            if f and Path(f).is_file():
+                pw = quote(Path(f).read_text().strip(), safe="")
+                setattr(self, attr, f"postgresql+psycopg://{user}:{pw}@{self.db_host}:5432/{self.db_name}")
+        return self
 
     @property
     def is_dev(self) -> bool:

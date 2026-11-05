@@ -58,17 +58,14 @@ docker run --rm -i -v "$SEC_VOL":/data alpine:3.22 sh -c 'find /data -mindepth 1
 say "Restoring the database"
 docker compose up -d easyeap-db >/dev/null
 for _ in $(seq 1 60); do docker compose exec -T easyeap-db pg_isready -U easyeap -d postgres >/dev/null 2>&1 && break; sleep 2; done
-APP_PW="$(cat secrets/db_app_password)" OWNER_PW="$(cat secrets/db_owner_password)"
-docker compose exec -T easyeap-db psql -v ON_ERROR_STOP=1 -U easyeap -d postgres >/dev/null <<SQL
+docker compose exec -T easyeap-db psql -v ON_ERROR_STOP=1 -U easyeap -d postgres \
+  -v app_pw="$(cat secrets/db_app_password)" -v owner_pw="$(cat secrets/db_owner_password)" >/dev/null <<'SQL'
 DROP DATABASE IF EXISTS easyeap WITH (FORCE);
 CREATE DATABASE easyeap OWNER easyeap;
-DO \$\$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'easyeap_app') THEN
-    CREATE ROLE easyeap_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
-  END IF;
-END \$\$;
-ALTER ROLE easyeap_app PASSWORD '${APP_PW}';
-ALTER ROLE easyeap PASSWORD '${OWNER_PW}';
+SELECT 'CREATE ROLE easyeap_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS'
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'easyeap_app') \gexec
+SELECT format('ALTER ROLE easyeap_app PASSWORD %L', :'app_pw') \gexec
+SELECT format('ALTER ROLE easyeap PASSWORD %L', :'owner_pw') \gexec
 SQL
 docker compose exec -T easyeap-db pg_restore -U easyeap -d easyeap --exit-on-error < "$B/database.dump"
 

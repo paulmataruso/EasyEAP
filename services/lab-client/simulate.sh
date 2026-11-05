@@ -17,5 +17,5 @@ network={
 CONF
 addr=$(getent hosts "$host" | awk '{print $1}' | head -1)
 eapol_test -c "$conf" -a "${addr:-$host}" -p 1812 -s "$secret" -M "$mac" -N "30:s:00-11-22-33-44-55:EasyEAP-Lab" -N "4:x:0a000005" -t 15 2>&1 \
-  | grep -E "SUCCESS|FAILURE|Access-Accept|Access-Reject|Tunnel|Attribute|EAP: Status|TLS: |CTRL-EVENT-EAP-(FAILURE|SUCCESS)|Reply-Message" | grep -v "^EAPOL" || true
+  | grep -E "SUCCESS|FAILURE|Access-Accept|Access-Reject|Tunnel|Attribute|Value:|EAP: Status|TLS: |CTRL-EVENT-EAP-(FAILURE|SUCCESS)|Reply-Message" | grep -v "^EAPOL" || true
 rm -f "$conf"
