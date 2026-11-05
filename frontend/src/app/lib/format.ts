@@ -24,11 +24,14 @@ export function relative(iso: string | null | undefined, now: Date = new Date())
   const diff = new Date(iso).getTime() - now.getTime()
   const abs = Math.abs(diff)
   const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [['year', 31_536e6], ['month', 2_592e6], ['week', 6048e5], ['day', 864e5], ['hour', 36e5], ['minute', 6e4]]
-  for (const [unit, ms] of units) {
+  for (const [i, [unit, ms]] of units.entries()) {
     if (abs >= ms) {
-      // Nearest whole unit (a 72-hour link reads "in 3 days", not "in 2"), never zero. remaining() floors instead,
-      // so validity is never overstated.
+      // Nearest whole unit (a 72-hour link reads "in 3 days", not "in 2"), never zero. Rounding up into the next unit
+      // carries over: 59.9 minutes is "in 1 hour", not "in 60 minutes". remaining() floors instead, so validity is
+      // never overstated.
       const n = Math.max(1, Math.round(abs / ms))
+      const bigger = units[i - 1]
+      if (bigger && n * ms >= bigger[1]) return rtf.format(diff < 0 ? -1 : 1, bigger[0])
       return rtf.format(diff < 0 ? -n : n, unit)
     }
   }

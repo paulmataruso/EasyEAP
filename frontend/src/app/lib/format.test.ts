@@ -24,6 +24,8 @@ describe('dates', () => {
   it('rounds to the nearest unit, never to zero', () => {
     expect(relative(at(72 * 36e5 - 5000), now)).toBe('in 3 days')
     expect(relative(at(-(36 * 36e5)), now)).toBe('2 days ago')
+    expect(relative(at(60 * 6e4 - 6000), now)).toBe('in 1 hour')
+    expect(relative(at(-(23.7 * 36e5)), now)).toBe('yesterday')
     expect(relative(at(864e5 + 1), now)).toBe('tomorrow')
     expect(relative(at(23 * 36e5), now)).toBe('in 23 hours')
   })
