@@ -63,6 +63,12 @@ def get_event(event_id: int, ctx: TenantCtx = Depends(require("events:read"))) -
         out["certificate_id"] = str(c.id) if c else None
         dec = ctx.session.get(m.Decision, c.id) if c else None
         out["decision_steps"] = dec.steps if dec else None
+        # The certificate's *current* decision (the one RADIUS enforces now), not a record of the decision at the time
+        # of this attempt: label it as such in the console.
+        out["current_decision"] = {"outcome": dec.outcome, "reason_code": dec.reason_code,
+                                   "deciding_rule_id": str(dec.deciding_rule_id) if dec.deciding_rule_id else None,
+                                   "vlan_id": dec.vlan_id, "attributes": dec.attributes or [], "steps": dec.steps or [],
+                                   "computed_at": dec.computed_at.isoformat()} if dec else None
     return out
 
 

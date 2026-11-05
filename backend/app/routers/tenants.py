@@ -118,8 +118,12 @@ class TenantPatch(BaseModel):
 def update_tenant(body: TenantPatch, ctx: TenantCtx = Depends(require("tenant:write"))) -> dict:
     t = ctx.tenant
     changes = body.model_dump(exclude_none=True)
-    if changes.get("status") == "active" and not ctx.session.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == t.id)).first():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Initialize the tenant's PKI before activating it.")
+    if changes.get("status") == "active":
+        # Activation requires everything RADIUS needs to enforce the tenant (the same gaps posture.enforcement reports).
+        from app.posture import enforcement
+        gaps = [g["message"] for g in enforcement(ctx.session, t, None)["missing"] if g["code"] != "tenant_status"]
+        if gaps:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Finish setup before activating the tenant: " + "; ".join(gaps) + ".")
     for k, v in changes.items():
         setattr(t, k, v.strip() if isinstance(v, str) else v)
     from app.radius.state import bump

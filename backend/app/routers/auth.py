@@ -103,6 +103,20 @@ def me(p: Principal = Depends(principal), s: Session = Depends(db)) -> dict:
     return me_payload(s, p.admin, p.session)
 
 
+class ProfileIn(BaseModel):
+    display_name: str = Field(min_length=1, max_length=120)
+
+
+@router.patch("/me")
+def update_profile(body: ProfileIn, p: Principal = Depends(principal), s: Session = Depends(db)) -> dict:
+    name = body.display_name.strip()
+    if not name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Enter your name.")
+    p.admin.display_name = name
+    audit.record(s, p.actor, "auth.profile_updated", target_type="admin", target_id=p.admin.id, target_label=p.admin.email)
+    return me_payload(s, p.admin, p.session)
+
+
 class PasswordIn(BaseModel):
     current_password: str
     new_password: str = Field(min_length=12, max_length=256)

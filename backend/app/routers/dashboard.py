@@ -55,7 +55,9 @@ def dashboard(ctx: TenantCtx = Depends(require("tenant:read"))) -> dict:
         "tenant": tenant_out(ctx.tenant), "generated_at": now.isoformat(), "health": health_for(s, ctx.tenant),
         "hourly": hourly,
         "failure_reasons": [{"reason_code": r, "count": n, "title": (explain(r) or {}).get("title", r or "Unknown")} for r, n in reasons],
-        "vlan_usage": [{"vlan_id": v, "name": vlans[v].name if v in vlans else None, "count": n} for v, n in vlan_usage if v is not None],
+        "vlan_usage": [{"vlan_id": v, "name": vlans[v].name if v in vlans else None, "color": vlans[v].color if v in vlans else None, "count": n}
+                       for v, n in vlan_usage if v is not None],
+        "expiry_warning_days": warn,
         "expiring": [{"id": str(c.id), "common_name": c.common_name, "serial": c.serial, "not_after": c.not_after.isoformat(),
                       "identity": {"id": str(i.id), "display_name": i.display_name} if i else None} for c, i in expiring],
         "recent_events": [event_out(e) for e in recent],

@@ -91,6 +91,8 @@ def get_cert(cert_id: uuid.UUID, ctx: TenantCtx = Depends(require("certificates:
     out["decision"] = {"outcome": dec.outcome, "reason_code": dec.reason_code, "vlan_id": dec.vlan_id, "deciding_rule_id": str(dec.deciding_rule_id) if dec.deciding_rule_id else None,
                        "attributes": dec.attributes, "steps": dec.steps, "computed_at": dec.computed_at.isoformat()} if dec else None
     out["issuer"] = ctx.session.get(m.CertificateAuthority, c.issuer_ca_id).common_name if c.issuer_ca_id else None
+    # The holder's current groups, so the decision ledger can say which membership matched.
+    out["holder_groups"] = [{"id": str(g.id), "name": g.name} for g in ident.groups if not g.deleted] if ident else []
     return out
 
 

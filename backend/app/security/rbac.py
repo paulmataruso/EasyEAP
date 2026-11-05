@@ -27,7 +27,7 @@ PERMISSIONS: dict[str, set[str]] = {
         "tenant:write", "enrollment:server_keygen",
     },
 }
-PERMISSIONS["platform_operator"] = PERMISSIONS["tenant_admin"] | {"tenants:create"}
+PERMISSIONS["platform_operator"] = PERMISSIONS["tenant_admin"] | {"tenants:create", "platform:read"}
 PERMISSIONS["platform_auditor"] = READ | {"platform:read"}
 PERMISSIONS["platform_owner"] = PERMISSIONS["platform_operator"] | {"platform:read", "platform:write", "admins:manage", "tenants:delete"}
 

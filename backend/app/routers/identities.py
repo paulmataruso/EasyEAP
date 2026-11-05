@@ -112,15 +112,21 @@ def get_identity(identity_id: uuid.UUID, ctx: TenantCtx = Depends(require("ident
     certs = s.scalars(select(m.Certificate).where(m.Certificate.identity_id == i.id).order_by(m.Certificate.not_after.desc())).all()
     enrollments = s.scalars(select(m.Enrollment).where(m.Enrollment.identity_id == i.id).order_by(m.Enrollment.created_at.desc()).limit(20)).all()
     events = s.scalars(select(m.AuthEvent).where(m.AuthEvent.identity_id == i.id).order_by(m.AuthEvent.at.desc()).limit(20)).all()
+    from app.posture import enforcement
     from app.routers.events import event_out
+    from app.routers.radius import agent_out
+    enf = enforcement(s, ctx.tenant, agent_out(s), datetime.now(UTC))
     return {
         **identity_out(i),
+        "enforceable": enf["enforceable"], "enforcement_missing": enf["missing"],
+        "access_now": _access(ctx, [i], datetime.now(UTC))[i.id],
         "object_guid": i.object_guid,
         "devices": [{"id": str(d.id), "name": d.name, "platform": d.platform, "last_seen_mac": d.last_seen_mac, "created_at": d.created_at.isoformat() if d.created_at else None} for d in devices],
         "certificates": [cert_out(c, warn, None, dev_by_id.get(c.device_id)) for c in certs],
         "enrollments": [{"id": str(e.id), "device_name": e.device_name, "platform": e.platform, "method": e.method, "status": e.status,
                          "created_by": e.created_by, "created_at": e.created_at.isoformat() if e.created_at else None,
-                         "expires_at": e.expires_at.isoformat(), "completed_at": e.completed_at.isoformat() if e.completed_at else None} for e in enrollments],
+                         "expires_at": e.expires_at.isoformat(), "completed_at": e.completed_at.isoformat() if e.completed_at else None,
+                         "certificate_id": str(e.certificate_id) if e.certificate_id else None} for e in enrollments],
         "access": {"user": _outcome_json(evaluate_identity(s, i, purpose="user")), "device": _outcome_json(evaluate_identity(s, i, purpose="device"))},
         "events": [event_out(e) for e in events],
     }
@@ -167,10 +173,9 @@ def update_identity(identity_id: uuid.UUID, body: IdentityPatch, ctx: TenantCtx 
     if body.group_ids is not None:
         i.groups = list(s.scalars(select(m.DirectoryGroup).where(m.DirectoryGroup.tenant_id == ctx.id, m.DirectoryGroup.id.in_(body.group_ids))))
     recompute_tenant(s, ctx.id)
-    if body.account_state == "disabled":
-        coa.disconnect_for_identity(s, ctx.id, i.id, "Account disabled")
+    disconnect = coa.disconnect_for_identity(s, ctx.id, i.id, "Account disabled") if body.account_state == "disabled" else None
     audit.record(s, ctx.actor, "identity.updated", tenant_id=ctx.id, target_type="identity", target_id=i.id, target_label=i.username, detail=body.model_dump(mode="json", exclude_none=True))
-    return identity_out(i)
+    return {**identity_out(i), "disconnect": disconnect}
 
 
 @router.post("/{identity_id}/disconnect")

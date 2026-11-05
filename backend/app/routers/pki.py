@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import uuid
 
+from cryptography import x509
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
@@ -38,7 +39,18 @@ def overview(ctx: TenantCtx = Depends(require("certificates:read"))) -> dict:
     cas = s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == ctx.id).order_by(m.CertificateAuthority.role.desc())).all()
     tpls = s.scalars(select(m.CertificateTemplate).where(m.CertificateTemplate.tenant_id == ctx.id).order_by(m.CertificateTemplate.name)).all()
     return {"initialized": any(c.role == "issuing" for c in cas), "authorities": [ca_out(c) for c in cas], "templates": [template_out(t) for t in tpls],
-            "urls": pki.pki_urls(ctx.id), "lab_mode": get_settings().lab_mode}
+            "urls": pki.pki_urls(ctx.id), "lab_mode": get_settings().lab_mode,
+            "crl": _issuing_crl(ctx.id) if any(c.role == "issuing" for c in cas) else None}
+
+
+def _issuing_crl(tenant_id: uuid.UUID) -> dict:
+    """The issuing CA's current CRL as OpenBao publishes it: when it was built, when it must be rebuilt, how many entries."""
+    try:
+        crl = x509.load_pem_x509_crl(pki.crl_pem(OpenBao(), tenant_id).encode())
+    except Exception:  # noqa: BLE001 — the CA page must render even if OpenBao is briefly unreachable
+        return {"available": False, "this_update": None, "next_update": None, "revoked_count": None}
+    return {"available": True, "this_update": crl.last_update_utc.isoformat(),
+            "next_update": crl.next_update_utc.isoformat() if crl.next_update_utc else None, "revoked_count": len(crl)}
 
 
 class CeremonyIn(BaseModel):

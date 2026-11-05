@@ -21,8 +21,19 @@ ACTIONABLE_REJECTS = {"unknown_ca", "cert_unknown", "cert_expired", "cert_revoke
                       "snapshot_stale", "vlan_assignment", "tls_handshake", "client_timeout"}
 
 
+# The worker heartbeats every minute and rebuilds every tenant's snapshot hourly.
+WORKER_STALE = timedelta(minutes=3)
+REBUILD_OVERDUE = timedelta(minutes=75)
+
+
 def _iso(d: datetime | None) -> str | None:
     return d.isoformat() if d else None
+
+
+def worker_seen_at(s: Session) -> datetime | None:
+    hb = s.get(m.PlatformSetting, "worker_heartbeat")
+    at = (hb.value or {}).get("at") if hb else None
+    return datetime.fromisoformat(at) if at else None
 
 
 def certificate_holders(s: Session, tenant_id: uuid.UUID, now: datetime) -> int:
@@ -53,13 +64,20 @@ def enforcement(s: Session, t: m.Tenant, agent: dict | None, now: datetime | Non
     max_age = timedelta(seconds=ps.max_snapshot_age_seconds)
     built = rs.snapshot_built_at if rs else None
     directory_fresh = dc is None or not dc.enabled or bool(dc.last_sync_status == "ok" and dc.last_sync_at and now - dc.last_sync_at < max_age)
+    worker_at = worker_seen_at(s)
+    worker_alive = bool(worker_at and now - worker_at < WORKER_STALE)
     applied = ((agent or {}).get("snapshot_versions") or {}).get(str(t.id))
     return {
         "enforceable": not missing, "missing": missing,
         "snapshot_built_at": _iso(built), "snapshot_version": rs.snapshot_version if rs else None,
         "deadline_at": _iso(built + max_age) if built else None, "max_snapshot_age_seconds": ps.max_snapshot_age_seconds,
-        # While the directory is healthy the worker rebuilds the snapshot hourly, so the deadline keeps moving forward.
-        "auto_refresh": directory_fresh,
+        # While the directory is healthy and the worker is running, the snapshot is rebuilt hourly, so the deadline keeps
+        # moving forward. `refresh_blocked_by` says which of the two stopped it.
+        "auto_refresh": directory_fresh and worker_alive,
+        "refresh_blocked_by": None if directory_fresh and worker_alive else ("worker" if not worker_alive else "directory"),
+        "refresh_overdue": bool(built and now - built > REBUILD_OVERDUE),
+        "directory_fresh": directory_fresh,
+        "worker_alive": worker_alive, "worker_seen_at": _iso(worker_at),
         "agent_online": bool(agent and agent.get("online")),
         "agent_applied_version": applied,
         "agent_in_sync": applied is not None and rs is not None and applied == rs.snapshot_version,
@@ -97,15 +115,31 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
                 "The newest authorization snapshot was built but RADIUS is still using an older one, so recent changes (including revocations) "
                 "are not enforced yet.", "Check RADIUS service", "system", affected=holders,
                 impact_at=None, source_at=datetime.fromisoformat(agent["last_seen_at"]))
+        if not enf["snapshot_built_at"]:
+            add("snapshot_missing", "critical", "RADIUS has no authorization data for this tenant",
+                "The tenant is active, but no authorization snapshot has been built yet, so RADIUS denies everyone. "
+                "Snapshots are built by the background worker.", "Check system health", "system",
+                affected=holders, impact_at=now, source_at=now)
+        elif not enf["worker_alive"]:
+            seen = datetime.fromisoformat(enf["worker_seen_at"]) if enf["worker_seen_at"] else None
+            add("worker_offline", "critical", "Background worker is not running",
+                "Authorization snapshots, directory syncs and CRL updates have stopped. RADIUS keeps using its last snapshot "
+                "until it expires, then denies everyone.", "Check system health", "system",
+                affected=holders, impact_at=deadline, source_at=seen)
+        elif enf["refresh_overdue"] and enf["directory_fresh"]:
+            add("snapshot_overdue", "warning", "Authorization snapshot is overdue",
+                "The worker is running, but this tenant's snapshot hasn't been rebuilt in over an hour. Check the background jobs "
+                "for failures. RADIUS denies everyone when the snapshot expires.", "Check system health", "system",
+                affected=holders, impact_at=deadline, source_at=datetime.fromisoformat(enf["snapshot_built_at"]))
 
     dc = s.get(m.DirectoryConfig, t.id)
     if dc is not None and dc.enabled and dc.last_sync_status == "failed":
         detail = f"The last sync failed: {dc.last_sync_error or 'no detail recorded'}. "
         detail += ("Account and group changes in Active Directory are not reaching RADIUS. The snapshot is no longer refreshed, "
-                   "so RADIUS denies everyone when it expires." if not enf["auto_refresh"] else
+                   "so RADIUS denies everyone when it expires." if not enf["directory_fresh"] else
                    "Account and group changes in Active Directory are not reaching RADIUS until it recovers.")
         add("directory_failed", "critical", "Directory sync is failing", detail, "Fix directory connection", "directory",
-            affected=holders, impact_at=deadline if not enf["auto_refresh"] else None, source_at=dc.last_sync_at)
+            affected=holders, impact_at=deadline if not enf["directory_fresh"] else None, source_at=dc.last_sync_at)
 
     rs = s.get(m.RadiusSettings, t.id)
     if rs is not None and rs.server_certificate_id:
@@ -139,7 +173,7 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
         if n < 5 and reason != "snapshot_stale":
             continue
         e = explain(reason) or {}
-        add(f"rejects:{reason}", "critical" if reason == "snapshot_stale" else "info", f"{n} rejected attempts: {e.get('title', reason)}",
+        add(f"rejects:{reason}", "critical" if reason == "snapshot_stale" else "info", f"{n} rejected attempt{'s' if n != 1 else ''}: {e.get('title', reason)}",
             f"{e.get('explanation', '')} {e.get('fix', '')}".strip(), "See the attempts", f"events:{reason}",
             affected=devices, impact_at=None, source_at=last)
 

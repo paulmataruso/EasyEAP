@@ -116,3 +116,21 @@ def delete_admin(admin_id: uuid.UUID, p: Principal = Depends(platform("admins:ma
     s.delete(a)
     audit.record(s, p.actor, "admin.deleted", target_type="admin", target_id=admin_id, target_label=email)
     return {"ok": True}
+
+
+@router.post("/{admin_id}/reset-mfa")
+def reset_mfa(admin_id: uuid.UUID, p: Principal = Depends(platform("admins:manage")), s: Session = Depends(db)) -> dict:
+    """Turn off another administrator's two-factor authentication (lost authenticator) and end their sessions.
+    They sign in with their password and set it up again. Your own is turned off from your account, with a code."""
+    set_platform(s)
+    a = s.get(m.Admin, admin_id)
+    if a is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Administrator not found.")
+    if a.id == p.admin.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Turn off your own two-factor authentication from your account page.")
+    if not a.mfa_enabled:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This administrator doesn't have two-factor authentication turned on.")
+    a.mfa_enabled, a.mfa_secret_ct = False, None
+    s.execute(delete(m.AdminSession).where(m.AdminSession.admin_id == a.id))
+    audit.record(s, p.actor, "admin.mfa_reset", target_type="admin", target_id=a.id, target_label=a.email)
+    return admin_out(a)

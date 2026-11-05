@@ -54,7 +54,7 @@ Backups contain the unseal key and are therefore always encrypted (`deploy/backu
 | Allow server-generated keys | | | ✓ | |
 | Tenant settings | | | ✓ | |
 
-MSP Operators have Tenant Administrator rights in every tenant and can create tenants. Super Administrators can also manage administrators and delete tenants. MSP Auditors are read-only everywhere.
+MSP Operators have Tenant Administrator rights in every tenant, can create tenants, and can read System health and the platform audit. Super Administrators can also manage administrators (including resetting a lost second factor, which ends that administrator's sessions) and delete tenants. MSP Auditors are read-only everywhere.
 
 - **Staged policy changes.** Rule changes are previewed against the real directory and published atomically. A stale draft is refused (409), and the impact summary is audited.
 - **Logging.** A redacting filter strips passwords, secrets, tokens, bearer headers and PEM private keys from every log line as defence in depth; the code never logs them intentionally. RADIUS events never include shared secrets or key material.

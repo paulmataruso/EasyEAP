@@ -31,15 +31,16 @@ def health(p: Principal = Depends(platform("platform:read")), s: Session = Depen
     checks = []
     try:
         s.execute(text("SELECT 1"))
-        checks.append({"service": "database", "ok": True, "detail": "PostgreSQL reachable"})
+        checks.append({"service": "database", "ok": True, "detail": "PostgreSQL reachable", "checked_at": now.isoformat()})
     except Exception as exc:  # noqa: BLE001
-        checks.append({"service": "database", "ok": False, "detail": str(exc)[:200]})
+        checks.append({"service": "database", "ok": False, "detail": str(exc)[:200], "checked_at": now.isoformat()})
     try:
         h = OpenBao(token="").health()
         ok = h.get("initialized") and not h.get("sealed")
-        checks.append({"service": "pki", "ok": bool(ok), "detail": f"OpenBao {h.get('version', '')} {'unsealed' if not h.get('sealed') else 'SEALED'}"})
+        checks.append({"service": "pki", "ok": bool(ok), "detail": f"OpenBao {h.get('version', '')} {'unsealed' if not h.get('sealed') else 'SEALED'}",
+                       "checked_at": datetime.now(UTC).isoformat()})
     except Exception as exc:  # noqa: BLE001
-        checks.append({"service": "pki", "ok": False, "detail": f"OpenBao unreachable: {exc}"[:200]})
+        checks.append({"service": "pki", "ok": False, "detail": f"OpenBao unreachable: {exc}"[:200], "checked_at": datetime.now(UTC).isoformat()})
     agent = agent_out(s)
     checks.append({"service": "radius", "ok": bool(agent and agent["online"] and agent["config_ok"] and agent["radius_running"]),
                    "detail": ("RADIUS running, configuration applied" if agent and agent["config_ok"] and agent["radius_running"] else
@@ -54,5 +55,5 @@ def health(p: Principal = Depends(platform("platform:read")), s: Session = Depen
     recent_failed = [{"kind": j.kind, "error": (j.last_error or "")[:300], "at": j.finished_at.isoformat() if j.finished_at else None}
                      for j in s.scalars(select(m.Job).where(m.Job.status == "failed").order_by(m.Job.finished_at.desc()).limit(5))]
     backup = s.get(m.PlatformSetting, "last_backup")
-    return {"version": __version__, "checks": checks, "jobs": {"queued": queued, "failed_24h": failed, "recent_failed": recent_failed},
+    return {"version": __version__, "checked_at": now.isoformat(), "checks": checks, "jobs": {"queued": queued, "failed_24h": failed, "recent_failed": recent_failed},
             "backup": backup.value if backup else None}
