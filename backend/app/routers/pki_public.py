@@ -53,7 +53,7 @@ def crl(tenant_id: uuid.UUID, s: Session = Depends(db)) -> Response:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
     try:
         data = pki.crl_der(OpenBao(), tenant_id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "CRL temporarily unavailable") from exc
     return Response(data, media_type="application/pkix-crl", headers={"Cache-Control": "public, max-age=300"})
 

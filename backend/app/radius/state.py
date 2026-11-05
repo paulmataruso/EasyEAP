@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -11,10 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models as m
-from app.pki import crypto, service as pki
+from app.pki import crypto
+from app.pki import service as pki
 from app.pki.openbao import OpenBao
 
 DEFAULT_PORTS = (1812, 1813)
+log = logging.getLogger("easyeap.radius")
 
 
 class RadiusConfigError(ValueError):
@@ -51,7 +54,8 @@ def check_address_unique(session: Session, tenant_id: uuid.UUID, address: str, e
 
 def ensure_server_certificate(session: Session, bao: OpenBao, tenant: m.Tenant, hostname: str) -> m.Certificate:
     rs = session.get(m.RadiusSettings, tenant.id)
-    assert rs is not None
+    if rs is None:
+        raise RadiusConfigError("Save the RADIUS settings before issuing a server certificate.")
     tpl = session.scalars(select(m.CertificateTemplate).where(m.CertificateTemplate.tenant_id == tenant.id, m.CertificateTemplate.purpose == "radius-server")).first()
     if tpl is None:
         raise RadiusConfigError("The RADIUS server certificate template is missing. Initialize the tenant PKI first.")
@@ -84,7 +88,8 @@ def desired_state(session: Session, bao: OpenBao) -> dict:
         try:
             issuing, root = pki.chain_pem(session, t.id)
             crl = pki.crl_pem(bao, t.id)
-        except Exception:  # noqa: BLE001 — a tenant with broken PKI is skipped, never served half-configured
+        except Exception as exc:  # noqa: BLE001 — a tenant with broken PKI is skipped, never served half-configured
+            log.warning("tenant %s omitted from RADIUS config: PKI unavailable (%s)", t.id, type(exc).__name__)
             continue
         root_ca = pki.root_ca(session, t.id)
         clients = [{

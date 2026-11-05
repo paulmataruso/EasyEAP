@@ -1,6 +1,7 @@
 """Tenants (customer organisations) and the MSP overview."""
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,7 @@ from app.pki import service as pki
 from app.pki.openbao import OpenBao
 
 router = APIRouter(prefix="/api", tags=["tenants"])
+log = logging.getLogger("easyeap.tenants")
 SLUG = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$")
 
 
@@ -142,8 +144,8 @@ def delete_tenant(tenant_id: uuid.UUID, body: DeleteIn, p: Principal = Depends(p
     pki.destroy_tenant_pki(bao, t.id)
     try:
         crypto.destroy_tenant_key(bao, t.id)  # crypto-shred all tenant secrets
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001 — the PKI mount is already gone; record and continue the delete
+        log.warning("tenant %s: transit key destruction failed (%s)", t.id, type(exc).__name__)
     name = t.name
     s.delete(t)
     audit.record(s, p.actor, "tenant.deleted", tenant_id=None, target_type="tenant", target_id=tenant_id, target_label=name,

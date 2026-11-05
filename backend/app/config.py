@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     openbao_init_file: str = "/var/lib/easyeap/secrets/openbao-init.json"
 
     agent_token: str | None = None  # bearer token for radius-agent (file://)
-    setup_token_file: str = "/var/lib/easyeap/secrets/setup-token"
+    setup_token_file: str = "/var/lib/easyeap/secrets/setup-token"  # noqa: S105 — a file path, not a secret
     session_secret: str | None = None  # HMAC key for CSRF tokens (file://)
 
     public_url: str = "https://easyeap.localhost"  # console/enrollment base URL
@@ -55,7 +55,7 @@ class Settings(BaseSettings):
         return _read_secret(v)
 
     @model_validator(mode="after")
-    def _database_urls_from_secrets(self) -> "Settings":
+    def _database_urls_from_secrets(self) -> Settings:
         for attr, user, f in (("database_url", "easyeap_app", self.db_app_password_file),
                               ("database_owner_url", "easyeap", self.db_owner_password_file)):
             if f and Path(f).is_file():

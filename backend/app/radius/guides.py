@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app import models as m
 
-SECRET_PLACEHOLDER = "<shared-secret-you-saved>"
+SECRET_PLACEHOLDER = "<shared-secret-you-saved>"  # noqa: S105 — placeholder text, not a secret
 
 
 def _vlans_text(vlans: list[m.Vlan]) -> str:

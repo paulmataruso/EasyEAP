@@ -32,7 +32,8 @@ def claim(session: Session) -> m.Job | None:
     if not row:
         return None
     job = session.get(m.Job, row[0])
-    assert job is not None
+    if job is None:
+        return None
     job.status = "running"
     job.attempts += 1
     job.run_at = datetime.now(UTC)  # while running, run_at records the start time

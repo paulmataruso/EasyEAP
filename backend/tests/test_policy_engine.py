@@ -7,7 +7,7 @@ import pytest
 from app.policy.engine import ALLOWED_EXTRA_ATTRIBUTES, CertInput, RuleInput, evaluate, vlan_attributes
 
 FIX = json.loads((Path(__file__).parent / "fixtures" / "policy_cases.json").read_text())
-NOW = datetime.fromisoformat(FIX["now"].replace("Z", "+00:00"))
+NOW = datetime.fromisoformat(FIX["now"])
 RULES = [RuleInput(id=r["id"], name=r["name"], priority=r["priority"], enabled=r["enabled"], action=r["action"], group_ids=set(r["groups"]),
                    purposes=r["purposes"], vlan_id=r["vlan"]) for r in FIX["rules"]]
 
@@ -18,7 +18,7 @@ def test_shared_cases(case):
     cert = None
     if case.get("cert"):
         c = case["cert"]
-        cert = CertInput(serial="ABC", status=c["status"], not_after=datetime.fromisoformat(c["not_after"].replace("Z", "+00:00")), purpose=c["purpose"])
+        cert = CertInput(serial="ABC", status=c["status"], not_after=datetime.fromisoformat(c["not_after"]), purpose=c["purpose"])
     elif case.get("purpose"):
         cert = CertInput(serial="ABC", status="active", not_after=NOW + timedelta(days=30), purpose=case["purpose"])
     out = evaluate(case["account"], set(case["groups"]), RULES, default["action"], default["vlan"], NOW, cert)

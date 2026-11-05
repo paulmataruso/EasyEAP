@@ -67,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "record-backup":
         from datetime import UTC, datetime
+
         from app import audit
         with platform_session() as s:
             row = s.get(m.PlatformSetting, "last_backup") or m.PlatformSetting(key="last_backup", value={})

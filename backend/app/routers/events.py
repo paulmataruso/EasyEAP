@@ -6,12 +6,12 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session
 
 from app import audit as audit_mod
 from app import models as m
 from app.db import set_platform
 from app.deps import Principal, TenantCtx, db, platform, require
-from sqlalchemy.orm import Session
 from app.radius.explain import explain
 
 router = APIRouter(prefix="/api", tags=["events"])

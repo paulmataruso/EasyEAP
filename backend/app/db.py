@@ -36,7 +36,8 @@ def reset_engine() -> None:
 
 def new_session() -> Session:
     engine()
-    assert _SessionLocal is not None
+    if _SessionLocal is None:
+        raise RuntimeError("database engine is not initialised")
     return _SessionLocal()
 
 
@@ -50,7 +51,7 @@ def _apply_scope(session: Session, connection) -> None:
 
 
 @event.listens_for(Session, "after_begin")
-def _scope_on_begin(session: Session, transaction, connection) -> None:  # noqa: ARG001
+def _scope_on_begin(session: Session, _transaction, connection) -> None:
     """Re-apply the tenant/platform scope at the start of every transaction (SET LOCAL is per-transaction)."""
     _apply_scope(session, connection)
 

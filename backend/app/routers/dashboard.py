@@ -11,6 +11,7 @@ from app import models as m
 from app.db import set_platform
 from app.deps import Principal, TenantCtx, db, principal, require
 from app.policy.service import policy_settings
+from app.posture import enforcement, needs_action
 from app.radius.explain import explain
 from app.routers.events import event_out
 from app.routers.radius import agent_out
@@ -48,7 +49,9 @@ def dashboard(ctx: TenantCtx = Depends(require("tenant:read"))) -> dict:
     issuing = s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == ctx.id, m.CertificateAuthority.role == "issuing")).first()
     agent = agent_out(s)
     snapshot_age = (now - rs.snapshot_built_at).total_seconds() if rs and rs.snapshot_built_at else None
+    enf = enforcement(s, ctx.tenant, agent, now)
     return {
+        "enforcement": enf, "queue": needs_action(s, ctx.tenant, agent, enf, now),
         "tenant": tenant_out(ctx.tenant), "generated_at": now.isoformat(), "health": health_for(s, ctx.tenant),
         "hourly": hourly,
         "failure_reasons": [{"reason_code": r, "count": n, "title": (explain(r) or {}).get("title", r or "Unknown")} for r, n in reasons],
@@ -73,10 +76,15 @@ def overview(p: Principal = Depends(principal), s: Session = Depends(db)) -> dic
     q = select(m.Tenant).order_by(m.Tenant.name)
     if allowed is not None:
         q = q.where(m.Tenant.id.in_(allowed)) if allowed else q.where(False)
-    tenants = [{**tenant_out(t), "health": health_for(s, t)} for t in s.scalars(q)]
+    agent = agent_out(s)
+    tenants = []
+    for t in s.scalars(q):
+        enf = enforcement(s, t, agent)
+        queue = needs_action(s, t, agent, enf)
+        tenants.append({**tenant_out(t), "health": health_for(s, t), "enforcement": enf, "queue_top": queue[:3], "queue_count": len(queue)})
     totals = {"tenants": len(tenants), "accept_24h": sum(t["health"]["auth_24h"]["accept"] for t in tenants),
               "reject_24h": sum(t["health"]["auth_24h"]["reject"] for t in tenants),
               "active_certificates": sum(t["health"]["certificates"]["active"] for t in tenants),
               "expiring_certificates": sum(t["health"]["certificates"]["expiring"] for t in tenants),
               "critical_issues": sum(1 for t in tenants for i in t["health"]["issues"] if i["severity"] == "critical")}
-    return {"tenants": tenants, "totals": totals, "radius_agent": agent_out(s)}
+    return {"tenants": tenants, "totals": totals, "radius_agent": agent, "generated_at": datetime.now(UTC).isoformat()}

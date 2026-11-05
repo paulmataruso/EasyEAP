@@ -92,7 +92,7 @@ def test_pkcs12_uses_aes_and_password():
     pw = generate_password()
     p12 = build_pkcs12(kpem, root, [root], pw, "test")
     from cryptography.hazmat.primitives.serialization import pkcs12
-    k, c, extra = pkcs12.load_key_and_certificates(p12, pw.encode())
+    k, c, _extra = pkcs12.load_key_and_certificates(p12, pw.encode())
     assert c is not None and k is not None
     try:
         pkcs12.load_key_and_certificates(p12, b"wrong")
@@ -104,14 +104,14 @@ def test_pkcs12_uses_aes_and_password():
 def test_profiles():
     _, root = _self_signed()
     xml = profiles.windows_wlan_xml("Corp", "radius.corp.example", root)
-    tree = ET.fromstring(xml)
+    tree = ET.fromstring(xml)  # noqa: S314 — parsing our own generated profile
     assert tree.tag.endswith("WLANProfile") and "radius.corp.example" in xml and "<useOneX>true</useOneX>" in xml
     mc = profiles.apple_mobileconfig(ssid="Corp", server_name="radius.corp.example", root_pem=root, issuing_pem=root, org="Corp", tenant_slug="corp", identity_label="j")
     assert profiles.PKCS12_MARKER.encode() in mc
     filled = profiles.apple_mobileconfig(ssid="Corp", server_name="radius.corp.example", root_pem=root, issuing_pem=root, org="Corp", tenant_slug="corp",
                                          identity_label="j", pkcs12_b64="AAAA")
     plist = plistlib.loads(filled)
-    wifi = [p for p in plist["PayloadContent"] if p["PayloadType"] == "com.apple.wifi.managed"][0]
+    wifi = next(p for p in plist["PayloadContent"] if p["PayloadType"] == "com.apple.wifi.managed")
     assert wifi["EAPClientConfiguration"]["AcceptEAPTypes"] == [13] and wifi["EAPClientConfiguration"]["TLSTrustedServerNames"] == ["radius.corp.example"]
     assert "domain-suffix-match=radius.corp.example" in profiles.networkmanager("Corp", "radius.corp.example", "j@corp")
     ps = profiles.windows_powershell("https://e.example", "TOKEN", "Corp", "radius.corp.example", root, root)

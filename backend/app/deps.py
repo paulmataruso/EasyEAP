@@ -13,9 +13,9 @@ from app import models as m
 from app.audit import Actor
 from app.config import get_settings
 from app.db import new_session, set_platform, set_tenant
+from app.secrets_store import session_secret
 from app.security.rbac import permissions_for
 from app.security.tokens import constant_eq, hmac_hex, token_hash
-from app.secrets_store import session_secret
 
 SESSION_COOKIE = "easyeap_session"
 UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}

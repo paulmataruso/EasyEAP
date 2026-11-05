@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ldap3 import BASE, NONE, SUBTREE, Connection, Server, ServerPool, Tls, FIRST
+from ldap3 import BASE, FIRST, NONE, SUBTREE, Connection, Server, ServerPool, Tls
 from ldap3.core.exceptions import LDAPException
 from ldap3.utils.conv import escape_filter_chars
 
@@ -111,7 +111,7 @@ def connect(p: DirectoryParams, timeout: int = 8) -> Connection:
 
 def _hint_for(message: str) -> str:
     msg = message.lower()
-    if "certificate verify failed" in msg or "certificate" in msg and "verify" in msg:
+    if "certificate verify failed" in msg or ("certificate" in msg and "verify" in msg):
         return "The domain controller's certificate is not trusted. Upload your AD root CA (PEM) in Advanced settings."
     if "doesn't match" in msg or "does not match" in msg or ("hostname" in msg and "match" in msg):
         return "The certificate does not match the hostname. Use the DC's fully qualified name as it appears in its certificate."

@@ -127,7 +127,7 @@ def build_pkcs12(key_pem: str, cert_pem: str, chain_pems: list[str], password: s
     if legacy:
         # Compatibility for older Android/macOS keychains only; never the default.
         enc = (serialization.PrivateFormat.PKCS12.encryption_builder().kdf_rounds(50_000)
-               .key_cert_algorithm(pkcs12.PBES.PBESv1SHA1And3KeyTripleDESCBC).hmac_hash(hashes.SHA1()).build(password.encode()))
+               .key_cert_algorithm(pkcs12.PBES.PBESv1SHA1And3KeyTripleDESCBC).hmac_hash(hashes.SHA1()).build(password.encode()))  # noqa: S303 — opt-in legacy format
     else:
         enc = (serialization.PrivateFormat.PKCS12.encryption_builder().kdf_rounds(P12_ITERATIONS)
                .key_cert_algorithm(pkcs12.PBES.PBESv2SHA256AndAES256CBC).hmac_hash(hashes.SHA256()).build(password.encode()))

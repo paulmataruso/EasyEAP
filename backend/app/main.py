@@ -14,8 +14,25 @@ from app.enrollment.service import EnrollmentError
 from app.pki.openbao import OpenBaoError
 from app.pki.service import PkiError
 from app.radius.state import RadiusConfigError
-from app.routers import (admins, agent, auth, certificates, dashboard, directory, enroll_public, enrollments, events, identities,
-                         pki, pki_public, policy, radius, setup, system, tenants)
+from app.routers import (
+    admins,
+    agent,
+    auth,
+    certificates,
+    dashboard,
+    directory,
+    enroll_public,
+    enrollments,
+    events,
+    identities,
+    pki,
+    pki_public,
+    policy,
+    radius,
+    setup,
+    system,
+    tenants,
+)
 from app.security.redact import configure_logging
 
 configure_logging()

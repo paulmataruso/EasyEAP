@@ -113,7 +113,7 @@ def snapshot(session: Session, tenant_id: uuid.UUID) -> dict:
     entries = []
     now = datetime.now(UTC)
     for r in rows:
-        if r.outcome == "deny" and r.reason_code in ("cert_expired",) and r.not_after < now - timedelta(days=90):
+        if r.outcome == "deny" and r.reason_code == "cert_expired" and r.not_after < now - timedelta(days=90):
             continue  # keep the snapshot small; long-expired certs fail TLS validation anyway
         entries.append({
             "serial": r.serial, "outcome": r.outcome, "reason": r.reason_code, "vlan": r.vlan_id,

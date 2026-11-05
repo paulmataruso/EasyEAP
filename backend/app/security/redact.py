@@ -4,7 +4,7 @@ import re
 
 _PATTERNS = [
     re.compile(r"(?i)(password|passwd|secret|token|passphrase|bind_password|shared_secret|private_key|p12)(\"?\s*[:=]\s*\"?)([^\s\",}]+)"),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
     re.compile(r"(?i)(authorization:\s*bearer\s+)\S+"),
     re.compile(r"(?i)(x-vault-token:\s*)\S+"),
 ]

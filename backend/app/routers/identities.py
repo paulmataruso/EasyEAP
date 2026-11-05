@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr, Field
@@ -11,7 +11,8 @@ from sqlalchemy import func, or_, select
 from app import audit
 from app import models as m
 from app.deps import TenantCtx, require
-from app.policy.service import evaluate_identity, policy_settings, recompute_tenant
+from app.policy.engine import CertInput, evaluate
+from app.policy.service import _default_vlan, evaluate_identity, load_rules, policy_settings, recompute_tenant
 from app.radius import coa
 from app.routers.certificates import cert_out
 
@@ -50,7 +51,43 @@ def list_identities(ctx: TenantCtx = Depends(require("identities:read")), q: str
     counts = dict(s.execute(select(m.Certificate.identity_id, func.count()).where(m.Certificate.identity_id.in_(ids)).group_by(m.Certificate.identity_id)).all()) if ids else {}
     active = dict(s.execute(select(m.Certificate.identity_id, func.count()).where(m.Certificate.identity_id.in_(ids), m.Certificate.status == "active",
                                                                                  m.Certificate.not_after > now).group_by(m.Certificate.identity_id)).all()) if ids else {}
-    return {"total": total, "page": page, "page_size": page_size, "items": [identity_out(i, counts.get(i.id, 0), active.get(i.id, 0)) for i in rows]}
+    access = _access(ctx, rows, now)
+    from app.posture import enforcement
+    from app.routers.radius import agent_out
+    enf = enforcement(s, ctx.tenant, agent_out(s), now)
+    return {"total": total, "page": page, "page_size": page_size, "enforceable": enf["enforceable"], "enforcement_missing": enf["missing"],
+            "items": [{**identity_out(i, counts.get(i.id, 0), active.get(i.id, 0)), "access": access[i.id]} for i in rows]}
+
+
+def _access(ctx: TenantCtx, rows: list[m.Identity], now: datetime) -> dict[uuid.UUID, dict]:
+    """Per user: can they connect now (allowed by policy *and* holding a valid certificate), or why not.
+
+    "allowed_no_certificate" means the policy would allow them but they have no valid certificate yet.
+    """
+    s = ctx.session
+    ids = [i.id for i in rows]
+    if not ids:
+        return {}
+    decisions: dict[uuid.UUID, list] = {}
+    for d in s.execute(select(m.Decision.identity_id, m.Decision.outcome, m.Decision.vlan_id, m.Decision.reason_code)
+                       .join(m.Certificate, m.Certificate.id == m.Decision.certificate_id)
+                       .where(m.Decision.identity_id.in_(ids), m.Certificate.status == "active", m.Certificate.not_after > now)):
+        decisions.setdefault(d.identity_id, []).append(d)
+    ps = policy_settings(s, ctx.id)
+    rules, dv = load_rules(s, ctx.id), _default_vlan(s, ps)
+    out = {}
+    for i in rows:
+        held = decisions.get(i.id)
+        if held:
+            allow = sorted((d for d in held if d.outcome == "allow"), key=lambda d: d.vlan_id or 0)
+            out[i.id] = ({"status": "can_connect", "vlan_id": allow[0].vlan_id, "reason_code": None} if allow else
+                         {"status": "denied", "vlan_id": None, "reason_code": held[0].reason_code})
+            continue
+        o = evaluate(i.account_state, {str(g.id) for g in i.groups if not g.deleted}, rules, ps.default_action, dv, now,
+                     CertInput(serial="(preview)", status="active", not_after=now + timedelta(days=1), purpose="user"))
+        out[i.id] = ({"status": "allowed_no_certificate", "vlan_id": o.vlan_id, "reason_code": None} if o.outcome == "allow" else
+                     {"status": "denied", "vlan_id": None, "reason_code": o.reason_code})
+    return out
 
 
 def _get(ctx: TenantCtx, identity_id: uuid.UUID) -> m.Identity:

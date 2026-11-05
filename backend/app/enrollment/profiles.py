@@ -16,7 +16,7 @@ PKCS12_MARKER = "EASYEAP-PKCS12-BASE64"
 
 def _thumbprint(pem: str) -> str:
     cert = x509.load_pem_x509_certificate(pem.encode())
-    h = cert.fingerprint(hashes.SHA1()).hex()  # Windows WLAN profiles identify trusted roots by SHA-1 thumbprint
+    h = cert.fingerprint(hashes.SHA1()).hex()  # noqa: S303 — Windows WLAN profiles identify trusted roots by SHA-1 thumbprint
     return " ".join(h[i:i + 2] for i in range(0, len(h), 2))
 
 

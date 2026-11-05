@@ -119,6 +119,6 @@ def download_package(token: str, request: Request, s: Session = Depends(db)) -> 
 
 @router.get("/{token}/ca.pem", response_class=PlainTextResponse)
 def ca_chain(token: str, request: Request, s: Session = Depends(db)) -> str:
-    e, tenant, _ = _load(token, request, s)
+    _, tenant, _ = _load(token, request, s)
     issuing, root = pki.chain_pem(s, tenant.id)
     return issuing + (root or "")

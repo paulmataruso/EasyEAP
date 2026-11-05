@@ -102,7 +102,7 @@ def save_settings(body: SettingsIn, ctx: TenantCtx = Depends(require("radius:wri
     if hostname_changed or rs.server_certificate_id is None:
         try:
             issued = ensure_server_certificate(s, OpenBao(), ctx.tenant, rs.server_hostname)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Settings need an initialized PKI to issue the RADIUS server certificate: {exc}") from exc
     rs.config_version += 1
     audit.record(s, ctx.actor, "radius.settings_saved", tenant_id=ctx.id, target_type="radius", target_label=body.server_hostname,

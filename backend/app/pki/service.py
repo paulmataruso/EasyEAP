@@ -222,7 +222,7 @@ def render_names(tpl: m.CertificateTemplate, values: dict[str, str]) -> tuple[st
 
 
 def names_for_identity(identity: m.Identity, device_name: str, tenant: m.Tenant) -> dict[str, str]:
-    safe_device = "".join(c if c.isalnum() or c in "-" else "-" for c in device_name.lower()).strip("-")[:40] or "device"
+    safe_device = "".join(c if c.isalnum() or c == "-" else "-" for c in device_name.lower()).strip("-")[:40] or "device"
     return {
         "upn": identity.upn or f"{identity.username}@{tenant.domain}",
         "username": identity.username,

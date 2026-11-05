@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models as m
-from app.db import set_platform, set_tenant
+from app.db import set_platform
 from app.deps import agent_auth, db
 from app.pki.openbao import OpenBao
 from app.policy.service import snapshot

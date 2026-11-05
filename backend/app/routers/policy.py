@@ -1,6 +1,7 @@
 """VLANs, access rules, tenant defaults and the decision simulator."""
 from __future__ import annotations
 
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,6 +11,7 @@ from sqlalchemy import func, select
 from app import audit
 from app import models as m
 from app.deps import TenantCtx, require
+from app.policy import draft as policy_draft
 from app.policy.engine import ALLOWED_EXTRA_ATTRIBUTES
 from app.policy.service import evaluate_identity, policy_settings, recompute_tenant
 from app.radius.state import bump
@@ -40,7 +42,8 @@ def get_policy(ctx: TenantCtx = Depends(require("policy:read"))) -> dict:
     rules = s.scalars(select(m.AccessRule).where(m.AccessRule.tenant_id == ctx.id).order_by(m.AccessRule.priority, m.AccessRule.id)).all()
     usage = dict(s.execute(select(m.Decision.vlan_id, func.count()).where(m.Decision.tenant_id == ctx.id, m.Decision.outcome == "allow").group_by(m.Decision.vlan_id)).all())
     return {"vlans": [{**vlan_out(v), "certificates": usage.get(v.vlan_id, 0)} for v in vlans], "rules": [rule_out(r) for r in rules],
-            "settings": settings_out(policy_settings(s, ctx.id)), "allowed_extra_attributes": sorted(ALLOWED_EXTRA_ATTRIBUTES)}
+            "settings": settings_out(policy_settings(s, ctx.id)), "allowed_extra_attributes": sorted(ALLOWED_EXTRA_ATTRIBUTES),
+            "revision": policy_draft.revision(s, ctx.id)}
 
 
 def _changed(ctx: TenantCtx) -> None:
@@ -228,3 +231,104 @@ def simulate(body: SimulateIn, ctx: TenantCtx = Depends(require("policy:read")))
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
     o = evaluate_identity(ctx.session, i, purpose=body.purpose)
     return {"outcome": o.outcome, "reason_code": o.reason_code, "deciding_rule_id": o.deciding_rule_id, "vlan_id": o.vlan_id, "attributes": o.attributes, "steps": o.steps}
+
+
+# ── Staged changes: preview and atomic publish ───────────────────────────────
+
+
+class DraftRuleIn(RuleIn):
+    id: uuid.UUID | None = None
+
+
+class DraftIn(BaseModel):
+    revision: str = Field(min_length=1, max_length=64)
+    rules: list[DraftRuleIn] = Field(max_length=500)
+    default_action: str = Field(pattern="^(allow|deny)$")
+    default_vlan_ref: uuid.UUID | None = None
+
+
+def _draft_data(ctx: TenantCtx, body: DraftIn) -> list[policy_draft.DraftRuleData]:
+    seen: set[uuid.UUID] = set()
+    out = []
+    for r in body.rules:
+        _validate_rule(ctx, r)
+        if r.id is not None:
+            if r.id in seen:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"“{r.name}” appears twice in the draft.")
+            seen.add(r.id)
+        out.append(policy_draft.DraftRuleData(id=r.id, name=r.name, enabled=r.enabled, action=r.action, vlan_ref=r.vlan_ref,
+                                              group_ids=list(dict.fromkeys(r.group_ids)), purposes=r.purposes,
+                                              extra_attributes=[a.model_dump() for a in r.extra_attributes]))
+    if body.default_action == "allow":
+        if not body.default_vlan_ref:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose the VLAN that the default Allow assigns.")
+        v = ctx.session.get(m.Vlan, body.default_vlan_ref)
+        if v is None or v.tenant_id != ctx.id:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose a default VLAN from this tenant.")
+    return out
+
+
+def _check_revision(ctx: TenantCtx, body: DraftIn) -> str:
+    current = policy_draft.revision(ctx.session, ctx.id)
+    if body.revision != current:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Someone published a policy change after you started this draft. "
+                                                      "Reload the policy to see it, then make your change again.")
+    return current
+
+
+@router.post("/preview")
+def preview(body: DraftIn, ctx: TenantCtx = Depends(require("policy:read"))) -> dict:
+    data = _draft_data(ctx, body)
+    out = policy_draft.preview(ctx.session, ctx.id, data, body.default_action, body.default_vlan_ref if body.default_action == "allow" else None)
+    out["revision_current"] = policy_draft.revision(ctx.session, ctx.id) == body.revision
+    return out
+
+
+def _fingerprint(r: m.AccessRule) -> tuple:
+    return (r.name, r.description, r.enabled, r.action, r.vlan_ref, r.priority, tuple(sorted(str(g.id) for g in r.groups)),
+            tuple(r.purposes or []), json.dumps(r.extra_attributes or [], sort_keys=True))
+
+
+@router.post("/publish")
+def publish(body: DraftIn, ctx: TenantCtx = Depends(require("policy:write"))) -> dict:
+    s = ctx.session
+    before_rev = _check_revision(ctx, body)
+    data = _draft_data(ctx, body)
+    default_vlan_ref = body.default_vlan_ref if body.default_action == "allow" else None
+    impact = policy_draft.preview(s, ctx.id, data, body.default_action, default_vlan_ref)["summary"]
+
+    existing = {r.id: r for r in s.scalars(select(m.AccessRule).where(m.AccessRule.tenant_id == ctx.id))}
+    groups = {g.id: g for g in s.scalars(select(m.DirectoryGroup).where(m.DirectoryGroup.tenant_id == ctx.id))}
+    created, updated, deleted = [], [], []
+    keep: set[uuid.UUID] = set()
+    for i, r in enumerate(data):
+        if r.id is not None and r.id not in existing:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"“{r.name}” no longer exists. Reload the policy and try again.")
+        row = existing[r.id] if r.id is not None else m.AccessRule(tenant_id=ctx.id)
+        was = _fingerprint(row) if r.id is not None else None
+        row.name, row.enabled, row.action, row.purposes = r.name, r.enabled, r.action, r.purposes
+        row.description = body.rules[i].description
+        row.vlan_ref = r.vlan_ref if r.action == "allow" else None
+        row.extra_attributes = r.extra_attributes if r.action == "allow" else []
+        row.priority = (i + 1) * 10
+        row.groups = [groups[g] for g in r.group_ids]
+        if r.id is None:
+            s.add(row)
+            created.append(r.name)
+        else:
+            keep.add(r.id)
+            if was != _fingerprint(row):
+                updated.append(r.name)
+    for rid, row in existing.items():
+        if rid not in keep:
+            deleted.append(row.name)
+            s.delete(row)
+    ps = policy_settings(s, ctx.id)
+    ps.default_action, ps.default_vlan_ref = body.default_action, default_vlan_ref
+    s.flush()
+    _changed(ctx)
+    after_rev = policy_draft.revision(s, ctx.id)
+    audit.record(s, ctx.actor, "policy.published", tenant_id=ctx.id, target_type="policy",
+                 detail={"from_revision": before_rev, "to_revision": after_rev, "created": created, "updated": updated, "deleted": deleted,
+                         "order": [r.name for r in data], "default_action": body.default_action, "impact": impact})
+    return {**get_policy(ctx), "impact": impact}
