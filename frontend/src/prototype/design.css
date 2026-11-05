@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body { margin: 0; background: #07090d; color: #e6e9ef; -webkit-font-smoothing: antialiased; }
+}

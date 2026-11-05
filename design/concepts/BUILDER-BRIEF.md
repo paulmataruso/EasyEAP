@@ -1,0 +1,38 @@
+# Concept builder brief (applies to all six concepts)
+
+You build ONE design concept as a functional prototype inside `frontend/src/concepts/<x>/`. Six concepts are built in parallel from the same foundation and the same synthetic data so they can be compared fairly. **Write only inside your concept directory.** If you need a shared change, describe it in your final report instead of editing shared files.
+
+## Foundation you must use (read these files first)
+- `frontend/src/concepts/contract.ts` — `ConceptModule` / `ConceptProps`. Your `index.tsx` default-exports a `ConceptModule` whose `Root` renders the whole app shell for any `screen` and calls `navigate(screen, entityId?)` to move.
+- `frontend/src/prototype/store.tsx` — hooks: `useTenants()`, `useTenantData()`, `useActions()`, `useDecision()`, `useDecisions()`, `useMetrics()`, `now()` (fixed demo clock — never use `new Date()` for relative times).
+- `frontend/src/domain/types.ts`, `domain/explain.ts` (failure translations, labels), `domain/policy.ts`.
+- `frontend/src/ui/lib.ts` (formatters, `cn`, `copyText`), `ui/useTable.ts` (search/sort), `ui/charts.ts` (d3 geometry), `ui/Logo.tsx` (`LogoMark`, `Wordmark` — the EasyEAP brand; recolour with `currentColor`, never redraw it).
+- Behaviour primitives: `import { Dialog, AlertDialog, DropdownMenu, Popover, Tabs, Tooltip, Select, Switch, RadioGroup, Toast, ScrollArea, VisuallyHidden } from 'radix-ui'`. Style them yourself. Icons: `lucide-react`. Fonts: import your concept's `@fontsource…` CSS at the top of your `index.tsx`.
+- Styling: Tailwind v4 utilities are available globally. Put your design tokens as CSS custom properties on a root element with `data-concept="<x>"` in a `concept.css` file you import; scope every custom class under `[data-concept="<x>"]` so nothing leaks to other concepts.
+
+## The seven screens (all required, all working)
+1. **Dashboard** — real numbers from `useMetrics()`: total Wi-Fi users, authorized/unauthorized, active/expiring/revoked certificates, authentication success rate + failures (24h, hourly history chart), active RADIUS clients, recent authentication activity, recent certificate/audit activity, PKI health (issuing CA, offline root, CRL next update, OCSP), directory (AD) status + last sync, RADIUS status + snapshot age. Show one state worth seeing (Riverside WLC degraded).
+2. **Users** — search; filters for source (AD / local, shown separately or clearly distinguished), access (allowed/denied), certificate status, group; sortable columns; columns include access status, certificate status/expiry, last authentication, assigned VLAN. Row → user detail.
+3. **User details** (`entityId` = identity id) — AD info (UPN, department, title, account state, groups), the access decision (allowed/denied, VLAN, **which rule decided** and the full trace from `useDecision`), devices with their certificates (each individually revocable), recent auth events with plain-language failure explanations, primary action **Issue Wi-Fi certificate** (opens a dialog: choose device name + platform + key generation method — on-device (default, recommended) vs server-generated (admin mode, explained as less secure); the prototype may stop at "Enrollment link created").
+4. **Certificates** — totals; CA status (offline root, issuing CA expiry, CRL last/next, OCSP); searchable/filterable table (serial, subject, user/device, issuing CA, issued, expires, status, revocation info); certificate detail; **revoke flow** = reason (RFC 5280 labels from `revocationReasonLabels`) + confirmation + immediate status update + audit row. Revocation copy must be honest: new authentications are rejected within seconds; already-connected devices stay online until they reauthenticate or a CoA disconnect is sent (only for controllers with CoA enabled).
+5. **RADIUS** — server settings (hostname, auth/acct ports 1812/1813, TLS minimum, Message-Authenticator required, TLS session cache, session timeout), server certificate, wireless controllers table with status, **add controller form** (name, vendor, IP/CIDR, site, CoA + port; validate input; shows a generated shared secret ONCE with copy, then never again), rotate secret, and a copy-ready config snippet for the selected vendor (Catalyst 9800 CLI, AireOS CLI, UniFi steps).
+6. **VLAN policies** — VLAN list (colour-coded consistently everywhere in your concept), access rules in precedence order with move up/down + enable toggle, "Deny rules always win" explained, the default action, and **test a user**: pick an identity → show the decision trace and resulting VLAN + RADIUS attributes (`Tunnel-Type`, `Tunnel-Medium-Type`, `Tunnel-Private-Group-ID`).
+7. **Tenants (MSP)** — portfolio of all tenants: health (RADIUS / PKI / directory), users, expiring certificates, 24h auth success, last directory sync, setup state (Atlas Fabrication is mid-setup — show what remains). Selecting a tenant switches tenant and opens its dashboard.
+
+The **tenant switcher** must exist in your shell on every screen and actually switch data (`useTenants().switchTenant`). Atlas Fabrication has no events/controllers/directory — every screen needs a useful empty state for it.
+
+## Quality bar (identical for all six — the comparison depends on it)
+- Read `/root/.claude/plugins/cache/impeccable/impeccable/4.7.0/skills/impeccable/reference/craft-floor.md` and `…/reference/mode-operate.md` before writing UI. Operate mode: it must read as a working product of its category first; the concept lends type, palette, density and one signature move.
+- **Bans:** no eyebrow/kicker labels above headings; no gradient text; no coloured `border-left/right` thicker than 1px; no emoji or unicode glyphs as icons; no hard offset shadows; no nested cards; glass/blur only where it is a specific effect (overlay, sticky layer, inspector), never on everything. Avoid excessive blur, glow and over-rounded cards (brief).
+- Text contrast ≥ 4.5:1 (≥ 3:1 large) measured on the actual glass/surface; `tabular-nums` on numbers; keyboard-operable everything with a visible themed focus ring; Radix dialogs (focus trap, Esc); `prefers-reduced-motion` respected; theme `::selection`, caret, scrollbars.
+- Charts (dataviz skill): pick the form by the data's job; categorical colours (e.g. your VLAN palette) in fixed order and validated: `node /tmp/claude-0/bundled-skills/2.1.316/04b5f0aca29f0accee35e7142b7ff288/dataviz/scripts/validate_palette.js "<hex,hex,…>" --mode dark` against your chart surface; status colours reserved and always paired with icon/label; thin marks, 2px lines; hover tooltip on every chart; legend when ≥ 2 series; one y-axis only; text in text colours, never series colours.
+- Product language, short and specific; controls name their action; errors name the problem and the fix.
+- Designed for 1440×900, must hold at 1920×1080, and remain usable at 390px wide (collapse/stack the nav).
+- Only installed dependencies. No network fonts/CDNs.
+
+## Verify before reporting
+A dev server runs at `http://localhost:5173/design.html`. Your concept: `#/c/<x>/<screen>`.
+1. `cd frontend && pnpm typecheck && pnpm lint` — zero errors.
+2. `/root/.claude/plugins/cache/impeccable/impeccable/4.7.0/skills/impeccable/scripts/impeccable detect --json src/concepts/<x>` — fix findings or justify them.
+3. `node scripts/screenshots.mjs --concepts <x> --out ../design/screenshots` then **open every PNG in `design/screenshots/<x>/`** (Read tool) and fix overlap, clipping, blank areas, contrast and alignment. Two inspection rounds maximum.
+4. Report: what you built, the signature move and where it lives, the palette you validated (with validator result), detector result, known gaps, and any shared-file change you need.

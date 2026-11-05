@@ -1,0 +1,32 @@
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+playwright-report/
+test-results/
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+# Env & secrets
+.env
+.env.*
+!.env.example
+deploy/secrets/
+*.key
+*.pem
+!**/fixtures/**/*.pem
+# Impeccable local state
+.impeccable/*.local.json
+.impeccable/live/
+.impeccable/review/tmp/
+# Screenshots scratch
+design/screenshots/tmp/
+# Runtime data
+data/
+backups/

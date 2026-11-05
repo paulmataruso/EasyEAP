@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "impeccable": { "source": { "source": "github", "repo": "pbakaus/impeccable" } },
+    "ui-ux-pro-max-skill": { "source": { "source": "github", "repo": "nextlevelbuilder/ui-ux-pro-max-skill" } }
+  },
+  "enabledPlugins": {
+    "impeccable@impeccable": true,
+    "ui-ux-pro-max@ui-ux-pro-max-skill": true
+  }
+}
