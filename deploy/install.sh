@@ -63,8 +63,10 @@ host="$(grep '^EASYEAP_HOSTNAME=' .env | cut -d= -f2)"
 
 # ── TLS certificate for the console (replace with your own; see DEPLOYMENT.md) ─
 if [ ! -s secrets/tls.crt ] || [ ! -s secrets/tls.key ]; then
+  # Browsers match an IP address only against an IP subjectAltName, never a DNS one.
+  if [[ "$host" =~ ^[0-9.]+$ || "$host" == *:* ]]; then san="IP:${host}"; else san="DNS:${host}"; fi
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 397 \
-    -subj "/CN=${host}" -addext "subjectAltName=DNS:${host}" \
+    -subj "/CN=${host}" -addext "subjectAltName=${san}" \
     -addext "extendedKeyUsage=serverAuth" -keyout secrets/tls.key -out secrets/tls.crt 2>/dev/null
   chmod 0644 secrets/tls.crt secrets/tls.key
   say "Created a temporary self-signed TLS certificate for ${host}. Replace secrets/tls.crt and secrets/tls.key with a trusted one."
