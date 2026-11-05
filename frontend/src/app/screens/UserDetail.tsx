@@ -8,7 +8,7 @@ import { ApiError, filenameFrom, saveBlob } from '../api/client'
 import { useTenant } from '../api/tenant'
 import {
   cancelEnrollment, disconnectIdentity, downloadPackage, invalidatePeople, updateIdentity, useDirectory, useDirectoryGroups, useIdentities, useIdentity, usePolicy, useRadius,
-  type Certificate, type IdentityDetail, type IdentityEnrollment,
+  type AuthEvent, type Certificate, type IdentityDetail, type IdentityEnrollment,
 } from '../api/people'
 import type { Outcome } from '../api/types'
 import { paths, targetPath } from '../routes'
@@ -27,6 +27,18 @@ import { AccountChip, EventList, GroupPicker, joinNames, keyOrigin, reasonLabel 
 const first = (name: string) => name.split(' ')[0] || name
 const statusRank: Record<string, number> = { active: 0, expiring: 1, expired: 2, revoked: 3 }
 const sameOutcome = (a: Outcome, b: Outcome) => a.outcome === b.outcome && a.vlan_id === b.vlan_id && a.deciding_rule_id === b.deciding_rule_id && a.reason_code === b.reason_code
+
+/** Last success, plus a newer rejection when there is one, so the header never says "never" above a failed attempt. */
+function LastConnection({ lastAuth, latest, now }: { lastAuth: string | null; latest: AuthEvent | undefined; now: Date }) {
+  const rejected = latest && latest.result === 'reject' && (!lastAuth || new Date(latest.at) > new Date(lastAuth)) ? latest : null
+  const when = (iso: string) => <time dateTime={iso} title={fmtDateTime(iso)}>{ago(iso, now)}</time>
+  return (
+    <span className="ee-small ee-ink-2">
+      {lastAuth ? <>Last authenticated {when(lastAuth)}</> : rejected ? 'No successful connection' : 'Never authenticated'}
+      {rejected && <> · <span className="text-[var(--ee-crit-ink)]">last attempt rejected {when(rejected.at)}</span></>}
+    </span>
+  )
+}
 
 export default function UserDetail() {
   const { id = '' } = useParams()
@@ -99,6 +111,8 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
   const rules = policy.data?.rules ?? []
   const vlans = policy.data?.vlans ?? []
   const deviceDiffers = !sameOutcome(u.access.user, u.access.device)
+  // Evidence for the ledger's certificate gate: the valid certificates on record, split by purpose when the two decide differently.
+  const evidence = (purpose?: 'user' | 'device') => live.filter((c) => !purpose || c.purpose === purpose).map((c) => ({ name: c.device?.name ?? c.common_name, not_after: c.not_after }))
   const isLocal = u.source === 'local'
   const canWrite = can('identities:write')
   const syncEvery = directory.data?.config?.sync_interval_minutes
@@ -120,7 +134,7 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
           <SourceTag source={u.source} />
           <AccountChip state={u.account_state} />
-          <span className="ee-small ee-ink-2">{u.last_auth_at ? <>Last authenticated <time dateTime={u.last_auth_at} title={fmtDateTime(u.last_auth_at)}>{ago(u.last_auth_at, now)}</time></> : 'Never authenticated'}</span>
+          <LastConnection lastAuth={u.last_auth_at} latest={u.events[0]} now={now} />
           <span className="ee-small ee-ink-3 hidden sm:inline" aria-hidden>·</span>
           <span className="ee-small ee-ink-2 basis-full sm:basis-auto">
             {isLocal ? 'Local account, managed in EasyEAP'
@@ -151,19 +165,19 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
 
       <div className="mt-6 grid items-start gap-6 xl:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
         <Panel className="px-5 py-4" aria-labelledby="ud-why">
-          <SectionHeader id="ud-why" title="Why this decision" meta="Policy evaluation, without a specific certificate" />
+          <SectionHeader id="ud-why" title="Why this decision" meta="Account, certificates on record and access rules" />
           {policy.isLoading ? <LoadingBlock rows={4} label="Loading rules" />
             : policy.error ? <ErrorState error={policy.error} onRetry={() => policy.refetch()} title="Access rules couldn’t be loaded" />
               : (
                 <div className="space-y-6">
                   <div>
                     {deviceDiffers && <h3 className="ee-h3 mb-2.5">User certificates</h3>}
-                    <DecisionLedger outcome={u.access.user} rules={rules} vlans={vlans} identityGroups={u.groups} accountState={u.account_state} source={u.source} policyOnly />
+                    <DecisionLedger outcome={u.access.user} rules={rules} vlans={vlans} identityGroups={u.groups} accountState={u.account_state} source={u.source} policyOnly certificates={evidence(deviceDiffers ? 'user' : undefined)} />
                   </div>
                   {deviceDiffers && (
                     <div className="border-t border-[var(--ee-line)] pt-4">
                       <h3 className="ee-h3 mb-2.5">Device certificates</h3>
-                      <DecisionLedger outcome={u.access.device} rules={rules} vlans={vlans} identityGroups={u.groups} accountState={u.account_state} source={u.source} policyOnly />
+                      <DecisionLedger outcome={u.access.device} rules={rules} vlans={vlans} identityGroups={u.groups} accountState={u.account_state} source={u.source} policyOnly certificates={evidence('device')} />
                     </div>
                   )}
                 </div>

@@ -5,10 +5,13 @@ import { useState, type ReactNode } from 'react'
 import { Ban, Check, ChevronDown, Minus, Stamp, X } from 'lucide-react'
 import { cn } from '@/ui/lib'
 import type { Outcome, RadiusAttribute } from '../api/types'
+import { remaining } from '../lib/format'
 import { VlanTag } from './index'
 
 export interface LedgerRule { id: string; name: string; action: 'allow' | 'deny'; priority: number; enabled: boolean; groups: Array<{ id: string; name: string }> }
 export interface LedgerVlan { vlan_id: number; name: string; color: string }
+/** A valid certificate on record, used as evidence for the certificate gate where the ledger has one (the user record). */
+export interface LedgerCert { name: string; not_after: string }
 
 export const reasonText: Record<string, string> = {
   account_disabled: 'Account is disabled, locked or deleted',
@@ -49,7 +52,7 @@ function Entry({ mark, title, detail, result, last }: { mark: Mark; title: React
   )
 }
 
-export function DecisionLedger({ outcome, rules, identityGroups, vlans, accountState = 'enabled', source = 'ad', showAttributes = true, policyOnly }: {
+export function DecisionLedger({ outcome, rules, identityGroups, vlans, accountState = 'enabled', source = 'ad', showAttributes = true, policyOnly, certificates }: {
   outcome: Outcome
   rules: LedgerRule[]
   identityGroups: Array<{ id: string; name: string }>
@@ -59,6 +62,9 @@ export function DecisionLedger({ outcome, rules, identityGroups, vlans, accountS
   showAttributes?: boolean
   /** Evaluated without a concrete certificate (preview or Test a user): say so, so "allowed" isn't read as "can connect". */
   policyOnly?: boolean
+  /** With `policyOnly`: the valid certificates on record for this decision. The certificate gate is then evaluated
+   *  against them instead of assumed, so the ledger agrees with the certificate list beside it. */
+  certificates?: LedgerCert[]
 }) {
   const [showUnmatched, setShowUnmatched] = useState(false)
   const ruleById = (id?: string) => rules.find((r) => r.id === id)
@@ -86,6 +92,13 @@ export function DecisionLedger({ outcome, rules, identityGroups, vlans, accountS
   if (cert) {
     entries.push(<Entry key="cert" mark={cert.ok ? 'pass' : 'fail'} title={cert.ok ? 'Certificate valid' : cert.detail}
       detail={cert.ok ? cert.detail : 'Revoked and expired certificates are rejected before any rule is checked.'} result={cert.ok ? 'Pass' : 'Stops here'} />)
+  } else if (policyOnly && account?.ok && certificates) {
+    const [first, ...more] = [...certificates].sort((a, b) => b.not_after.localeCompare(a.not_after))
+    entries.push(first
+      ? <Entry key="cert" mark="pass" title="Certificate valid"
+          detail={<>{first.name} · valid for {remaining(first.not_after)}{more.length > 0 && <> · and {more.length} more</>}</>} result="Pass" />
+      : <Entry key="cert" mark="fail" title="No valid certificate"
+          detail="RADIUS rejects every connection until a certificate is issued to one of this user’s devices. The rules below show what would apply then." result="Needs one" />)
   } else if (policyOnly && account?.ok) {
     entries.push(<Entry key="cert" mark="skip" title="Certificate not checked here" detail="This evaluates the policy only. At connection time RADIUS also requires a valid certificate issued to this user." result="Assumed valid" />)
   }
@@ -128,6 +141,7 @@ export function DecisionLedger({ outcome, rules, identityGroups, vlans, accountS
                 </>
               )}
             </p>
+            {allow && certificates && certificates.length === 0 && account?.ok && <p className="ee-small ee-ink-2 mt-0.5">Once a valid certificate is installed. Until then RADIUS sends Access-Reject.</p>}
             {!allow && <p className="ee-small ee-ink-2 mt-0.5">{outcome.reason_code === 'policy_deny' && ruleById(outcome.deciding_rule_id ?? undefined) ? `Denied by “${ruleById(outcome.deciding_rule_id ?? undefined)!.name}”` : reasonText[outcome.reason_code ?? ''] ?? outcome.reason_code}</p>}
           </div>
         </li>

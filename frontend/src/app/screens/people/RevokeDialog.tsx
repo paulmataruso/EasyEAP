@@ -4,6 +4,7 @@
 // Disconnect-Request (radius/coa.py) for sessions that authenticated with this serial in the last two days, but only
 // to controllers with CoA enabled. Sessions on other controllers last until the controller re-authenticates them.
 import { useEffect, useState, type RefObject } from 'react'
+import { Link } from 'react-router'
 import { RadioGroup } from 'radix-ui'
 import { CircleAlert, RadioTower, ShieldX, TimerReset, Undo2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -12,6 +13,7 @@ import { useTenant } from '../../api/tenant'
 import { invalidatePeople, REVOCATION_REASONS, revokeCertificate, useRadius, type Certificate, type RevocationReason, type RevokeResult } from '../../api/people'
 import { Btn, Callout, EDialog, errorMessage, PlatformIcon, toast } from '../../ui'
 import { duration, fmtSerial, plural } from '../../lib/format'
+import { paths } from '../../routes'
 import { joinNames, REASON_META } from './shared'
 
 type RevokeTarget = Pick<Certificate, 'id' | 'serial' | 'common_name' | 'status' | 'purpose'> & {
@@ -55,6 +57,10 @@ export function RevokeDialog({ cert, open, onOpenChange, returnFocus, onRevoked 
   const coa = clients.filter((c) => c.coa_enabled)
   const noCoa = clients.filter((c) => !c.coa_enabled)
   const timeout = radius.data?.settings?.session_timeout_seconds ?? null
+  // A disconnect can only be offered when a controller can receive it. `disconnect` records the admin's choice; what is
+  // sent is that choice AND at least one CoA controller, so the checkbox never promises an effect that can't happen.
+  const canCoa = coa.length > 0
+  const sendDisconnect = canCoa && disconnect
   const who = cert?.device?.name ? `${cert.device.name}${cert.identity ? ` (${cert.identity.display_name})` : ''}` : cert?.identity?.display_name ?? cert?.common_name ?? ''
 
   const confirm = async () => {
@@ -63,10 +69,10 @@ export function RevokeDialog({ cert, open, onOpenChange, returnFocus, onRevoked 
     setBusy(true)
     setError(null)
     try {
-      const res = await revokeCertificate(tid, cert.id, reason, disconnect)
+      const res = await revokeCertificate(tid, cert.id, reason, sendDisconnect)
       setDone(true)
       toast(`Certificate ${fmtSerial(cert.serial).slice(0, 14)}… revoked`,
-        `${REASON_META[reason].label}. RADIUS rejects new connections with it once the update is applied, normally within seconds. ${disconnect ? disconnectSummary(res.disconnect, res.session_timeout_seconds ?? timeout) : 'No disconnect was sent; connected devices stay online until the session timeout.'}`,
+        `${REASON_META[reason].label}. RADIUS rejects new connections with it once the update is applied, normally within seconds. ${sendDisconnect ? disconnectSummary(res.disconnect, res.session_timeout_seconds ?? timeout) : canCoa ? 'No disconnect was sent; connected devices stay online until the session timeout.' : 'No controller has CoA, so connected devices stay online until the session timeout.'}`,
         'valid')
       onRevoked?.(res)
       onOpenChange(false)
@@ -150,11 +156,15 @@ export function RevokeDialog({ cert, open, onOpenChange, returnFocus, onRevoked 
                 <span><span className="text-[var(--ee-ink)]">Revocation is permanent. There is no undo.</span> If this device should connect again, issue it a new certificate.</span>
               </li>
             </ul>
-            <label className="mt-3 flex items-start gap-2.5 border-t border-[var(--ee-line)] pt-3">
-              <input type="checkbox" className="ee-check mt-0.5" checked={disconnect} onChange={(e) => setDisconnect(e.target.checked)} />
+            <label className={cn('mt-3 flex items-start gap-2.5 border-t border-[var(--ee-line)] pt-3', !canCoa && 'ee-ink-3')}>
+              <input type="checkbox" className="ee-check mt-0.5" checked={sendDisconnect} disabled={!canCoa} aria-describedby="revoke-coa-hint" onChange={(e) => setDisconnect(e.target.checked)} />
               <span>
-                <span className="text-[var(--ee-ink)]">Send a CoA disconnect for sessions that used this certificate</span>
-                <span className="ee-small ee-ink-3 block">EasyEAP looks for sessions from the last two days and queues a Disconnect-Request for the RADIUS agent to send. Only controllers with CoA enabled receive it.</span>
+                <span className={canCoa ? 'text-[var(--ee-ink)]' : undefined}>Send a CoA disconnect for sessions that used this certificate</span>
+                <span id="revoke-coa-hint" className="ee-small ee-ink-3 block">
+                  {radius.isLoading ? 'Checking which controllers support CoA…'
+                    : canCoa ? 'EasyEAP looks for sessions from the last two days and queues a Disconnect-Request for the RADIUS agent to send. Only controllers with CoA enabled receive it.'
+                      : <>Not available: no controller in this tenant has CoA turned on. You can turn it on for each controller in <Link className="underline" to={paths.radius(tid)}>RADIUS</Link>.</>}
+                </span>
               </span>
             </label>
           </div>

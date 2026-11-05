@@ -53,6 +53,25 @@ describe('DecisionLedger', () => {
     expect(screen.queryByText('Tunnel-Private-Group-ID')).not.toBeInTheDocument()
   })
 
+  it('evaluates the certificate gate against the certificates on record', () => {
+    const outcome: Outcome = {
+      outcome: 'allow', reason_code: null, deciding_rule_id: 'r-it', vlan_id: 120, attributes: [],
+      steps: [{ kind: 'account', ok: true, detail: 'enabled' }, { kind: 'rule', ruleId: 'r-it', matched: true, action: 'allow', detail: '' }],
+    }
+    const later = new Date(Date.now() + 200 * 864e5).toISOString()
+    const sooner = new Date(Date.now() + 30 * 864e5).toISOString()
+    const { unmount } = render(<DecisionLedger outcome={outcome} rules={rules} identityGroups={[groups.it]} vlans={vlans} policyOnly
+      certificates={[{ name: 'old-phone', not_after: sooner }, { name: 'nina-laptop', not_after: later }]} />)
+    expect(screen.getByText('Certificate valid')).toBeInTheDocument()
+    expect(screen.getByText(/nina-laptop · valid for .* · and 1 more/)).toBeInTheDocument()
+    expect(screen.queryByText('Certificate not checked here')).not.toBeInTheDocument()
+    unmount()
+
+    render(<DecisionLedger outcome={outcome} rules={rules} identityGroups={[groups.it]} vlans={vlans} policyOnly certificates={[]} />)
+    expect(screen.getByText('No valid certificate')).toBeInTheDocument()
+    expect(screen.getByText(/Until then RADIUS sends Access-Reject/)).toBeInTheDocument()
+  })
+
   it('stops at a disabled account and does not evaluate rules', () => {
     const outcome: Outcome = {
       outcome: 'deny', reason_code: 'account_disabled', deciding_rule_id: null, vlan_id: null, attributes: [],
