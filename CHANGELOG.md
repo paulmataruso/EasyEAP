@@ -12,6 +12,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   in first. The base DN also follows the AD domain as you type, and Test connection names the directory's real base
   DN when the one entered is outside it.
 
+### Changed
+
+- **New logo.** The sign-in and setup screens, sidebar, mobile top bar, enrollment page and favicon use the new EasyEAP mark: an amber E and wireless signal with a security key, on a charcoal tile. The source is `design/brand/mark.svg`.
+
 ### Fixed
 
 - Saving a new directory connection blanked the console until the first sync finished. A configuration that hasn't

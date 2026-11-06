@@ -1,1 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0B1220"/><g color="#7DD3FC" transform="translate(1.2 0)"><path d="M20.37 10.84 A9 9 0 1 0 19.89 21.79" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/><path d="M4.6 16 H28.6 M24 16 V20.2 M28.4 16 V19.4" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">EasyEAP logo</title>
+  <desc id="desc">Amber geometric E and wireless signal combined with a silver-gold security key on charcoal.</desc>
+  <defs>
+    <linearGradient id="amber" x1="32" y1="28" x2="220" y2="224" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E2C477"/>
+      <stop offset="1" stop-color="#A9822F"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="32" y1="24" x2="220" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity=".025"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="58" fill="#202326"/>
+  <rect x="9" y="9" width="238" height="238" rx="57" fill="url(#glass)" stroke="#FFFFFF" stroke-opacity=".12" stroke-width="2"/>
+  <path d="M65 66h105a13 13 0 0 1 0 26H91v25h66a13 13 0 0 1 0 26H91v25h79a13 13 0 0 1 0 26H65a13 13 0 0 1-13-13V79a13 13 0 0 1 13-13Z" fill="url(#amber)"/>
+  <path d="M150 62c22 8 38 24 46 46" fill="none" stroke="#E2C477" stroke-width="9" stroke-linecap="round"/>
+  <path d="M159 88c12 5 21 14 26 26" fill="none" stroke="#E2C477" stroke-width="8" stroke-linecap="round" opacity=".82"/>
+  <circle cx="179" cy="132" r="7" fill="#E2C477"/>
+  <g transform="rotate(43 183 169)" fill="none" stroke="#E5E7E8" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="183" cy="155" r="13"/>
+    <path d="M183 168v48m0-13h12m-12 2h-9"/>
+  </g>
+  <circle cx="183" cy="155" r="5" fill="#D5B45E"/>
+</svg>

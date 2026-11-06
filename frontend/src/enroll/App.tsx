@@ -22,7 +22,7 @@ function Frame({ children, footer }: { children: ReactNode; footer?: ReactNode }
     <div className="en-root">
       <div className="en-wrap">
         <header className="en-top">
-          <Wordmark className="text-[17px] text-[var(--ee-ink)]" markClassName="size-6 text-[var(--ee-gold)]" />
+          <Wordmark className="text-[17px] text-[var(--ee-ink)]" markClassName="size-7" />
           <span className="en-small">Wi-Fi setup</span>
         </header>
       </div>

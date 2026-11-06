@@ -348,6 +348,10 @@ Compact, quiet and unmistakable when it matters.
 - **Segmented control, select, switch, radio card** share the well and `line-2` border. A checked switch is verdigris; a checked radio card is gold-bordered with a 7% gold wash.
 - **Portal inputs** are 48px tall, 10px radius, 16px text.
 
+### Logo
+- **Mark:** an amber geometric E and wireless signal with a silver-gold security key, on a charcoal tile. The source is `design/brand/mark.svg`, which also serves as `public/favicon.svg`. It is full colour on any ground and is never recoloured, outlined or cropped.
+- **Sizes:** 44px beside 22px type on the sign-in and setup screens, and 28px beside 17px type in the sidebar, mobile top bar and enrollment page. `Wordmark` pairs it with "Easy" regular and "EAP" bold in Hanken Grotesk. `design/brand/wordmark.svg` is the same lockup for use outside the app.
+
 ### Navigation
 - **Sidebar:** 264px, a navy gradient with a right hairline. At the top: wordmark with a ⌘K affordance, the tenant switcher (gold monogram, name, domain), and the search field with a `/` key hint. Then Recently viewed, then sentence-case groups (Investigate, Enroll, Configure, Govern, MSP) in 12px `ink-3`.
 - **Items:** 32px, 7px radius, 13.5px weight 520 in `ink-2` with 16px `ink-3` icons. Hover adds the wash; the current page gets a 9% gold tint, `ink` text and a gold icon.

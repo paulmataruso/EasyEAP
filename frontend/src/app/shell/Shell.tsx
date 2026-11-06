@@ -222,7 +222,7 @@ function SidebarContent({ inputRef, onNavigated, onPalette }: { inputRef: React.
   return (
     <div className="flex h-full flex-col px-3 pb-4 pt-4">
       <div className="mb-4 flex items-center justify-between px-1.5">
-        <Wordmark className="text-[17px] text-[var(--ee-ink)]" markClassName="size-6 text-[var(--ee-gold)]" />
+        <Wordmark className="text-[17px] text-[var(--ee-ink)]" markClassName="size-7" />
         <Btn variant="ghost" size="sm" onClick={() => onPalette()} aria-label="Open command palette" aria-keyshortcuts="Control+K Meta+K">
           <Command aria-hidden /><span className="text-[12px] ee-ink-3">K</span>
         </Btn>
@@ -341,7 +341,7 @@ export function Shell({ children }: { children: ReactNode }) {
               </Dialog.Content>
             </Dialog.Portal>
           </Dialog.Root>
-          <LogoMark className="size-6 text-[var(--ee-gold)]" />
+          <LogoMark decorative className="size-7" />
           <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{tctx?.tenant.name ?? 'EasyEAP'}</span>
           <Btn variant="ghost" icon aria-label="Open command palette" onClick={() => openPalette()}><Search aria-hidden /></Btn>
         </div>
