@@ -60,6 +60,16 @@ def health(p: Principal = Depends(platform("platform:read")), s: Session = Depen
     last = datetime.fromisoformat(hb.value["at"]) if hb and hb.value.get("at") else None
     checks.append({"service": "worker", "ok": bool(last and now - last < timedelta(minutes=3)), "detail": "Background jobs running" if last and now - last < timedelta(minutes=3) else "No recent worker heartbeat",
                    "last_seen_at": last.isoformat() if last else None})
+    from app.logs import syslog
+    dests = [d for d in syslog.load_destinations(s) if d.enabled]
+    if dests:
+        st = syslog.load_state(s)
+        failing = [(d, (st.get(d.id) or {}).get("error")) for d in dests if (st.get(d.id) or {}).get("error")]
+        sent = [(st.get(d.id) or {}).get("last_sent_at") for d in dests]
+        checks.append({"service": "syslog", "ok": not failing,
+                       "detail": (f"{failing[0][0].name} ({failing[0][0].host}): {failing[0][1]}" + (f" (+{len(failing) - 1} more failing)" if len(failing) > 1 else ""))
+                       if failing else f"Forwarding to {len(dests)} destination{'s' if len(dests) != 1 else ''}",
+                       "last_seen_at": max((x for x in sent if x), default=None)})
     failed = s.scalar(select(func.count()).select_from(m.Job).where(m.Job.status == "failed", m.Job.finished_at >= now - timedelta(days=1))) or 0
     queued = s.scalar(select(func.count()).select_from(m.Job).where(m.Job.status == "queued")) or 0
     recent_failed = [{"kind": j.kind, "error": (j.last_error or "")[:300], "at": j.finished_at.isoformat() if j.finished_at else None}

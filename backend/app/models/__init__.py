@@ -445,6 +445,19 @@ class AgentStatus(Base):
     detail: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
+class SystemLog(Base):
+    """Operational log of every EasyEAP component (API, worker, RADIUS agent, FreeRADIUS): EasyEAP's own messages
+    at INFO and above, libraries' at WARNING and above. Redacted before it is written. Kept 30 days and forwarded to
+    remote syslog with the audit trail and authentication events."""
+    __tablename__ = "system_logs"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    at: Mapped[datetime] = mapped_column(TS, server_default=func.now(), index=True)
+    level: Mapped[str] = mapped_column(String(8))  # debug | info | warning | error | critical
+    source: Mapped[str] = mapped_column(String(32), index=True)  # api | worker | radius-agent | freeradius
+    logger: Mapped[str] = mapped_column(String(100), default="")
+    message: Mapped[str] = mapped_column(Text)
+
+
 # ── Enrollment ──────────────────────────────────────────────────────────────
 
 

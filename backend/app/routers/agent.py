@@ -63,6 +63,31 @@ def push_events(body: Batch, s: Session = Depends(db)) -> dict:
     return {"stored": ev.ingest_auth(s, body.items)}
 
 
+class LogBatch(BaseModel):
+    items: list[dict[str, Any]] = Field(max_length=1000)
+
+
+@router.post("/logs")
+def push_logs(body: LogBatch, s: Session = Depends(db)) -> dict:
+    """Warnings and errors from the agent and FreeRADIUS, buffered on the RADIUS host while the API is away."""
+    from app.logs.dbhandler import MAX_MESSAGE
+    from app.security.redact import redact
+    now = datetime.now(UTC)
+    rows = []
+    for it in body.items:
+        level = str(it.get("level") or "info").lower()
+        try:
+            at = datetime.fromtimestamp(float(it.get("at") or 0), UTC) if it.get("at") else now
+        except (TypeError, ValueError, OverflowError, OSError):
+            at = now
+        rows.append({"at": min(at, now), "level": level if level in ("debug", "info", "warning", "error", "critical") else "info",
+                     "source": it.get("source") if it.get("source") in ("radius-agent", "freeradius") else "radius-agent",
+                     "logger": str(it.get("logger") or "")[:100], "message": redact(str(it.get("message") or ""))[:MAX_MESSAGE]})
+    if rows:
+        s.execute(m.SystemLog.__table__.insert(), rows)
+    return {"stored": len(rows)}
+
+
 @router.post("/accounting")
 def push_accounting(body: Batch, s: Session = Depends(db)) -> dict:
     set_platform(s)

@@ -14,6 +14,7 @@ from app.backup.pkictl import PkiControlError
 from app.config import get_settings
 from app.directory.ldap import DirectoryError
 from app.enrollment.service import EnrollmentError
+from app.logs.dbhandler import install as install_db_logging
 from app.pki.openbao import OpenBaoError
 from app.pki.service import PkiError
 from app.radius.state import RadiusConfigError
@@ -29,6 +30,7 @@ from app.routers import (
     enrollments,
     events,
     identities,
+    logs,
     pki,
     pki_public,
     policy,
@@ -49,7 +51,7 @@ app = FastAPI(
 )
 
 for r in (setup, auth, tenants, admins, dashboard, identities, directory, pki, certificates, enrollments, enroll_public, policy, radius,
-          events, system, backup, agent, pki_public):
+          events, system, backup, logs, agent, pki_public):
     app.include_router(r.router)
 app.include_router(backup.setup_router)
 
@@ -70,6 +72,8 @@ async def maintenance_gate(request: Request, call_next):
 
 @app.on_event("startup")
 def _clean_backups() -> None:
+    install_db_logging("api")
+    log.info("EasyEAP API %s started", __version__)
     try:
         backup_engine.purge_expired()
     except OSError as exc:

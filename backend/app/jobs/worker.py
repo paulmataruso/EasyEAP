@@ -6,7 +6,9 @@ Schedule (per tenant unless noted):
   directory has been failing longer than the limit, the refresh stops and RADIUS fails closed);
 * CRL rotation daily (OpenBao CRLs are issued with a 72h lifetime);
 * expiry of enrollment links, purge of undelivered server-generated keys (and revocation of their certificates);
-* OpenBao token renewal, job pruning, event retention (platform).
+* OpenBao token renewal, job pruning, event and system log retention (platform).
+
+A second thread forwards the audit trail, authentication events and the system log to remote syslog (app.logs.syslog).
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ from app.security.redact import configure_logging
 log = logging.getLogger("easyeap.worker")
 _stop = False
 EVENT_RETENTION_DAYS = 180
+SYSTEM_LOG_RETENTION_DAYS = 30
 
 
 def _handle(job: m.Job) -> None:
@@ -57,6 +60,7 @@ def _handle(job: m.Job) -> None:
         elif job.kind == "events.retention":
             s.execute(text("DELETE FROM auth_events WHERE at < now() - make_interval(days => :d)"), {"d": EVENT_RETENTION_DAYS})
             s.execute(text("DELETE FROM accounting_sessions WHERE updated_at < now() - make_interval(days => :d)"), {"d": EVENT_RETENTION_DAYS})
+            s.execute(text("DELETE FROM system_logs WHERE at < now() - make_interval(days => :d)"), {"d": SYSTEM_LOG_RETENTION_DAYS})
             queue.prune(s)
         elif job.kind == "openbao.renew":
             from app.pki.openbao import renew_token
@@ -164,7 +168,12 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    from app.logs.dbhandler import install as install_db_logging
+    from app.logs.syslog import Forwarder
+    install_db_logging("worker")
     log.info("EasyEAP worker started")
+    forwarder = Forwarder()
+    forwarder.start()
     last_schedule = 0.0
     from app.backup.engine import maintenance
     while not _stop:
@@ -180,6 +189,7 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001 — keep the worker alive; DB may be restarting
             log.error("Worker loop error: %s", exc)
             time.sleep(5)
+    forwarder.stop_event.set()
     log.info("EasyEAP worker stopped")
 
 
