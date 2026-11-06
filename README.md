@@ -257,7 +257,7 @@ issue.
 
 ## Status and roadmap
 
-**1.0.0 is the first public release.** It has been run end to end against a real Active Directory domain controller
+**EasyEAP 1.0 is the first public release.** It has been run end to end against a real Active Directory domain controller
 and authenticated an enrolled iPhone through a live Cisco Catalyst 9800. Known limitations are listed in
 [PROGRESS.md](PROGRESS.md#not-done--known-limitations). The main ones:
 
@@ -283,8 +283,8 @@ EasyEAP is **source-available** under the [Business Source License 1.1](LICENSE)
   your own organization.
 - **Needs a commercial license:** running it to provide services to third parties. That includes managing customers'
   networks as an MSP, offering it as a hosted service, and selling or bundling it.
-- **Becomes open source:** each version converts to the Apache License 2.0 four years after its release. Version
-  1.0.0 converts on 6 November 2030.
+- **Becomes open source:** each version converts to the Apache License 2.0 four years after its release, on the
+  Change Date in its LICENSE file. Versions 1.0.0 and 1.0.1 convert on 6 November 2030.
 
 The [LICENSE](LICENSE) text is the authoritative version of these terms. For a commercial license, email
 [paulmataruso@dhitechnical.com](mailto:paulmataruso@dhitechnical.com). EasyEAP builds on FreeRADIUS, OpenBao, PostgreSQL,

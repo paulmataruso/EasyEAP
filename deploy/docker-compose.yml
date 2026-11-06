@@ -58,7 +58,7 @@ services:
 
   easyeap-api:
     build: ../backend
-    image: easyeap-api:${EASYEAP_VERSION:-1.0.0}
+    image: easyeap-api:${EASYEAP_VERSION:-1.0.1}
     restart: unless-stopped
     command: ["/app/entrypoint.sh", "api"]
     environment: *api-env
@@ -79,7 +79,7 @@ services:
       start_period: 40s
 
   easyeap-worker:
-    image: easyeap-api:${EASYEAP_VERSION:-1.0.0}
+    image: easyeap-api:${EASYEAP_VERSION:-1.0.1}
     restart: unless-stopped
     command: ["/app/entrypoint.sh", "worker"]
     environment: *api-env
@@ -92,7 +92,7 @@ services:
 
   easyeap-radius:
     build: ../services/radius
-    image: easyeap-radius:${EASYEAP_VERSION:-1.0.0}
+    image: easyeap-radius:${EASYEAP_VERSION:-1.0.1}
     restart: unless-stopped
     environment:
       EASYEAP_API_URL: http://easyeap-api:8000
@@ -113,7 +113,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/proxy/Dockerfile
-    image: easyeap-proxy:${EASYEAP_VERSION:-1.0.0}
+    image: easyeap-proxy:${EASYEAP_VERSION:-1.0.1}
     restart: unless-stopped
     environment:
       EASYEAP_HOSTNAME: ${EASYEAP_HOSTNAME}
