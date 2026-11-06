@@ -286,8 +286,8 @@ EasyEAP is **source-available** under the [Business Source License 1.1](LICENSE)
 - **Becomes open source:** each version converts to the Apache License 2.0 four years after its release. Version
   1.0.0 converts on 6 November 2030.
 
-The [LICENSE](LICENSE) text is the authoritative version of these terms. For a commercial license, contact the
-maintainer through [GitHub](https://github.com/paulmataruso). EasyEAP builds on FreeRADIUS, OpenBao, PostgreSQL,
+The [LICENSE](LICENSE) text is the authoritative version of these terms. For a commercial license, email
+[paulmataruso@dhitechnical.com](mailto:paulmataruso@dhitechnical.com). EasyEAP builds on FreeRADIUS, OpenBao, PostgreSQL,
 nginx and other open-source projects under their own licenses; see
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 

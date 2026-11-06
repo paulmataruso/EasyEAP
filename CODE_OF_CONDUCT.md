@@ -6,6 +6,6 @@ In short: be respectful and constructive, assume good faith, and keep discussion
 personal attacks, and publishing other people's private information are not acceptable in issues, pull requests or
 any other project space.
 
-Report unacceptable behaviour privately to the maintainer through [GitHub](https://github.com/paulmataruso). Reports
+Report unacceptable behaviour privately to the maintainer at [paulmataruso@dhitechnical.com](mailto:paulmataruso@dhitechnical.com). Reports
 are handled confidentially. The maintainer may remove comments, close threads or block participants who don't follow
 this code.

@@ -8,7 +8,7 @@ the code.
 
 Report vulnerabilities privately through GitHub's
 [private vulnerability reporting](https://github.com/paulmataruso/EasyEAP/security/advisories/new). Don't open public
-issues for them. Include the version, what an attacker could do, and steps to reproduce if you have them. You'll get
+issues for them. If you can't use GitHub, email [paulmataruso@dhitechnical.com](mailto:paulmataruso@dhitechnical.com). Include the version, what an attacker could do, and steps to reproduce if you have them. You'll get
 an acknowledgement, and a fix is coordinated with you before anything is disclosed.
 
 | Version | Supported with security fixes |
