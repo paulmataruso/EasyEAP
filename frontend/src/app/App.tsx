@@ -11,6 +11,7 @@ import { Empty, ErrorState, LoadingBlock, Toaster } from './ui'
 import { ErrorBoundary } from './ui/ErrorBoundary'
 import { FirstRun } from './screens/FirstRun'
 import { Login } from './screens/Login'
+import { MaintenanceGate } from './screens/Maintenance'
 
 const Dashboard = lazy(() => import('./screens/Dashboard'))
 const Tenants = lazy(() => import('./screens/Tenants'))
@@ -108,6 +109,7 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <SessionProvider>
         <Tooltip.Provider delayDuration={250}>
+          <MaintenanceGate>
           <HashRouter>
             <ErrorBoundary fullPage>
             <Routes>
@@ -142,6 +144,7 @@ export function App() {
             </Routes>
             </ErrorBoundary>
           </HashRouter>
+          </MaintenanceGate>
           <Toaster />
         </Tooltip.Provider>
       </SessionProvider>

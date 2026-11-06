@@ -17,8 +17,8 @@ export interface SystemHealth {
   version: string
   checks: HealthCheck[]
   jobs: { queued: number; failed_24h: number; recent_failed: Array<{ kind: string; error: string; at: string | null }> }
-  /** Written by deploy/backup.sh through `easyeap record-backup`. */
-  backup: { at: string; file: string; size: number; encrypted: boolean } | null
+  /** The most recent backup that was downloaded (from the console or `easyeap backup create`). */
+  backup: { at: string; file: string; size: number; encrypted: boolean; downloaded_at?: string } | null
 }
 
 export function useSystemHealth(enabled = true) {

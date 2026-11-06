@@ -7,10 +7,10 @@ import { useSession } from '../api/session'
 import type { Me } from '../api/types'
 import { Btn, Callout, Field, Panel } from '../ui'
 
-export function AuthFrame({ title, lede, children }: { title: string; lede?: string; children: React.ReactNode }) {
+export function AuthFrame({ title, lede, children, wide }: { title: string; lede?: string; children: React.ReactNode; wide?: boolean }) {
   return (
     <div className="grid min-h-screen place-items-center px-4 py-10">
-      <div className="w-full max-w-[420px]">
+      <div className={wide ? 'w-full max-w-[580px]' : 'w-full max-w-[420px]'}>
         <div className="mb-6 flex justify-center"><Wordmark className="gap-3 text-[22px] text-[var(--ee-ink)]" markClassName="size-11" /></div>
         <Panel className="px-6 py-6" risk="gold">
           <h1 className="ee-h1 text-[22px]" tabIndex={-1} data-page-heading>{title}</h1>

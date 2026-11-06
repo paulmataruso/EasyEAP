@@ -94,7 +94,7 @@ say "EasyEAP is running."
 echo "    Console:      https://${host}/"
 if token="$(docker compose exec -T easyeap-api easyeap setup-token 2>/dev/null)"; then
   echo "    Setup token:  ${token}"
-  echo "    Open the console and paste the setup token to create the first administrator."
+  echo "    Open the console and paste the setup token to create the first administrator or restore a backup."
   echo "    (It works once. Print it again with: docker compose exec easyeap-api easyeap setup-token)"
 fi
 echo
