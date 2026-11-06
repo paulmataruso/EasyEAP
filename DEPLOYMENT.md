@@ -28,7 +28,7 @@ firewall 1812/1813 to your controllers' addresses.
 ## Install
 
 ```sh
-git clone <your EasyEAP repository> /opt/easyeap
+git clone https://github.com/paulmataruso/EasyEAP.git /opt/easyeap
 cd /opt/easyeap/deploy
 sudo ./install.sh --hostname easyeap.msp.example --radius-address 10.20.0.15
 ```
@@ -116,7 +116,7 @@ Everything happens in the console: **System health → Backup and restore** (Sup
 **Protect the file and the passphrase like the CAs themselves.** Anyone with both can run your PKI. Store them
 apart. Without the passphrase, the file can't be opened by anyone, including us.
 
-**Installations set up before 1.0.0** have no OpenBao recovery keys, so a backup can regain CA access only while
+**Installations set up with a preview build before 1.0.0** have no OpenBao recovery keys, so a backup can regain CA access only while
 the token it carries is valid: restore it within 32 days of making it. The console shows each backup's restore-by
 date. New installations keep recovery keys and have no such limit.
 
@@ -136,7 +136,7 @@ sudo ./backup.sh --passphrase-file /root/easyeap-backup.pass --out /srv/backups
 sudo ./restore.sh --file /srv/backups/easyeap-backup-20261106T081523Z.easyeap --passphrase-file /root/easyeap-backup.pass --yes
 ```
 
-Backups made by EasyEAP before 1.0.0 (`.tar.gz.enc` or `.tar.gz.gpg`) aren't supported by the new restore.
+Backups made by preview builds before 1.0.0 (`.tar.gz.enc` or `.tar.gz.gpg`) can't be restored. Make a new backup after upgrading.
 
 ## Operations
 
