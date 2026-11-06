@@ -1,3 +1,7 @@
+# Dependabot proposes routine updates once a month, grouped so each ecosystem opens at most one pull request.
+# Major versions (TypeScript 6, React 20, FreeRADIUS 4, a new PostgreSQL client and so on) are never proposed:
+# they change behaviour and are upgraded by hand, with the end-to-end test. Fixes for published vulnerabilities come
+# separately, from Dependabot security updates (enabled in the repository settings).
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -12,21 +16,32 @@ updates:
     directory: /backend
     schedule:
       interval: monthly
-    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       python:
-        update-types: [minor, patch]
+        patterns: ["*"]
 
   - package-ecosystem: npm
     directory: /frontend
     schedule:
       interval: monthly
-    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       javascript:
-        update-types: [minor, patch]
+        patterns: ["*"]
 
+  # Base images: the API (python), the RADIUS server (freeradius) and the proxy (node build stage, nginx).
   - package-ecosystem: docker
     directories: [/backend, /services/radius, /deploy/proxy]
     schedule:
       interval: monthly
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      base-images:
+        patterns: ["*"]
