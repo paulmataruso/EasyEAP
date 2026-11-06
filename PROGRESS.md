@@ -5,7 +5,7 @@ Status as of 2026-11-06 (release 1.0.0).
 ## Complete
 
 ### Platform and deployment
-- [x] Compose stack: proxy, API, worker, PostgreSQL 18, OpenBao 2.4.1, FreeRADIUS 3.2.7 + radius-agent
+- [x] Compose stack: proxy, API, worker, PostgreSQL 18, OpenBao 2.4.1, FreeRADIUS 3.2.10 + radius-agent
 - [x] Segmented internal networks; RADIUS has no route to the database or OpenBao
 - [x] `install.sh` (secrets generated once, `.env`, temporary TLS)
 - [x] Full backup and restore from the console and the first-run page (age-encrypted `.easyeap`, step-by-step

@@ -5,6 +5,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- FreeRADIUS 3.2.10 (was 3.2.7) and nginx 1.31 (was 1.29) as the RADIUS and proxy base images. Verified with the
+  end-to-end EAP-TLS suite, the console smoke test, and on a running installation.
+- Dependabot proposes monthly, grouped minor and patch updates; major versions are upgraded by hand.
+
+### Security
+
+- The frontend's lint tooling no longer uses a minimatch version affected by GHSA-g3hv-75wg-m249 (denial of service).
+  It was never part of the console or enrollment portal.
+
 ## [1.0.0] - 2026-11-06
 
 The first public release: multi-tenant EAP-TLS with PKI, Active Directory, RADIUS, enrollment and the console.

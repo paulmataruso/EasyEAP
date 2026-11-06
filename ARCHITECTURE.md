@@ -37,12 +37,12 @@ flowchart LR
 
 | Container | Image base | Runs as | Purpose |
 |---|---|---|---|
-| `easyeap-proxy` | nginx-unprivileged 1.29 | uid 101 | Serves the console SPA and the enrollment portal, terminates TLS, proxies `/api`, serves CRLs and OCSP on plain HTTP (clients fetch them without TLS by design). |
+| `easyeap-proxy` | nginx-unprivileged 1.31 | uid 101 | Serves the console SPA and the enrollment portal, terminates TLS, proxies `/api`, serves CRLs and OCSP on plain HTTP (clients fetch them without TLS by design). |
 | `easyeap-api` | python 3.13-slim | uid 10001 | REST API (OpenAPI at `/api/docs`), authentication, RBAC, policy engine, PKI orchestration, enrollment, snapshot publisher, event ingestion. |
 | `easyeap-worker` | same image as api | uid 10001 | Background jobs: directory sync, hourly policy recomputation (which keeps the snapshot fresh while the directory is healthy), CRL rotation, enrollment-link expiry, purge of undelivered server-generated keys, event retention, OpenBao token renewal. |
 | `easyeap-db` | postgres 18-alpine | postgres | Application database. Row-level security isolates tenants. |
 | `easyeap-pki` | openbao 2.4.1 | openbao | One PKI secrets-engine mount per tenant (issuing CA), one Transit key per tenant (envelope encryption of tenant secrets). Static auto-unseal from a key file. Raft/file storage on its own volume. |
-| `easyeap-radius` | freeradius 3.2.7 | freerad | FreeRADIUS plus `radius-agent` (Python) under a small supervisor. Renders and validates its own configuration from the API's desired state, keeps a local authorization snapshot, ships events. |
+| `easyeap-radius` | freeradius 3.2.10 | freerad | FreeRADIUS plus `radius-agent` (Python) under a small supervisor. Renders and validates its own configuration from the API's desired state, keeps a local authorization snapshot, ships events. |
 
 Only `easyeap-proxy` (TCP 80/443) and `easyeap-radius` (UDP 1812/1813) publish ports. The API is never published directly. RADIUS has **no route** to the database or to OpenBao; it only talks to the API over an authenticated channel, and it keeps working without it.
 
@@ -181,7 +181,7 @@ The design prototypes (`design.html`, `src/concepts/`, `src/prototype/`) are a s
 | Backend | Python 3.13, FastAPI, SQLAlchemy 2, Alembic, Pydantic v2, psycopg 3 | Mature ecosystem for LDAP, X.509 (pyca/cryptography for packaging and parsing only), RADIUS tooling; typed OpenAPI. |
 | Jobs | In-database job table + worker loop (`SELECT … FOR UPDATE SKIP LOCKED`) | No extra broker container; jobs survive restarts; simple to back up. |
 | PKI | OpenBao PKI + Transit | See §3. |
-| RADIUS | FreeRADIUS 3.2.7 | Stable branch with Blast-RADIUS mitigations, `rlm_sql_sqlite`, `linelog`, CRL reload. |
+| RADIUS | FreeRADIUS 3.2.10 | Stable branch with Blast-RADIUS mitigations, `rlm_sql_sqlite`, `linelog`, CRL reload. |
 | Passwords | Argon2id (argon2-cffi) | Memory-hard, current OWASP recommendation. |
 | MFA | TOTP (RFC 6238) | Works offline, no external dependency. |
 | Proxy | nginx-unprivileged | Non-root, small, well understood. |

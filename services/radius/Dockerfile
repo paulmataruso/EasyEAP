@@ -1,4 +1,4 @@
-# EasyEAP RADIUS: FreeRADIUS 3.2.7 + radius-agent (Python stdlib only).
+# EasyEAP RADIUS: FreeRADIUS 3.2.10 + radius-agent (Python stdlib only).
 FROM freeradius/freeradius-server:3.2.10
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 tini ca-certificates \
