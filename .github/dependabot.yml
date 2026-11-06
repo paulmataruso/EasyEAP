@@ -1,7 +1,8 @@
 # Dependabot proposes routine updates once a month, grouped so each ecosystem opens at most one pull request.
 # Major versions (TypeScript 6, React 20, FreeRADIUS 4, a new PostgreSQL client and so on) are never proposed:
-# they change behaviour and are upgraded by hand, with the end-to-end test. Fixes for published vulnerabilities come
-# separately, from Dependabot security updates (enabled in the repository settings).
+# they change behaviour and are upgraded by hand, with the end-to-end test. Dependabot security updates (enabled in
+# the repository settings) follow the same rule, so a vulnerability whose fix needs a major version shows up as an
+# alert under Security → Dependabot and is fixed by hand, e.g. with a pnpm override in frontend/pnpm-workspace.yaml.
 version: 2
 updates:
   - package-ecosystem: github-actions

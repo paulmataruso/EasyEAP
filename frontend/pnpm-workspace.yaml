@@ -1,0 +1,5 @@
+# pnpm settings for the frontend (pnpm 12 reads them here, not from package.json).
+overrides:
+  # GHSA-g3hv-75wg-m249: ESLint's dependencies pin minimatch 10, which is affected. Dev tooling only; nothing in the
+  # console or enrollment portal bundles it. Remove once ESLint depends on minimatch 11.0.1 or later.
+  "minimatch@<11.0.1": "^11.0.1"
