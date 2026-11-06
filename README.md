@@ -9,7 +9,7 @@
 Certificate-based Wi-Fi (EAP-TLS) for MSPs and IT teams. EasyEAP bundles a certificate authority, Active Directory
 groups, dynamic VLANs and FreeRADIUS, and runs them all from one multi-tenant console.
 
-[![Release](https://img.shields.io/github/v/release/paulmataruso/EasyEAP?style=flat-square&color=E2C477&labelColor=202326)](https://github.com/paulmataruso/EasyEAP/releases/latest)
+[![Release](https://img.shields.io/github/v/release/paulmataruso/EasyEAP?sort=semver&display_name=tag&style=flat-square&color=E2C477&labelColor=202326)](https://github.com/paulmataruso/EasyEAP/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/paulmataruso/EasyEAP/ci.yml?branch=main&style=flat-square&label=CI&labelColor=202326)](https://github.com/paulmataruso/EasyEAP/actions/workflows/ci.yml)
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-E2C477?style=flat-square&labelColor=202326)](LICENSE)
 [![Verified on Cisco Catalyst 9800](https://img.shields.io/badge/verified%20on-Cisco%20Catalyst%209800-2ea44f?style=flat-square&labelColor=202326)](docs/controllers/cisco-catalyst-9800.md)
