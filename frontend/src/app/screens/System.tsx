@@ -2,7 +2,7 @@
 // snapshots it has applied, background jobs, and full backup and restore.
 import type { ReactNode } from 'react'
 import { Link } from 'react-router'
-import { Cog, Database, KeyRound, Router } from 'lucide-react'
+import { Cog, Database, KeyRound, Router, Send } from 'lucide-react'
 import { ApiError } from '../api/client'
 import { useOverview } from '../api/dashboard'
 import { useSession } from '../api/session'
@@ -13,16 +13,19 @@ import { useNow } from '../lib/useNow'
 import { paths } from '../routes'
 import { Callout, Chip, Dl, ErrorState, HealthDot, LoadingBlock, PageHeader, Panel, SectionHeader } from '../ui'
 import { BackupPanel } from './system/BackupPanel'
+import { SyslogPanel } from './system/SyslogPanel'
 
 const SERVICE: Record<string, { name: string; icon: ReactNode; what: string }> = {
   database: { name: 'Database', icon: <Database />, what: 'PostgreSQL: tenants, users, certificates, policy and the audit log.' },
   pki: { name: 'Certificate authority service', icon: <KeyRound />, what: 'OpenBao: holds each tenant’s issuing CA key and signs certificates.' },
   radius: { name: 'RADIUS', icon: <Router />, what: 'FreeRADIUS and its agent: authenticates devices from a local snapshot.' },
   worker: { name: 'Background worker', icon: <Cog />, what: 'Directory sync, hourly snapshot rebuilds, CRLs, renewals and retention.' },
+  syslog: { name: 'Remote syslog', icon: <Send />, what: 'Forwards the audit trail, authentication events and system log.' },
 }
 
 function ageText(c: HealthCheck, checkedAt: number, now: Date) {
   if (c.service === 'database' || c.service === 'pki') return `Checked ${relative(new Date(checkedAt).toISOString(), new Date(Math.max(now.getTime(), checkedAt) + 1))}`
+  if (c.service === 'syslog') return c.last_seen_at ? `Last message sent ${ago(c.last_seen_at, now)}` : 'Nothing sent yet'
   return c.last_seen_at ? `Last heartbeat ${ago(c.last_seen_at, now)}` : 'No heartbeat recorded'
 }
 
@@ -95,6 +98,7 @@ export default function System() {
         </Panel>
 
         <BackupPanel health={canHealth ? h : undefined} />
+        {canHealth && <SyslogPanel />}
 
         </div>
 

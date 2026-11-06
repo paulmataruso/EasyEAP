@@ -17,6 +17,7 @@ const Dashboard = lazy(() => import('./screens/Dashboard'))
 const Tenants = lazy(() => import('./screens/Tenants'))
 const NewTenant = lazy(() => import('./screens/NewTenant'))
 const System = lazy(() => import('./screens/System'))
+const SystemLog = lazy(() => import('./screens/SystemLog'))
 const Events = lazy(() => import('./screens/Events'))
 const Users = lazy(() => import('./screens/Users'))
 const UserDetail = lazy(() => import('./screens/UserDetail'))
@@ -122,6 +123,7 @@ export function App() {
                 <Route path="admins" element={<Admins />} />
                 <Route path="audit" element={<Audit scope="platform" />} />
                 <Route path="system" element={<System />} />
+                <Route path="system/logs" element={<SystemLog />} />
                 <Route path="account" element={<Account />} />
                 <Route path="t/:tid" element={<TenantRoute />}>
                   <Route index element={<Navigate to="dashboard" replace />} />

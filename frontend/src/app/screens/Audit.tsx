@@ -26,7 +26,7 @@ function useDebounced<T>(value: T, ms = 250): T {
 const targetTypeLabel: Record<string, string> = {
   admin: 'Administrator', backup: 'Backup', ca: 'Certificate authority', certificate: 'Certificate', directory: 'Directory',
   enrollment: 'Enrollment link', group: 'Group', identity: 'User', policy: 'Access policy', radius: 'RADIUS', radius_client: 'RADIUS client',
-  rule: 'Access rule', template: 'Certificate template', tenant: 'Tenant', vlan: 'VLAN',
+  rule: 'Access rule', syslog: 'Syslog destination', template: 'Certificate template', tenant: 'Tenant', vlan: 'VLAN',
 }
 const typeText = (t: string | null) => (t ? targetTypeLabel[t] ?? t : null)
 
