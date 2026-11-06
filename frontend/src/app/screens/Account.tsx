@@ -25,7 +25,7 @@ export default function Account() {
               ['Name', me.display_name],
               ['Email', <span className="break-all">{me.email}</span>],
               ['Role', role, 'wide'],
-              ['Two-factor authentication', me.mfa_enabled ? <Chip tone="valid" icon={<ShieldCheck aria-hidden />}>On</Chip> : <Chip tone="warn" icon={<ShieldOff aria-hidden />}>Off</Chip>],
+              ['Two-factor authentication', me.mfa_enabled ? <Chip tone="valid" icon={<ShieldCheck aria-hidden />}>On</Chip> : <Chip tone={me.platform_role === 'platform_owner' ? 'crit' : 'warn'} icon={<ShieldOff aria-hidden />}>Off</Chip>],
               ['This session ends', <span title={fmtDateTime(me.session_expires_at)}>{fmtDateTime(me.session_expires_at)} <span className="ee-ink-3">({relative(me.session_expires_at, now)})</span></span>],
             ]} />
             <p className="ee-small ee-ink-3 mt-4">To change your name or email, ask a Super Administrator. Sessions end at the time shown; sign in again after that.</p>

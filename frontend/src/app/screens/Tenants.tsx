@@ -2,30 +2,24 @@
 // it, the top issue and its one action, 24-hour success and certificate counts. Each row opens that tenant.
 import { useMemo, type MouseEvent } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { Building, CircleAlert, CircleCheck, CircleX, Plus, TriangleAlert } from 'lucide-react'
+import { Building, Plus } from 'lucide-react'
 import { cn } from '@/ui/lib'
 import { compareRank, queueRank, useOverview, type OverviewTenant } from '../api/dashboard'
-import type { QueueItem } from '../api/types'
+import { radiusSummary, type QueueItem } from '../api/types'
 import { useSession } from '../api/session'
 import { ago, fmtDateTime, fmtPercent, plural, relative } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { paths, targetPath } from '../routes'
 import { monogram } from '../shell/Shell'
-import { Chip, Empty, ErrorState, HealthDot, LoadingBlock, PageHeader, Panel, SectionHeader, SeverityChip } from '../ui'
+import { Empty, ErrorState, HealthDot, LoadingBlock, PageHeader, Panel, SectionHeader, SeverityChip } from '../ui'
+import { EnforcementChip } from './dashboard/Enforcement'
 import { ActionLink } from './dashboard/Queue'
-
-function EnforcementChip({ t }: { t: OverviewTenant }) {
-  if (t.status === 'suspended') return <Chip tone="crit" icon={<CircleX aria-hidden />}>Suspended</Chip>
-  if (!t.enforcement.enforceable) return <Chip tone="neutral" icon={<CircleAlert aria-hidden />} title="Setup isn’t finished, so nobody can connect yet">Not enforceable yet</Chip>
-  if (!t.enforcement.agent_online || !t.enforcement.auto_refresh) return <Chip tone="crit" icon={<CircleX aria-hidden />}>At risk</Chip>
-  if (!t.enforcement.snapshot_built_at) return <Chip tone="warn" icon={<TriangleAlert aria-hidden />} title="Nobody can connect until the first authorization snapshot is built">Waiting for snapshot</Chip>
-  if (!t.enforcement.agent_in_sync) return <Chip tone="warn" icon={<TriangleAlert aria-hidden />}>Update pending</Chip>
-  return <Chip tone="valid" icon={<CircleCheck aria-hidden />}>Enforcing</Chip>
-}
 
 function enforcementNote(t: OverviewTenant, now: Date): string {
   const e = t.enforcement
+  if (e.status.state === 'suspended') return 'Nobody can connect'
   if (!e.enforceable) return plural(e.missing.length, 'setup step') + ' left'
+  if (e.snapshot_expired && e.deadline_at) return `Failed closed ${relative(e.deadline_at, now)}`
   if (!e.auto_refresh && e.deadline_at) return `Fails closed ${relative(e.deadline_at, now)}`
   return e.snapshot_built_at ? `Snapshot built ${ago(e.snapshot_built_at, now)}` : 'No snapshot yet'
 }
@@ -120,6 +114,7 @@ export default function Tenants() {
 
   const d = q.data
   const agent = d.radius_agent
+  const rs = radiusSummary(agent)
   const needAction = ranked.filter((t) => t.queue_count > 0).length
   const open = (t: OverviewTenant) => navigate(paths.dashboard(t.id))
 
@@ -127,12 +122,10 @@ export default function Tenants() {
     <div>
       {header}
 
-      <Panel className="mb-5 px-5 py-4" risk={!agent || !agent.online ? 'crit' : undefined}>
+      <Panel className="mb-5 px-5 py-4" risk={rs.tone === 'crit' ? 'crit' : undefined}>
         <ul className="flex flex-wrap items-center gap-x-8 gap-y-3 text-[13px]">
           <li>
-            {agent
-              ? <HealthDot tone={agent.online && agent.config_ok && agent.radius_running ? 'valid' : 'crit'} label={agent.online ? (agent.config_ok && agent.radius_running ? 'RADIUS agent online' : 'RADIUS agent reporting a problem') : 'RADIUS agent not reporting'} />
-              : <HealthDot tone="crit" label="RADIUS agent has never reported" />}
+            <HealthDot tone={rs.tone} label={rs.label} />
             {agent && <span className="ee-ink-3" title={fmtDateTime(agent.last_seen_at)}> · heartbeat {ago(agent.last_seen_at, now)}</span>}
           </li>
           <li><span className="ee-num font-semibold">{needAction}</span><span className="ee-ink-2"> of {plural(d.totals.tenants, 'tenant')} need action</span></li>
@@ -167,7 +160,7 @@ export default function Tenants() {
                         </div>
                       </div>
                     </td>
-                    <td><EnforcementChip t={t} /><span className="mt-1 block text-[12px] ee-ink-3">{enforcementNote(t, now)}</span></td>
+                    <td><EnforcementChip e={t.enforcement} /><span className="mt-1 block text-[12px] ee-ink-3">{enforcementNote(t, now)}</span></td>
                     <td><TopIssue t={t} /></td>
                     <td><Success t={t} /></td>
                     <td><Certs t={t} /></td>
@@ -185,7 +178,7 @@ export default function Tenants() {
                     <Link to={paths.dashboard(t.id)} className="block truncate font-semibold underline-offset-2 hover:underline">{t.name}</Link>
                     <span className="block truncate text-[12px] ee-ink-3">{t.domain || t.slug}</span>
                   </div>
-                  <EnforcementChip t={t} />
+                  <EnforcementChip e={t.enforcement} />
                 </div>
                 <div className="mt-3"><TopIssue t={t} compact /></div>
                 <div className="mt-3 grid grid-cols-2 gap-3 text-[13px]">

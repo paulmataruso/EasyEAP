@@ -304,8 +304,19 @@ def revoke(session: Session, bao: OpenBao, cert: m.Certificate, reason: str, act
     cert.revoked_by = actor
 
 
-def rotate_crl(bao: OpenBao, tenant_id: uuid.UUID) -> None:
+def rotate_crl(bao: OpenBao, tenant_id: uuid.UUID, session: Session | None = None) -> None:
+    """Rebuild the issuing CA's CRL. With a session, also record when it expires, for the posture queue."""
     bao.read(f"{tenant_mount(tenant_id)}/crl/rotate")
+    if session is not None:
+        record_crl(session, bao, tenant_id)
+
+
+def record_crl(session: Session, bao: OpenBao, tenant_id: uuid.UUID) -> datetime | None:
+    from cryptography import x509
+
+    crl = x509.load_pem_x509_crl(crl_pem(bao, tenant_id).encode())
+    issuing_ca(session, tenant_id).crl_next_update = crl.next_update_utc
+    return crl.next_update_utc
 
 
 def crl_pem(bao: OpenBao, tenant_id: uuid.UUID) -> str:
@@ -329,6 +340,9 @@ def effective_status(cert: m.Certificate, warning_days: int, now: datetime | Non
         return "revoked"
     if cert.not_after <= now:
         return "expired"
+    # Renewed: a newer certificate replaced it. RADIUS still accepts it until it expires, but it needs no renewal.
+    if cert.status == "superseded":
+        return "superseded"
     if cert.not_after - now <= timedelta(days=warning_days):
         return "expiring"
     return "active"

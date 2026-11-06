@@ -7,7 +7,7 @@ import { ApiError } from '../api/client'
 import { useOverview } from '../api/dashboard'
 import { useSession } from '../api/session'
 import { useSystemHealth, type HealthCheck } from '../api/system'
-import { radiusState } from '../api/types'
+import { radiusState, radiusSummary, snapshotState } from '../api/types'
 import { ago, fmtDateTime, plural, relative } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { paths } from '../routes'
@@ -38,6 +38,7 @@ export default function System() {
   const overview = useOverview()
   const forbidden = !canHealth || (health.error instanceof ApiError && health.error.status === 403)
   const agent = overview.data?.radius_agent
+  const rsum = radiusSummary(agent)
   const h = health.data
   const failing = h?.checks.filter((c) => !c.ok) ?? []
 
@@ -78,7 +79,7 @@ export default function System() {
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                             <p className="font-medium">{meta.name}</p>
-                            <HealthDot tone={c.ok ? 'valid' : 'crit'} label={c.ok ? 'Running' : 'Problem'} />
+                            <HealthDot tone={c.tone ?? (c.ok ? 'valid' : 'crit')} label={c.label ?? (c.ok ? 'Running' : 'Problem')} />
                           </div>
                           <p className="ee-small mt-0.5">{c.detail}</p>
                           <p className="ee-small ee-ink-3 mt-0.5">
@@ -86,7 +87,7 @@ export default function System() {
                             {meta.what && <> · {meta.what}</>}
                           </p>
                           {!c.ok && c.service === 'worker' && (
-                            <p className="ee-small ee-ink-2 mt-1.5">While the worker is stopped, snapshots aren’t rebuilt, so each tenant fails closed when its snapshot reaches its maximum age. Check it on the host with <code className="ee-mono">docker compose logs easyeap-worker</code>.</p>
+                            <p className="ee-small ee-ink-2 mt-1.5">While the worker is stopped, snapshots aren’t rebuilt, so each tenant fails closed when its snapshot reaches its maximum age. Its last messages are in the <Link to={paths.systemLog()} className="underline">System log</Link>. The worker container restarts on its own; if it stays down, the host’s <code className="ee-mono">docker compose logs easyeap-worker</code> shows why.</p>
                           )}
                         </div>
                       </li>
@@ -104,9 +105,9 @@ export default function System() {
 
         <div className="grid grid-cols-1 gap-5 lg:col-span-5 [&>*]:min-w-0">
         {/* RADIUS agent */}
-        <Panel risk={overview.data ? (!agent || !agent.online || !agent.config_ok || radiusState(agent) === 'stopped' ? 'crit' : radiusState(agent) === 'running' ? 'valid' : undefined) : undefined} aria-labelledby="sys-agent">
+        <Panel risk={overview.data ? (rsum.tone === 'neutral' ? undefined : rsum.tone) : undefined} aria-labelledby="sys-agent">
           <div className="p-5">
-            <SectionHeader id="sys-agent" title="RADIUS agent" actions={agent ? (agent.online ? <Chip tone="valid">Online</Chip> : <Chip tone="crit">Not reporting</Chip>) : undefined} />
+            <SectionHeader id="sys-agent" title="RADIUS agent" actions={agent ? <Chip tone={rsum.tone}>{rsum.short}</Chip> : undefined} />
             {overview.isLoading ? <LoadingBlock rows={4} label="Loading RADIUS agent" />
               : overview.error ? <ErrorState error={overview.error} onRetry={() => overview.refetch()} title="RADIUS agent status couldn’t be loaded" />
               : !agent ? (
@@ -131,15 +132,12 @@ export default function System() {
                   {overview.data && overview.data.tenants.length > 0 ? (
                     <ul className="ee-divide">
                       {overview.data.tenants.map((t) => {
-                        const e = t.enforcement
-                        const state = !e.snapshot_version ? { tone: 'neutral' as const, label: 'No snapshot yet' }
-                          : e.agent_in_sync ? { tone: 'valid' as const, label: 'Applied' }
-                          : { tone: 'warn' as const, label: e.agent_applied_version ? 'Older version' : 'Not loaded' }
+                        const state = snapshotState(t)
                         return (
                           <li key={t.id} className="flex items-baseline justify-between gap-3 py-2 first:pt-0 last:pb-0 text-[13px]">
                             <span className="min-w-0">
                               <Link to={paths.dashboard(t.id)} className="block truncate underline-offset-2 hover:underline">{t.name}</Link>
-                              {e.snapshot_built_at && <span className="block text-[12px] ee-ink-3" title={fmtDateTime(e.snapshot_built_at)}>Built {ago(e.snapshot_built_at, now)}</span>}
+                              {t.enforcement.snapshot_built_at && <span className="block text-[12px] ee-ink-3" title={fmtDateTime(t.enforcement.snapshot_built_at)}>Built {ago(t.enforcement.snapshot_built_at, now)}</span>}
                             </span>
                             <HealthDot tone={state.tone} label={state.label} />
                           </li>

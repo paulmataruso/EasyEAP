@@ -41,7 +41,7 @@ const certMeta: Record<string, { tone: Tone; label: string; icon: ReactNode }> =
   expiring: { tone: 'warn', label: 'Expiring', icon: <Clock aria-hidden /> },
   expired: { tone: 'crit', label: 'Expired', icon: <CalendarX aria-hidden /> },
   revoked: { tone: 'crit', label: 'Revoked', icon: <Ban aria-hidden /> },
-  superseded: { tone: 'neutral', label: 'Superseded', icon: <Clock aria-hidden /> },
+  superseded: { tone: 'neutral', label: 'Renewed', icon: <RefreshCw aria-hidden /> },
 }
 export function CertChip({ status }: { status: string }) {
   const m = certMeta[status] ?? { tone: 'neutral' as Tone, label: status, icon: null }
@@ -55,10 +55,15 @@ export function OutcomeChip({ outcome, label }: { outcome: 'allow' | 'deny' | 'a
     : <Chip tone="crit" icon={<ShieldX aria-hidden />}>{label ?? (outcome === 'reject' ? 'Rejected' : 'Denied')}</Chip>
 }
 
-/** "Can connect" separates policy (allowed) from reality (valid certificate + enforceable tenant). */
-export function AccessStateChip({ status, enforceable = true }: { status: 'can_connect' | 'allowed_no_certificate' | 'denied'; enforceable?: boolean }) {
+/** "Can connect" separates policy (allowed) from reality: a valid certificate, and RADIUS enforcing the tenant right now
+ * (`enforcement` is the tenant's status from the backend; a critical one means RADIUS denies everyone or can't answer). */
+export function AccessStateChip({ status, enforceable = true, enforcement }: {
+  status: 'can_connect' | 'allowed_no_certificate' | 'denied'; enforceable?: boolean; enforcement?: { state: string; tone: string; label: string; detail: string }
+}) {
   if (status === 'denied') return <Chip tone="crit" icon={<ShieldX aria-hidden />}>Denied</Chip>
+  if (enforcement?.state === 'suspended') return <Chip tone="neutral" icon={<CircleAlert aria-hidden />} title={enforcement.detail}>Tenant suspended</Chip>
   if (!enforceable) return <Chip tone="neutral" icon={<CircleAlert aria-hidden />} title="RADIUS isn’t enforcing this tenant yet">Not enforceable yet</Chip>
+  if (enforcement?.tone === 'crit') return <Chip tone="crit" icon={<ShieldX aria-hidden />} title={`${enforcement.label}: ${enforcement.detail}`}>Can’t connect now</Chip>
   if (status === 'can_connect') return <Chip tone="valid" icon={<ShieldCheck aria-hidden />}>Can connect</Chip>
   return <Chip tone="gold" icon={<BadgeCheck aria-hidden />} title="Allowed by policy, but no valid certificate">Allowed · no certificate</Chip>
 }

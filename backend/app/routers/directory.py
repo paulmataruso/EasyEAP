@@ -112,6 +112,13 @@ def save(body: DirectoryIn, ctx: TenantCtx = Depends(require("directory:write"))
         from app.config import get_settings
         if not get_settings().lab_mode:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Plain LDAP is disabled. Use LDAPS or StartTLS.")
+    if body.enabled:
+        from app.policy.service import policy_settings
+        limit = policy_settings(s, ctx.id).max_snapshot_age_seconds
+        if body.sync_interval_minutes * 60 * 2 > limit:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                f"Sync at least every {limit // 120} minutes. RADIUS fails closed when directory data is {limit // 3600} hours old "
+                                "(Policy, settings), so one missed sync mustn't be enough to reach it.")
     c = existing or m.DirectoryConfig(tenant_id=ctx.id)
     c.enabled, c.hosts, c.port, c.transport, c.verify_certificate, c.ca_bundle_pem = body.enabled, p.hosts, body.port, body.transport, body.verify_certificate, ca
     c.domain, c.base_dn, c.user_search_base, c.group_search_base = body.domain.lower(), body.base_dn, body.user_search_base, body.group_search_base

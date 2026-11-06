@@ -21,13 +21,17 @@ import { useEntitySearch, type Hit } from './search'
 
 export const monogram = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join('')
 
-function tenantLine(t: TenantListItem): string {
-  if (t.status === 'setup') return 'Setup in progress'
-  if (t.status === 'suspended') return 'Suspended'
-  const crit = t.health.issues.find((i) => i.severity === 'critical')
-  if (crit) return crit.message
-  const warn = t.health.issues.find((i) => i.severity === 'warning')
-  return warn ? warn.message : t.domain || 'Healthy'
+/** The switcher's one line per tenant: the same status and top item as its dashboard. */
+function tenantLine(t: TenantListItem): { text: string; crit: boolean } {
+  if (t.status === 'setup') return { text: 'Setup in progress', crit: false }
+  if (t.status === 'suspended') return { text: 'Suspended: nobody can connect', crit: false }
+  const p = t.posture
+  if (!p) return { text: t.domain || t.slug, crit: false }
+  if (p.top?.severity === 'critical') return { text: p.top.title, crit: true }
+  if (p.status.tone === 'crit') return { text: p.status.label, crit: true }
+  if (p.status.tone === 'warn') return { text: p.status.label, crit: false }
+  if (p.top?.severity === 'warning') return { text: p.top.title, crit: false }
+  return { text: p.status.state === 'enforcing' ? `Enforcing${t.domain ? ` · ${t.domain}` : ''}` : p.status.label, crit: false }
 }
 
 function TenantSwitcher({ onNavigated }: { onNavigated?: () => void }) {
@@ -64,7 +68,7 @@ function TenantSwitcher({ onNavigated }: { onNavigated?: () => void }) {
                 <span className="ee-monogram" aria-hidden>{monogram(t.name)}</span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium">{t.name}</span>
-                  <span className="block truncate text-[12px] ee-ink-3">{tenantLine(t)}</span>
+                  {(() => { const l = tenantLine(t); return <span className={l.crit ? 'block truncate text-[12px] text-[var(--ee-crit-ink)]' : 'block truncate text-[12px] ee-ink-3'}>{l.text}</span> })()}
                 </span>
                 <DropdownMenu.ItemIndicator><Check className="size-4 text-[var(--ee-gold)]" aria-hidden /></DropdownMenu.ItemIndicator>
               </DropdownMenu.RadioItem>

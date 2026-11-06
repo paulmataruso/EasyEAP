@@ -89,7 +89,7 @@ export default function Audit({ scope }: { scope: 'tenant' | 'platform' }) {
       {verify.error && <Callout tone="crit" className="mb-6" title="Verification couldn’t run">{errorMessage(verify.error)}</Callout>}
       {result && (result.ok ? (
         <Callout tone="valid" className="mb-6" icon={<ShieldCheck aria-hidden />} title="The audit chain is intact">
-          All {result.checked.toLocaleString('en-GB')} entries were checked at {fmtDateTime(result.at)}. Each one’s hash matches its content and the entry before it, so none has been altered or removed. The check covers the whole platform chain, not only this {scope === 'tenant' ? 'tenant' : 'view'}.
+          All {result.checked.toLocaleString('en-GB')} entries were checked at {fmtDateTime(result.at)}. Each one’s hash matches its content and the entry before it, so none has been altered, and none removed between the first and the newest. The chain alone can’t show whether the newest entries were deleted; remote syslog (System health) keeps a copy outside EasyEAP. The check covers the whole platform chain, not only this {scope === 'tenant' ? 'tenant' : 'view'}.
         </Callout>
       ) : scope === 'tenant' && !result.break_in_this_tenant ? (
         <Callout tone="crit" className="mb-6" icon={<ShieldX aria-hidden />} title="The platform audit chain is broken outside this tenant">

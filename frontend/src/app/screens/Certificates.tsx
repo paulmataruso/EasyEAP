@@ -1,5 +1,5 @@
 // Client certificates issued in the tenant. GET /api/tenants/{tid}/certificates (routers/certificates.py):
-// q, status (active | expiring | expired | revoked), purpose, identity_id, page. Intents: ?status=… and ?revoke=<id>.
+// q, status (active | expiring | superseded | expired | revoked), purpose, identity_id, page. Intents: ?status=… and ?revoke=<id>.
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { FileKey, ShieldX, X } from 'lucide-react'
@@ -15,8 +15,8 @@ import { keyOrigin, Pager, reasonLabel, SearchBox, TableSkeleton, useUrlState } 
 
 const PAGE_SIZE = 50
 type StatusFilter = 'all' | CertStatusValue
-const STATUSES: CertStatusValue[] = ['active', 'expiring', 'expired', 'revoked']
-const STATUS_LABEL: Record<CertStatusValue, string> = { active: 'Active', expiring: 'Expiring', expired: 'Expired', revoked: 'Revoked' }
+const STATUSES: CertStatusValue[] = ['active', 'expiring', 'superseded', 'expired', 'revoked']
+const STATUS_LABEL: Record<CertStatusValue, string> = { active: 'Active', expiring: 'Expiring', superseded: 'Renewed', expired: 'Expired', revoked: 'Revoked' }
 
 export default function Certificates() {
   const { tid, tenant, can } = useTenant()
@@ -30,7 +30,7 @@ export default function Certificates() {
   const filtered = !!(values.q || status !== 'all' || values.purpose)
   const clear = () => set({ q: null, status: null, purpose: null })
   const issuing = pki.data?.authorities.find((a) => a.role === 'issuing' && a.status === 'active')
-  const allCount = data ? STATUSES.reduce((n, s) => n + data.counts[s], 0) : undefined
+  const allCount = data ? STATUSES.reduce((n, s) => n + (data.counts[s] ?? 0), 0) : undefined
 
   // Revoke: from a row, or from the ?revoke=<id> intent (command palette, dashboard).
   const [revoking, setRevoking] = useState<Certificate | null>(null)

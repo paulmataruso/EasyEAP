@@ -77,7 +77,17 @@ def list_tenants(p: Principal = Depends(principal), s: Session = Depends(db)) ->
     q = select(m.Tenant).order_by(m.Tenant.name)
     if allowed is not None:
         q = q.where(m.Tenant.id.in_(allowed or {uuid.UUID(int=0)}))
-    return {"tenants": [{**tenant_out(t), "health": health_for(s, t), "roles": p.tenant_roles(t.id)} for t in s.scalars(q)]}
+    from app.posture import enforcement, needs_action
+    from app.routers.radius import agent_out
+    agent = agent_out(s)
+    out = []
+    for t in s.scalars(q):
+        enf = enforcement(s, t, agent)
+        queue = needs_action(s, t, agent, enf)
+        # The same status and top item as the dashboard and Tenants page, for the tenant switcher.
+        posture = {"status": enf["status"], "top": {k: queue[0][k] for k in ("code", "severity", "title")} if queue else None, "count": len(queue)}
+        out.append({**tenant_out(t), "health": health_for(s, t), "roles": p.tenant_roles(t.id), "posture": posture})
+    return {"tenants": out}
 
 
 class TenantIn(BaseModel):

@@ -32,16 +32,18 @@ export function impactText(iso: string, now: Date): string {
 }
 
 /** The age of the data behind an item, named for what that data is. */
-export function sourceText(item: QueueItem, now: Date): string {
+export function sourceText(item: QueueItem, now: Date): string | null {
   const at = item.source_at
   const c = item.code
-  if (c === 'radius_offline' || c === 'radius_config' || c === 'snapshot_pending') return at ? `Last RADIUS heartbeat ${ago(at, now)}` : 'No RADIUS heartbeat received yet'
+  if (c === 'radius_offline' || c === 'radius_config' || c === 'snapshot_pending' || c === 'radius_stopped' || c === 'radius_not_serving') return at ? `Last RADIUS heartbeat ${ago(at, now)}` : 'No RADIUS heartbeat received yet'
   if (c === 'worker_offline') return at ? `Last worker heartbeat ${ago(at, now)}` : 'No worker heartbeat received yet'
-  if (!at) return 'Source time not recorded'
-  if (c === 'snapshot_overdue') return `Snapshot built ${ago(at, now)}`
+  // Items whose impact time is the whole story (a list's expiry, a suspension) carry no separate source time.
+  if (!at) return null
+  if (c === 'snapshot_overdue' || c === 'snapshot_expired') return `Snapshot built ${ago(at, now)}`
+  if (c === 'directory_stale') return `Last successful sync ${ago(at, now)}`
   if (c.startsWith('rejects:')) return `Last attempt ${ago(at, now)}`
   if (c === 'directory_failed') return `Last sync attempt ${ago(at, now)}`
-  if (c === 'server_cert_expiring' || c === 'issuing_ca_expiring') return `Certificate issued ${fmtDate(at)}`
+  if (c === 'server_cert_expiring' || c === 'issuing_ca_expiring' || c === 'issuing_ca_expired') return `Certificate issued ${fmtDate(at)}`
   return `Checked ${ago(at, now)}`
 }
 
@@ -76,7 +78,7 @@ export function QueueRow({ item, tid, primary, canOpen, unavailable }: { item: Q
         <p className="ee-small mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5">
           <Meta icon={<UsersRound aria-hidden />}>{affectedText(item)}</Meta>
           {item.impact_at && <Meta icon={<CalendarClock aria-hidden />}>{impactText(item.impact_at, now)}</Meta>}
-          <Meta icon={<History aria-hidden />} title={item.source_at ? fmtDateTime(item.source_at) : undefined}><span className="ee-ink-2">{sourceText(item, now)}</span></Meta>
+          {sourceText(item, now) !== null && <Meta icon={<History aria-hidden />} title={item.source_at ? fmtDateTime(item.source_at) : undefined}><span className="ee-ink-2">{sourceText(item, now)}</span></Meta>}
         </p>
       </div>
       <div className="sm:pt-0.5">

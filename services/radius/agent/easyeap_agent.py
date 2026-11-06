@@ -260,7 +260,8 @@ def apply_config(radius: Radius, desired: dict) -> tuple[bool, str | None]:
         if LIVE.exists():
             LIVE.rename(old)
         new_live.rename(LIVE)
-        (STATE / "config.json").write_text(json.dumps({"version": desired["version"], "applied_at": int(time.time())}))
+        (STATE / "config.json").write_text(json.dumps({"version": desired["version"], "applied_at": int(time.time()),
+                                                       "tenants": [t["id"] for t in desired.get("tenants", [])]}))
         radius.restart()
         return True, None
     except Exception as exc:  # noqa: BLE001
@@ -281,6 +282,15 @@ def current_config_version() -> str | None:
     try:
         return json.loads((STATE / "config.json").read_text())["version"]
     except (OSError, ValueError, KeyError):
+        return None
+
+
+def served_tenants() -> list[str] | None:
+    """Tenant IDs in the configuration FreeRADIUS is running (None if it was applied by an older agent)."""
+    try:
+        ids = json.loads((STATE / "config.json").read_text()).get("tenants")
+        return [str(x) for x in ids] if isinstance(ids, list) else None
+    except (OSError, ValueError):
         return None
 
 
@@ -399,7 +409,8 @@ def main() -> None:
     while not _stop.is_set():
         try:
             desired = api("GET", "/api/agent/config")
-            if desired.get("version") != current_config_version() or not (LIVE / "radiusd.conf").exists():
+            # served_tenants() is None once after upgrading from an agent that didn't record them: re-apply to record them.
+            if desired.get("version") != current_config_version() or not (LIVE / "radiusd.conf").exists() or served_tenants() is None:
                 if desired.get("tenants"):
                     ok, err = apply_config(radius, desired)
                     config_error = err
@@ -417,7 +428,7 @@ def main() -> None:
             send_coa(desired)
             api("POST", "/api/agent/status", {"agent_id": AGENT_ID, "config_version": current_config_version() or "", "config_ok": config_error is None,
                                               "config_error": config_error, "snapshot_versions": applied_versions(conn), "radius_running": radius.running,
-                                              "detail": {"tenants": len((desired or {}).get("tenants", []))}})
+                                              "detail": {"tenants": len((desired or {}).get("tenants", [])), "tenant_ids": served_tenants()}})
             last_ok = time.time()
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
             if time.time() - last_ok > 60:

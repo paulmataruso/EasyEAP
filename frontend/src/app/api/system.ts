@@ -8,6 +8,9 @@ export type ServiceName = 'database' | 'pki' | 'radius' | 'worker' | 'syslog'
 export interface HealthCheck {
   service: ServiceName | string
   ok: boolean
+  /** What the status dot shows, per service (e.g. Reachable, Ready, Idle, Delivering). Absent from older API versions. */
+  tone?: 'valid' | 'warn' | 'crit' | 'neutral'
+  label?: string
   detail: string
   /** Heartbeat time for services that report in (radius, worker). Probed services (database, pki) are checked live. */
   last_seen_at?: string | null

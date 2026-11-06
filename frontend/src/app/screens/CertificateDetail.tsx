@@ -7,7 +7,7 @@ import { ApiError, saveBlob } from '../api/client'
 import { useTenant } from '../api/tenant'
 import { fetchPem, useCertificate, useCertificateEvents, useIdentity, usePki, usePolicy, type CertificateDetail as Cert } from '../api/people'
 import { paths } from '../routes'
-import { Btn, Callout, CertChip, Chip, CopyButton, Dl, ErrorState, LoadingBlock, PageHeader, Panel, PlatformIcon, platformLabels, SectionHeader, toast, toastError } from '../ui'
+import { Btn, Callout, CertChip, CopyButton, Dl, ErrorState, LoadingBlock, PageHeader, Panel, PlatformIcon, platformLabels, SectionHeader, toast, toastError } from '../ui'
 import { DecisionLedger } from '../ui/ledger'
 import { ago, fmtDate, fmtDateTime, fmtFingerprint, fmtSerial, relative, remaining, shortSerial } from '../lib/format'
 import { pushRecent } from '../lib/recent'
@@ -92,7 +92,7 @@ function CertRecord({ c }: { c: Cert }) {
       >
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
           <CertChip status={c.status} />
-          {c.stored_status === 'superseded' && <Chip tone="neutral">Renewed: a newer certificate replaced it</Chip>}
+          {c.status === 'superseded' && <span className="ee-small ee-ink-2">A newer certificate replaced it. RADIUS still accepts this one until it expires; revoke it if the old device is gone.</span>}
           <span className="ee-small ee-ink-2">
             {c.status === 'revoked' ? <>Revoked {ago(c.revoked_at, now)}</> : c.status === 'expired' ? <>Expired {relative(c.not_after, now)}</> : <>Valid for {remaining(c.not_after, now)}, until {fmtDate(c.not_after)}</>}
           </span>

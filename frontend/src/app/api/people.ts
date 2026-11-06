@@ -4,7 +4,7 @@
 import { keepPreviousData, useQuery, type QueryClient } from '@tanstack/react-query'
 import { api, qs } from './client'
 import { qk } from './keys'
-import type { AccessStatus, EnforcementGap, Outcome, Page } from './types'
+import type { AccessStatus, EnforcementGap, EnforcementStatus, Outcome, Page } from './types'
 
 // ── Identities ──────────────────────────────────────────────────────────
 export type AccountState = 'enabled' | 'disabled' | 'locked' | 'deleted'
@@ -28,7 +28,7 @@ export interface Identity {
 
 export interface IdentityAccess { status: AccessStatus; vlan_id: number | null; reason_code: string | null }
 export interface IdentityListItem extends Identity { certificates: number; active_certificates: number; access: IdentityAccess }
-export interface IdentityPage extends Page<IdentityListItem> { enforceable: boolean; enforcement_missing: EnforcementGap[] }
+export interface IdentityPage extends Page<IdentityListItem> { enforceable: boolean; enforcement_missing: EnforcementGap[]; enforcement_status?: EnforcementStatus }
 
 export interface Device { id: string; name: string; platform: string; last_seen_mac: string | null; created_at: string | null }
 
@@ -100,7 +100,8 @@ export const updateIdentity = (tid: string, id: string, body: IdentityPatch) => 
 export const disconnectIdentity = (tid: string, id: string) => api.post<DisconnectResult>(`/api/tenants/${tid}/identities/${id}/disconnect`)
 
 // ── Certificates ────────────────────────────────────────────────────────
-export type CertStatusValue = 'active' | 'expiring' | 'expired' | 'revoked'
+/** Effective status, as the chip shows it. superseded: renewed; still accepted until it expires, needs no renewal. */
+export type CertStatusValue = 'active' | 'expiring' | 'superseded' | 'expired' | 'revoked'
 export const REVOCATION_REASONS = ['keyCompromise', 'affiliationChanged', 'superseded', 'cessationOfOperation', 'unspecified'] as const
 export type RevocationReason = (typeof REVOCATION_REASONS)[number]
 

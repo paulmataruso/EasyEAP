@@ -53,7 +53,7 @@ def _handle(job: m.Job) -> None:
             from app.pki.service import rotate_crl
             from app.radius.state import bump
             if s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == tid, m.CertificateAuthority.role == "issuing")).first():
-                rotate_crl(OpenBao(), tid)
+                rotate_crl(OpenBao(), tid, s)
                 bump(s, tid)
         elif job.kind == "enrollment.purge":
             _purge_escrow(s)
@@ -129,7 +129,10 @@ def schedule() -> None:
             directory_fresh = dc is None or not dc.enabled or (dc.last_sync_status == "ok" and dc.last_sync_at and now - dc.last_sync_at < max_age)
             if directory_fresh and due(f"refresh:{t.id}", timedelta(hours=1)):
                 queue.enqueue(s, "policy.recompute", tenant_id=t.id, dedupe_key=f"policy.recompute:{t.id}")
-            if due(f"crl:{t.id}", timedelta(hours=24)):
+            issuing = s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == t.id, m.CertificateAuthority.role == "issuing")).first()
+            # Installs from before the CRL's expiry was recorded catch up within an hour instead of a day.
+            unrecorded = issuing is not None and issuing.crl_next_update is None
+            if due(f"crl:{t.id}", timedelta(hours=24)) or (unrecorded and due(f"crl-record:{t.id}", timedelta(hours=1))):
                 queue.enqueue(s, "crl.rotate", tenant_id=t.id, dedupe_key=f"crl.rotate:{t.id}")
 
 

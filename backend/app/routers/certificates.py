@@ -57,17 +57,21 @@ def list_certs(ctx: TenantCtx = Depends(require("certificates:read")), q: str = 
     elif status_filter == "expired":
         stmt = stmt.where(m.Certificate.status != "revoked", m.Certificate.not_after <= now)
     elif status_filter == "expiring":
-        stmt = stmt.where(m.Certificate.status != "revoked", m.Certificate.not_after > now, m.Certificate.not_after <= now + timedelta(days=warn))
+        stmt = stmt.where(m.Certificate.status == "active", m.Certificate.not_after > now, m.Certificate.not_after <= now + timedelta(days=warn))
     elif status_filter == "active":
-        stmt = stmt.where(m.Certificate.status != "revoked", m.Certificate.not_after > now + timedelta(days=warn))
+        stmt = stmt.where(m.Certificate.status == "active", m.Certificate.not_after > now + timedelta(days=warn))
+    elif status_filter == "superseded":
+        stmt = stmt.where(m.Certificate.status == "superseded", m.Certificate.not_after > now)
     total = s.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = s.execute(stmt.order_by(m.Certificate.not_after.asc()).offset((page - 1) * page_size).limit(page_size)).all()
     base = select(func.count()).select_from(m.Certificate).where(m.Certificate.tenant_id == ctx.id, m.Certificate.purpose.in_(("user", "device")))
     counts = {
         "revoked": s.scalar(base.where(m.Certificate.status == "revoked")) or 0,
         "expired": s.scalar(base.where(m.Certificate.status != "revoked", m.Certificate.not_after <= now)) or 0,
-        "expiring": s.scalar(base.where(m.Certificate.status != "revoked", m.Certificate.not_after > now, m.Certificate.not_after <= now + timedelta(days=warn))) or 0,
-        "active": s.scalar(base.where(m.Certificate.status != "revoked", m.Certificate.not_after > now + timedelta(days=warn))) or 0,
+        "expiring": s.scalar(base.where(m.Certificate.status == "active", m.Certificate.not_after > now, m.Certificate.not_after <= now + timedelta(days=warn))) or 0,
+        "active": s.scalar(base.where(m.Certificate.status == "active", m.Certificate.not_after > now + timedelta(days=warn))) or 0,
+        # Same definitions as effective_status(), so the counts add up to the total and match each certificate's chip.
+        "superseded": s.scalar(base.where(m.Certificate.status == "superseded", m.Certificate.not_after > now)) or 0,
     }
     return {"total": total, "page": page, "page_size": page_size, "counts": counts, "warning_days": warn,
             "items": [cert_out(c, warn, i, d) for c, i, d in rows]}

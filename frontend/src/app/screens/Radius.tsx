@@ -331,6 +331,15 @@ const coaStatus: Record<string, { tone: Tone; label: string }> = {
   failed: { tone: 'crit', label: 'Failed' },
 }
 
+/** A request's status, aged: the agent sends within seconds and records the reply, so a request still queued or
+ * waiting minutes later has stalled (agent down, or it stopped before recording the answer). */
+function coaState(r: CoaRequest, now: Date): { tone: Tone; label: string } {
+  const age = r.created_at ? now.getTime() - new Date(r.created_at).getTime() : 0
+  if (r.status === 'pending' && age > 5 * 60_000) return { tone: 'warn', label: 'Not sent: check the RADIUS agent' }
+  if (r.status === 'sent' && age > 2 * 60_000) return { tone: 'warn', label: 'No reply recorded' }
+  return coaStatus[r.status] ?? { tone: 'neutral', label: r.status }
+}
+
 function CoaQueue({ clients }: { clients: RadiusClient[] }) {
   const { tid } = useTenant()
   const now = useNow()
@@ -352,7 +361,7 @@ function CoaQueue({ clients }: { clients: RadiusClient[] }) {
             <>
             <ul className="md:hidden divide-y divide-[var(--ee-line)] border-y border-[var(--ee-line)]" aria-label="Recent CoA disconnect requests">
               {items.map((r) => {
-                const st = coaStatus[r.status] ?? { tone: 'neutral' as Tone, label: r.status }
+                const st = coaState(r, now)
                 return (
                   <li key={r.id} className="space-y-1.5 py-3 text-[13px]">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -372,7 +381,7 @@ function CoaQueue({ clients }: { clients: RadiusClient[] }) {
                 <thead><tr><th>Requested</th><th>Controller</th><th>Device</th><th>Reason</th><th>Status</th></tr></thead>
                 <tbody>
                   {items.map((r: CoaRequest) => {
-                    const st = coaStatus[r.status] ?? { tone: 'neutral' as Tone, label: r.status }
+                    const st = coaState(r, now)
                     const who = r.attributes['User-Name'] || r.attributes['Calling-Station-Id'] || '—'
                     return (
                       <tr key={r.id}>
