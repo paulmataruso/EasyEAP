@@ -1,0 +1,58 @@
+name: Bug report
+description: Something in EasyEAP doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Don't include secrets**: shared secrets, passwords, private keys, enrollment links or setup tokens. For security vulnerabilities, use private vulnerability reporting instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to ...
+        2. Click ...
+        3. See ...
+  - type: input
+    id: version
+    attributes:
+      label: EasyEAP version
+      description: Shown at the top of System health.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Console
+        - Enrollment portal or a device install
+        - RADIUS or EAP-TLS authentication
+        - Active Directory sync
+        - Certificate authority or revocation
+        - Backup, restore or syslog
+        - Installation or upgrade
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Controller and client
+      description: Wireless controller model and firmware, and the client OS, if relevant.
+      placeholder: "Catalyst 9800-CL 17.12, iOS 26"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From System health → System log, the authentication log, or `docker compose logs`. Remove anything secret.
+      render: text

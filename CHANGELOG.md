@@ -5,65 +5,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
+## [1.0.0] - 2026-11-06
 
-- **Backup and restore in the console.** System health → Backup and restore makes a complete, encrypted backup
-  (database, every CA key, secrets) as one `.easyeap` file, and restores one with a step-by-step progress screen and
-  automatic rollback on failure. A new installation's first-run page offers **Set up new** or **Restore a backup**.
-  `deploy/backup.sh` and `restore.sh` now drive the same engine, for scheduling only.
-- **System log and remote syslog.** The console keeps 30 days of messages from the API, worker, RADIUS agent and
-  FreeRADIUS (System health → System log), and forwards them, the audit trail and every authentication to up to four
-  syslog servers over TLS, TCP or UDP (RFC 5424 or 3164, text or JSON), with a test message, delivery status and
-  catch-up after outages.
-- **Base DN detection.** Directory settings read the base DN and AD domain from the domain controller's RootDSE with
-  "Detect from domain controller". It needs only the controller's name and TLS settings and tries without signing
-  in first. The base DN also follows the AD domain as you type, and Test connection names the directory's real base
-  DN when the one entered is outside it.
-
-### Changed
-
-- **One enforcement status everywhere.** The dashboard, Tenants page, tenant switcher and users' "Can connect" now
-  show the same status, computed once on the server. It accounts for FreeRADIUS actually running, the tenant being in
-  RADIUS's running configuration, an expired snapshot, and a short grace while a change is applied.
-- **Truthful status chips.** The root CA reads "Key held offline" (neutral: it's by design) instead of "Offline". The
-  issuing CA chip reflects its validity and whether the CA service answers. System health labels each service by what
-  it does (Reachable, Ready, Running, Idle, Delivering) and checks EasyEAP's OpenBao token, not only the seal. Renewed
-  certificates show "Renewed" instead of "Active", and the certificate counts add up.
-- **New needs-action items:** FreeRADIUS stopped, tenant missing from RADIUS's configuration, snapshot expired,
-  directory stale or never synced, revocation list expiring, issuing CA expired, root revocation list expiring, and
-  tenant suspended. Backup reminders point at the console instead of `backup.sh`.
-- **Directory sync interval** must now be at most half the fail-closed limit, so one missed sync can't make RADIUS
-  deny everyone.
-- **New logo.** The sign-in and setup screens, sidebar, mobile top bar, enrollment page and favicon use the new EasyEAP mark: an amber E and wireless signal with a security key, on a charcoal tile. The source is `design/brand/mark.svg`.
-
-### Fixed
-
-- Signing out returns to the sign-in screen at once.
-- OpenBao recovery keys were discarded at install (`recovery_keys_base64`). New installations keep them, so backups
-  can always regain CA access.
-- The audit verification no longer claims to detect deleted entries at the end of the chain.
-- "Enrolled" now means holding a valid certificate, so it clears when the last one is revoked or expires.
-- Disconnect (CoA) requests that stall show "No reply recorded" instead of waiting forever.
-- Saving a new directory connection blanked the console until the first sync finished. A configuration that hasn't
-  synced yet now reports no statistics, and the page checks for complete statistics before showing them.
-- A screen that hits a rendering error now shows what happened inside the console, with a reload button, instead of
-  a blank page.
-- The RADIUS status no longer reads "Not running" in red before any tenant is active. It shows "Idle" until a tenant
-  is activated and "Starting" while the agent loads it. The RADIUS screen, dashboard and system overview check every
-  5 seconds during that time instead of every 30.
-- `install.sh` puts an IP address in the temporary TLS certificate as an IP subjectAltName. A DNS entry made browsers
-  reject the certificate when the console hostname is an IP address.
-
-## [1.0.0] - 2026-11-05
-
-The first complete release: multi-tenant EAP-TLS with PKI, Active Directory, RADIUS, enrollment and the console.
+The first public release: multi-tenant EAP-TLS with PKI, Active Directory, RADIUS, enrollment and the console.
+Verified end to end with a live Cisco Catalyst 9800 and an iPhone enrolled through the portal.
 
 ### Added
 
 - **Deployment.** One Docker Compose project with proxy, API, worker, PostgreSQL 18, OpenBao 2.4.1 and FreeRADIUS
   3.2.7, on segmented internal networks. Also:
   - `install.sh` generates every secret once;
-  - encrypted `backup.sh` and `restore.sh`;
+  - `backup.sh` and `restore.sh` for scheduled backups (the same engine and files as the console);
   - a lab profile with a Samba AD domain controller and an `eapol_test` Wi-Fi client;
   - a development override with a hot-reloading API.
 - **Multi-tenancy.**
@@ -126,6 +78,18 @@ The first complete release: multi-tenant EAP-TLS with PKI, Active Directory, RAD
   - End-to-end EAP-TLS through FreeRADIUS against a real domain controller.
   - A browser smoke test of every console screen.
 - **Design.** Six design concepts, a critique of each, and the chosen direction (`design/CONCEPTS.md`).
+- **Backup and restore in the console.** System health → Backup and restore makes a complete, encrypted backup
+  (database, every CA key, secrets) as one `.easyeap` file, and restores one with a step-by-step progress screen and
+  automatic rollback on failure. A new installation's first-run page offers **Set up new** or **Restore a backup**.
+  `deploy/backup.sh` and `restore.sh` now drive the same engine, for scheduling only.
+- **System log and remote syslog.** The console keeps 30 days of messages from the API, worker, RADIUS agent and
+  FreeRADIUS (System health → System log), and forwards them, the audit trail and every authentication to up to four
+  syslog servers over TLS, TCP or UDP (RFC 5424 or 3164, text or JSON), with a test message, delivery status and
+  catch-up after outages.
+- **Base DN detection.** Directory settings read the base DN and AD domain from the domain controller's RootDSE with
+  "Detect from domain controller". It needs only the controller's name and TLS settings and tries without signing
+  in first. The base DN also follows the AD domain as you type, and Test connection names the directory's real base
+  DN when the one entered is outside it.
 
 ### Security
 
@@ -138,3 +102,47 @@ The first complete release: multi-tenant EAP-TLS with PKI, Active Directory, RAD
 - Tenant posture treats a stopped worker as a blocked refresh: the needs-action queue reports an offline worker, a
   missing snapshot and an overdue refresh before RADIUS starts failing closed.
 - Fonts are served as files rather than inlined, so the strict CSP (`font-src 'self'`) holds without exceptions.
+
+### Changed since the preview build (2026-11-05)
+
+- **One enforcement status everywhere.** The dashboard, Tenants page, tenant switcher and users' "Can connect" now
+  show the same status, computed once on the server. It accounts for FreeRADIUS actually running, the tenant being in
+  RADIUS's running configuration, an expired snapshot, and a short grace while a change is applied.
+- **Truthful status chips.** The root CA reads "Key held offline" (neutral: it's by design) instead of "Offline". The
+  issuing CA chip reflects its validity and whether the CA service answers. System health labels each service by what
+  it does (Reachable, Ready, Running, Idle, Delivering) and checks EasyEAP's OpenBao token, not only the seal. Renewed
+  certificates show "Renewed" instead of "Active", and the certificate counts add up.
+- **New needs-action items:** FreeRADIUS stopped, tenant missing from RADIUS's configuration, snapshot expired,
+  directory stale or never synced, revocation list expiring, issuing CA expired, root revocation list expiring, and
+  tenant suspended. Backup reminders point at the console instead of `backup.sh`.
+- **Directory sync interval** must now be at most half the fail-closed limit, so one missed sync can't make RADIUS
+  deny everyone.
+- **New logo.** The sign-in and setup screens, sidebar, mobile top bar, enrollment page and favicon use the new EasyEAP mark: an amber E and wireless signal with a security key, on a charcoal tile. The source is `design/brand/mark.svg`.
+
+### Fixed since the preview build
+
+- Signing out returns to the sign-in screen at once.
+- OpenBao recovery keys were discarded at install (`recovery_keys_base64`). New installations keep them, so backups
+  can always regain CA access.
+- The audit verification no longer claims to detect deleted entries at the end of the chain.
+- "Enrolled" now means holding a valid certificate, so it clears when the last one is revoked or expires.
+- Disconnect (CoA) requests that stall show "No reply recorded" instead of waiting forever.
+- Saving a new directory connection blanked the console until the first sync finished. A configuration that hasn't
+  synced yet now reports no statistics, and the page checks for complete statistics before showing them.
+- A screen that hits a rendering error now shows what happened inside the console, with a reload button, instead of
+  a blank page.
+- The RADIUS status no longer reads "Not running" in red before any tenant is active. It shows "Idle" until a tenant
+  is activated and "Starting" while the agent loads it. The RADIUS screen, dashboard and system overview check every
+  5 seconds during that time instead of every 30.
+- `install.sh` puts an IP address in the temporary TLS certificate as an IP subjectAltName. A DNS entry made browsers
+  reject the certificate when the console hostname is an IP address.
+
+### Upgrading a preview installation
+
+- Installations made with the preview have no OpenBao recovery keys, so their backups can regain CA access only
+  if restored within 32 days of being made. The console shows each backup's restore-by date.
+- Backups made by the preview (`.tar.gz.enc` or `.tar.gz.gpg`) can't be restored. Make a new backup from the
+  console after upgrading.
+
+[Unreleased]: https://github.com/paulmataruso/EasyEAP/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/paulmataruso/EasyEAP/releases/tag/v1.0.0

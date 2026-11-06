@@ -1,0 +1,34 @@
+name: Controller compatibility report
+description: Tell us how EasyEAP worked with your wireless controller.
+labels: [controllers]
+body:
+  - type: input
+    id: controller
+    attributes:
+      label: Controller model and firmware
+      placeholder: "Aruba Instant On, firmware 3.x"
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Works, including dynamic VLANs
+        - Works, but without dynamic VLANs
+        - Doesn't work
+    validations:
+      required: true
+  - type: dropdown
+    id: coa
+    attributes:
+      label: Does disconnect on revoke (CoA) work?
+      options:
+        - "Yes"
+        - "No"
+        - Not tested
+  - type: textarea
+    id: notes
+    attributes:
+      label: Configuration notes
+      description: Settings that mattered, the CoA port, and anything you had to work around. Remove shared secrets.

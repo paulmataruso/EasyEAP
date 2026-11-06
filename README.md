@@ -1,78 +1,282 @@
+<div align="center">
+
+<img src="design/brand/mark.svg" alt="EasyEAP logo" width="104" height="104">
+
 # EasyEAP
 
-**Enterprise Wi-Fi Authentication, Simplified.**
+**Enterprise Wi-Fi authentication, simplified.**
 
-EasyEAP gives MSPs and IT teams certificate-based (EAP-TLS) Wi-Fi without running a full network access control
-suite. One deployment serves many customer organisations ("tenants"). Each tenant gets:
+Certificate-based Wi-Fi (EAP-TLS) for MSPs and IT teams. EasyEAP bundles a certificate authority, Active Directory
+groups, dynamic VLANs and FreeRADIUS, and runs them all from one multi-tenant console.
 
-- **Its own PKI.** An offline Root CA from a one-time ceremony, and an Issuing CA held in OpenBao that never leaves it.
-  CRL and OCSP are published automatically.
-- **Active Directory authorization.** Read-only sync over LDAPS, including nested groups and account state
-  (disabled, locked, deleted).
-- **An access policy with dynamic VLANs.** "Deny Contractors; IT Dept → VLAN 120; Staff → VLAN 100". Deny always
-  wins. Changes are previewed against real users before they are published.
-- **FreeRADIUS** that keeps authenticating from a local snapshot when the console, API or database is down, and
-  denies everyone once that snapshot is too old (fail closed).
-- **Per-device enrollment** for Windows, macOS, iOS/iPadOS, Android and Linux. The device generates its own key by
-  default; server-generated keys are an opt-in for a Tenant Administrator.
-- **Monitoring in plain language.** Every decision shows why: "Member of IT Dept via Network Team → rule 2 Allow →
-  VLAN 120", or "Certificate from an untrusted authority: re-enroll the device".
-- **RBAC, a hash-chained audit trail, encrypted backups, and a setup wizard.**
+[![Release](https://img.shields.io/github/v/release/paulmataruso/EasyEAP?style=flat-square&color=E2C477&labelColor=202326)](https://github.com/paulmataruso/EasyEAP/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/paulmataruso/EasyEAP/ci.yml?branch=main&style=flat-square&label=CI&labelColor=202326)](https://github.com/paulmataruso/EasyEAP/actions/workflows/ci.yml)
+[![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-E2C477?style=flat-square&labelColor=202326)](LICENSE)
+[![Verified on Cisco Catalyst 9800](https://img.shields.io/badge/verified%20on-Cisco%20Catalyst%209800-2ea44f?style=flat-square&labelColor=202326)](docs/controllers/cisco-catalyst-9800.md)
+
+[Quick start](#quick-start) · [Tour](#a-tour-of-the-console) · [How it works](#how-it-works) · [Security](#security) · [Docs](#documentation) · [License](#license)
+
+</div>
+
+<br>
+
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="A tenant dashboard: an empty needs-action queue, authentications over the last 24 hours, the tenant enforcing its latest RADIUS snapshot, VLAN usage and service status" width="100%">
+</p>
+
+## Why EasyEAP
+
+A Wi-Fi password, whether a pre-shared key or a PEAP login, gets shared, phished and never rotated. EAP-TLS fixes
+that: every device proves who it is with its own certificate, and there is no password to steal. Rolling it out,
+though, usually means standing up a certificate authority, a RADIUS server, directory integration, and a network
+access control suite built for a much bigger job.
+
+EasyEAP does just that job: issue a certificate to a person's device, check their Active Directory groups, and put
+them on the right VLAN. One deployment serves many customers. Every failure denies access instead of allowing it.
+
+## What you get
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**A certificate authority per customer**<br>
+Each tenant gets an offline root CA, made in a one-time ceremony, and an issuing CA whose key lives in OpenBao and
+never leaves it. CRL and OCSP are published automatically.
+
+</td>
+<td width="50%" valign="top">
+
+**Active Directory, read-only**<br>
+EasyEAP syncs users over LDAPS with a read-only service account. Nested groups (including the primary group) count,
+and disabled, locked or deleted accounts are denied before any rule runs.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**Dynamic VLANs where deny wins**<br>
+*Deny Contractors · IT → VLAN 120 · Staff → VLAN 100.* Rule changes are staged as a draft and previewed against
+every real user before you publish them.
+
+</td>
+<td width="50%" valign="top">
+
+**RADIUS that doesn't need the console**<br>
+FreeRADIUS authenticates from a local snapshot while the console, API or database is down. Once that snapshot is
+older than the limit you set, it **fails closed** and denies everyone.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**One certificate per device**<br>
+Enrollment links work on Windows, macOS, iOS and iPadOS, Android and Linux. By default each device generates its own
+key, in the browser or with the TPM on Windows. Server-generated keys are opt-in.
+
+</td>
+<td width="50%" valign="top">
+
+**Answers in plain language**<br>
+Every decision says why: *Member of IT Dept via Network Team → rule 2 → VLAN 120*, or *Certificate from an untrusted
+authority: re-enroll the device.*
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**Built for MSPs**<br>
+Customers share one deployment, kept apart by PostgreSQL row-level security and per-tenant keys. A needs-action queue
+shows which tenant needs you and why.
+
+</td>
+<td width="50%" valign="top">
+
+**Backup, restore and syslog in the console**<br>
+One encrypted file holds everything, and a new server restores it from its first-run page. The audit trail,
+authentications and system log can forward to your SIEM over TLS.
+
+</td>
+</tr>
+</table>
+
+## A tour of the console
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/screenshots/users.png" alt="Users screen listing directory users, whether each can connect now, their VLAN, certificates and groups"><br>
+<b>Users.</b> Who can connect right now, on which VLAN, and why not when they can't.
+</td>
+<td width="50%" valign="top">
+<img src="docs/screenshots/access-policy.png" alt="Access policy screen with deny rules, allow rules, the default action and VLANs"><br>
+<b>Access policy.</b> Deny rules always win; the first matching Allow rule sets the VLAN. Test any user against the policy.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/screenshots/radius.png" alt="RADIUS screen with agent, FreeRADIUS and snapshot status, server settings, server certificate and wireless controllers"><br>
+<b>RADIUS.</b> Live status, the server certificate, controllers with one-time shared secrets, and controller guides filled in with this tenant's settings.
+</td>
+<td width="50%" valign="top">
+<img src="docs/screenshots/certificate-authority.png" alt="Certificate authority screen with the offline root CA, the issuing CA, distribution URLs and the revocation list"><br>
+<b>Certificate authority.</b> The offline root, the issuing CA, distribution URLs and revocation list health.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/screenshots/authentication-log.png" alt="Authentication log with time, user, device MAC, controller and SSID, result, VLAN and reason"><br>
+<b>Authentication log.</b> Every RADIUS decision with the controller, SSID, VLAN and the reason in plain language.
+</td>
+<td width="50%" valign="top">
+<img src="docs/screenshots/certificates.png" alt="Certificates screen listing device certificates with status, remaining validity and where the key was generated"><br>
+<b>Certificates.</b> Each device's certificate, how long it has left, and where its key was made. Revoke one with an optional CoA disconnect.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/screenshots/audit-log.png" alt="Audit log listing administrative changes with actor, action and target"><br>
+<b>Audit log.</b> Every change, hash-chained so tampering shows. Verify the chain from the console.
+</td>
+<td width="50%" valign="top">
+<img src="docs/screenshots/command-palette.png" alt="Command palette issuing a certificate: typing admin lists matching users"><br>
+<b>Command palette.</b> Press <kbd>Ctrl</kbd>+<kbd>K</kbd> or <kbd>⌘</kbd>+<kbd>K</kbd> to issue, revoke or rotate from anywhere, or <kbd>/</kbd> to search the tenant.
+</td>
+</tr>
+</table>
+
+## How it works
+
+```mermaid
+flowchart LR
+  device["Laptop or phone<br/>with its own certificate"] -->|"EAP-TLS"| wlc["Wireless controller<br/>Catalyst 9800 · AireOS · UniFi"]
+  wlc -->|"RADIUS · UDP 1812/1813"| radius["FreeRADIUS + agent<br/>local snapshot, fails closed"]
+  radius -->|"Accept + VLAN, or Reject"| wlc
+  radius -->|"pulls the snapshot every 15 s<br/>sends events"| api["EasyEAP API + worker"]
+  admin["MSP technician"] -->|"HTTPS"| console["Console and<br/>enrollment portal"] --> api
+  api --> db[("PostgreSQL<br/>row-level security")]
+  api --> bao["OpenBao<br/>issuing CAs · Transit keys"]
+  api -.->|"LDAPS, read-only"| ad["Active Directory"]
+```
+
+1. The device presents its certificate to the controller, which relays the EAP-TLS exchange to EasyEAP's FreeRADIUS.
+2. FreeRADIUS checks the certificate against the tenant's issuing CA and revocation list. It then looks up the
+   certificate in a local snapshot that already holds the account state, groups and policy decision.
+3. RADIUS accepts with the VLAN (`Tunnel-Private-Group-ID`) or rejects. Either way the reason appears in the
+   authentication log.
+4. The agent pulls a fresh snapshot every 15 seconds, so a revocation stops new connections within about 15 seconds.
+   Devices that are already connected are disconnected with CoA where the controller supports it.
+
+The RADIUS container has no route to the database or OpenBao. [ARCHITECTURE.md](ARCHITECTURE.md) covers the services,
+networks, PKI design, enrollment, policy precedence and data model.
 
 ## Quick start
 
-On a Linux host with Docker Engine 24+ and Compose v2:
+You need a Linux host with Docker Engine 24+ and Docker Compose v2 (2 vCPU, 4 GB RAM, 20 GB disk), a DNS name for
+the console, and a route from your wireless controllers to the host.
 
 ```sh
-git clone <your EasyEAP repository> /opt/easyeap
+git clone https://github.com/paulmataruso/EasyEAP.git /opt/easyeap
 cd /opt/easyeap/deploy
 sudo ./install.sh --hostname easyeap.msp.example --radius-address 10.20.0.15
-docker compose exec easyeap-api easyeap setup-token
 ```
 
-Open `https://easyeap.msp.example/`, create the first administrator with the setup token, and create a tenant. The
-setup wizard takes you through the CA ceremony, the directory, RADIUS and the access policy. There is no default
-account. [DEPLOYMENT.md](DEPLOYMENT.md) covers ports, settings, upgrades, backup and restore.
+The installer generates every secret, builds the images, starts the stack and prints a **one-time setup token**.
+Open `https://easyeap.msp.example/` and choose one of two options:
 
-To try it without a customer network, `./install.sh --lab` adds a Samba AD domain controller and a simulated Wi-Fi
-client (`eapol_test`). `tests/e2e/run.sh` then builds a tenant and authenticates through real EAP-TLS.
+- **Set up new:** paste the token, create the first administrator and add a tenant. A setup wizard walks you through
+  the CA ceremony, the directory, RADIUS and the access policy.
+- **Restore a backup:** paste the token and upload an `.easyeap` backup file. The server comes back as it was when
+  the backup was made.
 
-## The console
+There is no default account. To try EasyEAP without a customer network, run `./install.sh --lab`. It adds a Samba
+AD domain controller and a simulated Wi-Fi client. [DEPLOYMENT.md](DEPLOYMENT.md) covers ports, TLS certificates,
+settings, upgrades, backups and operations.
 
-| Area | What you do there |
-|---|---|
-| **Tenants** (MSP) | Every customer's posture at a glance: enforceable or not, what needs action, RADIUS and directory freshness |
-| **Dashboard** | The tenant's needs-action queue, enforcement status and fail-closed deadline, accept/reject trends |
-| **Users** | Directory users and whether each can connect now; issue a certificate; see the decision for any user |
-| **Certificates** | Every device certificate, its remaining validity, revocation (with optional CoA disconnect) |
-| **Authentication log** | Each RADIUS decision with its reason, rule, VLAN and controller |
-| **Access policy** | VLANs and rules; draft, preview the impact on real users, publish; test a user |
-| **RADIUS** | Server certificate and name, SSID, controllers and shared secrets, filled controller guides |
-| **Directory** | LDAPS connection, sync status, groups |
-| **Certificate authority** | CA ceremony, CA status, templates, CRL |
-| **Audit** | Every administrative change, with chain verification |
+## Wireless controllers
 
-Press `/` to search the tenant, or ⌘K / Ctrl+K for the command palette ("issue jordan", "revoke…", "rotate secret…").
+EasyEAP works with any controller that supports WPA2/WPA3-Enterprise with an external RADIUS server and VLAN
+assignment from RADIUS attributes. The console's RADIUS screen fills in each guide with the tenant's own address,
+ports, SSID and VLANs.
+
+| Controller | Status | Guide |
+|---|---|---|
+| Cisco Catalyst 9800 (IOS-XE 17.x) | Verified on a live controller, CoA on UDP 1700 | [cisco-catalyst-9800.md](docs/controllers/cisco-catalyst-9800.md) |
+| Cisco AireOS WLC 8.x | Guide and CLI snippet, CoA on UDP 3799 | [cisco-aireos.md](docs/controllers/cisco-aireos.md) |
+| UniFi Network | Step-by-step guide | [unifi.md](docs/controllers/unifi.md) |
+
+## Security
+
+EasyEAP decides who gets onto a network, so it fails closed and keeps keys where they belong.
+
+- **No default account.** The first administrator is created with a one-time token from the server. Passwords are
+  hashed with Argon2id, two-factor uses TOTP, and sign-in is rate-limited.
+- **No custom cryptography.** It relies on OpenBao, pyca/cryptography, WebCrypto, PKI.js, argon2-cffi and age.
+- **Key custody.** The root CA key is exported once, encrypted, and never kept online. Issuing CA keys never leave
+  OpenBao. Shared secrets, bind passwords and escrowed keys are stored only as per-tenant Transit ciphertext.
+  RADIUS shared secrets are shown once.
+- **Tenant isolation.** PostgreSQL row-level security applies to every tenant table, through a non-owner application
+  role.
+- **Fails closed.** Unknown certificates, stale snapshots, and disabled, locked or deleted accounts are all denied.
+- **Honest revocation.** New connections stop within about 15 seconds. Connected devices drop through CoA or at
+  their session timeout. The console never claims revocation is instant.
+- **Tamper-evident audit.** The audit trail is append-only and hash-chained, and can be verified from the console.
+
+Read [SECURITY.md](SECURITY.md) for the threat model and key custody. To report a vulnerability, use
+[private vulnerability reporting](https://github.com/paulmataruso/EasyEAP/security/advisories/new), not a public
+issue.
 
 ## Documentation
 
-| Document | Contents |
+| Document | What it covers |
 |---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Services, multi-tenancy, PKI, enrollment, RADIUS flow, policy precedence, data model |
-| [SECURITY.md](SECURITY.md) | Threat model, key custody, controls, RBAC matrix, what revocation means in practice |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Requirements, network, install, first run, upgrades, backup and restore, operations |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | Repository layout, dev stack, tests, conventions |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Requirements, network, install, first run, upgrades, backup and restore, remote syslog, operations |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Services, multi-tenancy, PKI, enrollment, the RADIUS flow, policy precedence, the data model |
+| [SECURITY.md](SECURITY.md) | Threat model, key custody, controls, the RBAC matrix, what revocation means in practice |
 | [docs/controllers/](docs/controllers/README.md) | Cisco Catalyst 9800, Cisco AireOS and UniFi configuration |
 | [docs/enrollment.md](docs/enrollment.md) | Issuing certificates and what users do on each platform |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Every failure reason and how to fix it |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Every failure reason and status, and how to fix it |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Repository layout, the development stack, tests, conventions |
 | [DESIGN.md](DESIGN.md) | The console's design system |
-| [CHANGELOG.md](CHANGELOG.md) · [PROGRESS.md](PROGRESS.md) | What changed; what's done and what isn't |
+| [CHANGELOG.md](CHANGELOG.md) · [PROGRESS.md](PROGRESS.md) | What changed; what's done, what isn't, and what's planned |
 
-## Security in one paragraph
+## Status and roadmap
 
-EasyEAP has no default account and no custom cryptography: it uses OpenBao for PKI and envelope encryption,
-pyca/cryptography, WebCrypto, PKI.js and argon2-cffi. The Root CA key is exported once, encrypted, and never stored
-online. Issuing CA keys never leave OpenBao. Shared secrets, bind passwords and escrowed keys are stored only as
-per-tenant Transit ciphertext, and shared secrets are shown once. PostgreSQL row-level security isolates tenants.
-Every failure path denies access. Revocation stops new connections within about 15 seconds; connected devices are
-removed by CoA, or at their session timeout. See [SECURITY.md](SECURITY.md).
+**1.0.0 is the first public release.** It has been run end to end against a real Active Directory domain controller
+and authenticated an enrolled iPhone through a live Cisco Catalyst 9800. Known limitations are listed in
+[PROGRESS.md](PROGRESS.md#not-done--known-limitations). The main ones:
+
+- No SCEP or MDM enrollment (Intune, Jamf) yet. Apple devices enroll with a configuration profile from the portal.
+- No RadSec yet. Route RADIUS between sites over a VPN.
+- One RADIUS node per deployment.
+- The root CA's revocation list must be re-signed with the offline root key once a year. The dashboard warns 60 days
+  ahead, but the console can't do the re-signing yet.
+
+Planned work includes SCEP, RadSec, additional RADIUS nodes, and email notifications for expiring certificates and
+failing directory syncs.
+
+## Contributing
+
+Bug reports and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first, because contributions are
+accepted under terms that keep the licensing below possible.
+
+## License
+
+EasyEAP is **source-available** under the [Business Source License 1.1](LICENSE). In plain terms:
+
+- **Free:** reading, modifying, testing and evaluating it, and running it in production to secure the networks of
+  your own organization.
+- **Needs a commercial license:** running it to provide services to third parties. That includes managing customers'
+  networks as an MSP, offering it as a hosted service, and selling or bundling it.
+- **Becomes open source:** each version converts to the Apache License 2.0 four years after its release. Version
+  1.0.0 converts on 6 November 2030.
+
+The [LICENSE](LICENSE) text is the authoritative version of these terms. For a commercial license, contact the
+maintainer through [GitHub](https://github.com/paulmataruso). EasyEAP builds on FreeRADIUS, OpenBao, PostgreSQL,
+nginx and other open-source projects under their own licenses; see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+<p align="center"><sub>EasyEAP · Copyright © 2026 Paul Mataruso</sub></p>

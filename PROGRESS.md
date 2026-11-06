@@ -1,6 +1,6 @@
 # Progress
 
-Status as of 2026-11-05 (release 1.0.0).
+Status as of 2026-11-06 (release 1.0.0).
 
 ## Complete
 
@@ -63,6 +63,8 @@ Status as of 2026-11-05 (release 1.0.0).
 - [x] End-to-end EAP-TLS through FreeRADIUS against a real domain controller (`tests/e2e/run.sh`)
 - [x] Frontend unit tests (formatting, routes, decision ledger)
 - [x] Console browser smoke test of every screen against the production build behind the proxy and CSP
+- [x] GitHub Actions CI: backend lint and unit tests, frontend checks and build, image builds
+- [x] Verified with a live Cisco Catalyst 9800 and an iPhone enrolled through the portal
 
 ## Not done / known limitations
 
@@ -73,11 +75,12 @@ Status as of 2026-11-05 (release 1.0.0).
 - **High availability.** There is one RADIUS node per deployment. Running a second node against the same API is
   designed for (agent node IDs) but not tested.
 - **Directory sources** other than Active Directory over LDAPS (Entra ID, Google Workspace) are not supported.
-- **Real-device installs** have not been tested. The portal's packages are checked by format and by the end-to-end
-  EAP-TLS test, not by installing them on physical Windows, macOS, iOS and Android devices.
+- **Real-device installs** are confirmed on an iPhone: it enrolled through the portal with its key made on the
+  device, and authenticated through a live Cisco Catalyst 9800 onto its VLAN. Windows, macOS and Android packages are
+  checked by format and by the end-to-end EAP-TLS test, not yet by installing them on physical devices.
 - **iOS profile hand-off.** A profile built on the device (the default) reaches Safari's profile installer through a
-  blob URL, because the key never leaves the page. Whether every iOS version opens the installer from a blob URL is
-  not confirmed. Server-generated packages (opt-in) are served as a regular download.
+  blob URL, because the key never leaves the page. This worked on the iPhone above; other iOS versions aren't
+  confirmed. Server-generated packages (opt-in) are served as a regular download.
 - **New administrators** are not forced to change the password they were given, and two-factor authentication is
   not mandatory. Each administrator turns on TOTP under Account; the Administrators screen flags anyone without it.
 - **PKCS#12 MAC.** Packages use PBES2 (PBKDF2-SHA256, 600,000 iterations) with AES-256-CBC, but the integrity MAC
@@ -87,7 +90,7 @@ Status as of 2026-11-05 (release 1.0.0).
 - **Root CRL renewal.** The root CA's revocation list is signed at the ceremony and valid for a year. RADIUS
   doesn't check it, but clients that check the whole chain may refuse the RADIUS server once it lapses. Renewing it
   needs the offline root key, and the console can't do that yet; the dashboard warns 60 days ahead.
-- **Backups of installations made before 1.0.0** can regain CA access only within 32 days of being made (no OpenBao
+- **Backups of installations made with a preview build before 1.0.0** can regain CA access only within 32 days of being made (no OpenBao
   recovery keys were kept). The console shows each backup's restore-by date.
 
 ## Planned

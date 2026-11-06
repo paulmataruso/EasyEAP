@@ -10,7 +10,9 @@
 | `frontend/` | React console (`src/app/`), enrollment portal (`src/enroll/`), shared domain code (`src/domain/`), design prototypes (`src/concepts/`, `src/prototype/`, `src/compare/`) |
 | `deploy/` | Compose files, installer, backup and restore, proxy, OpenBao and lab configuration |
 | `tests/e2e/` | End-to-end EAP-TLS test against the full stack |
-| `design/` | Design concepts, critiques, audits and the chosen direction (`design/CONCEPTS.md`) |
+| `design/` | Design concepts, critiques, audits and the chosen direction (`design/CONCEPTS.md`); the logo (`design/brand/`) |
+| `docs/` | Controller guides, enrollment, troubleshooting, plans and the README screenshots |
+| `.github/` | CI workflow, Dependabot, issue and pull request templates |
 
 ## Run the stack for development
 
@@ -42,6 +44,15 @@ and test users are described in `deploy/lab/README.md`. Read the domain's CA cer
 | Type check and lint | `cd frontend && pnpm typecheck && pnpm lint`; `docker compose exec easyeap-api ruff check --no-cache app tests` | — |
 | End-to-end EAP-TLS | `tests/e2e/run.sh` | lab profile |
 | Console smoke test (browser) | `node tests/e2e/console-smoke.mjs https://127.0.0.1` | running stack, Playwright Chromium |
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request:
+
+- the backend's `ruff` lint and unit tests, plus a compile check of the RADIUS agent;
+- the frontend's type check, lint, unit tests and production build;
+- the Compose file validation and the API, RADIUS and proxy image builds.
+
+The integration tests, the end-to-end EAP-TLS test and the browser smoke test need the full stack, so run them
+locally before a release.
 
 `tests/e2e/run.sh` rebuilds an `e2e-lab` tenant from the lab domain controller:
 
