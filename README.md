@@ -151,15 +151,27 @@ authentications and system log can forward to your SIEM over TLS.
 ## How it works
 
 ```mermaid
-flowchart LR
-  device["Laptop or phone<br/>with its own certificate"] -->|"EAP-TLS"| wlc["Wireless controller<br/>Catalyst 9800 · AireOS · UniFi"]
-  wlc -->|"RADIUS · UDP 1812/1813"| radius["FreeRADIUS + agent<br/>local snapshot, fails closed"]
-  radius -->|"Accept + VLAN, or Reject"| wlc
-  radius -->|"pulls the snapshot every 15 s<br/>sends events"| api["EasyEAP API + worker"]
-  admin["MSP technician"] -->|"HTTPS"| console["Console and<br/>enrollment portal"] --> api
-  api --> db[("PostgreSQL<br/>row-level security")]
-  api --> bao["OpenBao<br/>issuing CAs · Transit keys"]
-  api -.->|"LDAPS, read-only"| ad["Active Directory"]
+flowchart TB
+  device["Laptop or phone<br/>with its own certificate"]
+  wlc["Wireless controller<br/>Catalyst 9800 · AireOS · UniFi"]
+  admin["MSP technician<br/>or enrolling user"]
+  subgraph host["EasyEAP host"]
+    radius["FreeRADIUS + agent<br/>local snapshot, fails closed"]
+    console["Console and<br/>enrollment portal"]
+    api["API + worker"]
+    db[("PostgreSQL<br/>row-level security")]
+    bao["OpenBao<br/>issuing CAs · Transit keys"]
+  end
+  ad["Customer<br/>Active Directory"]
+  device -- "EAP-TLS" --> wlc
+  wlc -- "RADIUS<br/>UDP 1812/1813" --> radius
+  radius -- "Accept + VLAN<br/>or Reject" --> wlc
+  admin -- "HTTPS" --> console
+  console --> api
+  radius -- "snapshot every 15 s" --> api
+  api --> db
+  api --> bao
+  api -. "LDAPS, read-only" .-> ad
 ```
 
 1. The device presents its certificate to the controller, which relays the EAP-TLS exchange to EasyEAP's FreeRADIUS.
