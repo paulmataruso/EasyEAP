@@ -11,7 +11,7 @@ export function AuthFrame({ title, lede, children }: { title: string; lede?: str
   return (
     <div className="grid min-h-screen place-items-center px-4 py-10">
       <div className="w-full max-w-[420px]">
-        <Wordmark className="mb-6 gap-3 text-[22px] text-[var(--ee-ink)]" markClassName="size-11" />
+        <div className="mb-6 flex justify-center"><Wordmark className="gap-3 text-[22px] text-[var(--ee-ink)]" markClassName="size-11" /></div>
         <Panel className="px-6 py-6" risk="gold">
           <h1 className="ee-h1 text-[22px]" tabIndex={-1} data-page-heading>{title}</h1>
           {lede && <p className="ee-lede mt-1.5">{lede}</p>}

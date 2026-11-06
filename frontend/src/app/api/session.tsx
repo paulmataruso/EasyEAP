@@ -18,6 +18,7 @@ interface SessionValue {
 }
 
 const SessionContext = createContext<SessionValue | null>(null)
+const isSessionKey = (key: readonly unknown[]) => key[0] === 'me' || key[0] === 'setup-status'
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient()
@@ -58,9 +59,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     try { await api.post('/api/auth/logout') } catch { /* already signed out */ }
     setCsrfToken(null)
-    qc.clear()
-    qc.setQueryData(['setup-status'], { needs_setup: false })
+    // Clear the session through the cache entry the mounted observers watch, so every screen sees "signed out" now and
+    // RequireSession sends the browser to sign-in. (queryClient.clear() would detach those observers: the page would
+    // stay up and every later request would just fail with "sign in".) Then drop everything else this admin loaded.
     qc.setQueryData(['me'], null)
+    qc.setQueryData(['setup-status'], { needs_setup: false })
+    void qc.cancelQueries({ predicate: (q) => !isSessionKey(q.queryKey) })
+    qc.removeQueries({ predicate: (q) => !isSessionKey(q.queryKey) })
   }, [qc])
 
   const value = useMemo<SessionValue>(() => ({

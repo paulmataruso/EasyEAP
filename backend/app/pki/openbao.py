@@ -1,8 +1,8 @@
 """Minimal OpenBao (Vault-compatible) HTTP client and the one-time bootstrap.
 
 The API holds a non-root, policy-limited token. The root token produced at initialisation is used once to
-configure policies and is then revoked. Recovery keys are written to the API's secrets volume for the
-administrator to download and store offline (System → Backup & Restore).
+configure policies and is then revoked. The recovery keys are kept on the API's secrets volume (and in every encrypted
+backup): with them EasyEAP can regenerate an admin token if the API token is ever lost or expires.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import httpx
 from app.config import get_settings
 
 log = logging.getLogger("easyeap.openbao")
+RECOVERY_SHARES, RECOVERY_THRESHOLD = 5, 3
 
 API_POLICY = """
 # EasyEAP API — least privilege for tenant PKI + Transit.
@@ -132,9 +133,12 @@ def bootstrap() -> str:
             "Restore the secrets volume from backup (see DEPLOYMENT.md, Disaster recovery)."
         )
     log.info("Initialising OpenBao (static seal, recovery keys 3 of 5)")
-    init = anon.write("sys/init", {"recovery_shares": 5, "recovery_threshold": 3})
+    init = anon.write("sys/init", {"recovery_shares": RECOVERY_SHARES, "recovery_threshold": RECOVERY_THRESHOLD})
     root_token = init["root_token"]
-    _write_private(init_file, json.dumps({"recovery_keys_b64": init.get("recovery_keys_b64", []), "note": "Store offline. Delete from the server after download."}, indent=2))
+    # OpenBao names the field recovery_keys_base64. These keys are the only way to mint a new admin token later (for
+    # example when a restored backup's API token has expired), so they travel inside encrypted backups.
+    _write_private(init_file, json.dumps({"recovery_keys_b64": init.get("recovery_keys_base64") or [],
+                                          "recovery_threshold": RECOVERY_THRESHOLD}, indent=2))
     root = OpenBao(token=root_token)
     root.write("sys/mounts/transit", {"type": "transit", "description": "EasyEAP envelope encryption"})
     root.write("transit/keys/platform", {"type": "aes256-gcm96"})
