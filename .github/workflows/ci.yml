@@ -70,7 +70,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Validate the Compose file
         working-directory: deploy
-        run: docker compose config --quiet
+        run: docker compose --env-file .env.example config --quiet
       - name: Build the API, RADIUS and proxy images
         working-directory: deploy
-        run: docker compose build easyeap-api easyeap-radius easyeap-proxy
+        run: docker compose --env-file .env.example build easyeap-api easyeap-radius easyeap-proxy
