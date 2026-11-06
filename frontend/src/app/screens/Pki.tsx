@@ -2,7 +2,7 @@
 // and certificate templates.
 import { useEffect, useId, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Download, FileKey, Pencil, Plus, RefreshCw } from 'lucide-react'
+import { CircleCheck, CircleX, Download, FileKey, Pencil, Plus, RefreshCw, TriangleAlert } from 'lucide-react'
 import { api, saveBlob } from '../api/client'
 import { qk } from '../api/keys'
 import {
@@ -48,7 +48,7 @@ function Initialized({ d }: { d: PkiOverview }) {
       <div className="space-y-6">
         <div className="grid gap-6 xl:grid-cols-2">
           {root && <CaPanel ca={root} />}
-          {issuing && <CaPanel ca={issuing} />}
+          {issuing && <CaPanel ca={issuing} crl={d.crl} />}
         </div>
         <div className="grid items-start gap-6 xl:grid-cols-12">
           <Distribution d={d} />
@@ -67,17 +67,27 @@ const Row = ({ k, children }: { k: string; children: ReactNode }) => (
   </div>
 )
 
-function CaPanel({ ca }: { ca: CertificateAuthority }) {
+/** The CA's chip: validity first, then where its key is (root) or whether the CA service answers (issuing). */
+function caChip(ca: CertificateAuthority, days: number, crl?: IssuingCrl | null): ReactNode {
+  if (days < 0) return <Chip tone="crit" icon={<CircleX aria-hidden />}>Expired</Chip>
+  if (ca.role === 'root') {
+    return ca.offline
+      ? <Chip tone="neutral" icon={<FileKey aria-hidden />} title="By design: the root’s private key exists only in the encrypted file from the ceremony, so EasyEAP can’t sign with it.">Key held offline</Chip>
+      : <Chip tone="warn" icon={<TriangleAlert aria-hidden />} title="The ceremony ran in lab mode, so the root key is kept in OpenBao.">Key online (lab mode)</Chip>
+  }
+  if (crl && !crl.available) return <Chip tone="warn" icon={<TriangleAlert aria-hidden />} title="The certificate authority service didn’t answer just now. Check System health.">CA service not answering</Chip>
+  if (days < 180) return <Chip tone="warn" icon={<TriangleAlert aria-hidden />}>Expires within six months</Chip>
+  return <Chip tone="valid" icon={<CircleCheck aria-hidden />}>Active · signs certificates</Chip>
+}
+
+function CaPanel({ ca, crl }: { ca: CertificateAuthority; crl?: IssuingCrl | null }) {
   const now = useNow(60_000)
   const isRoot = ca.role === 'root'
   const days = (new Date(ca.not_after).getTime() - now.getTime()) / 864e5
   const tone = days < 0 ? 'crit' : days < 180 ? 'warn' : undefined
   return (
     <Panel className="min-w-0 p-5 sm:p-6" risk={tone} aria-labelledby={`ca-${ca.id}`}>
-      <SectionHeader id={`ca-${ca.id}`} title={isRoot ? 'Root CA' : 'Issuing CA'}
-        actions={isRoot
-          ? (ca.offline ? <Chip tone="gold" icon={<FileKey aria-hidden />}>Offline</Chip> : <Chip tone="warn">Online (lab mode)</Chip>)
-          : <Chip tone="valid">Online · signs certificates</Chip>} />
+      <SectionHeader id={`ca-${ca.id}`} title={isRoot ? 'Root CA' : 'Issuing CA'} actions={caChip(ca, days, crl)} />
       <dl className="ee-divide">
         <Row k="Name"><span className="font-semibold">{ca.common_name}</span></Row>
         <Row k="Subject"><span className="ee-mono text-[12.5px] [overflow-wrap:anywhere]">{ca.subject}</span></Row>
@@ -143,12 +153,16 @@ function Distribution({ d }: { d: PkiOverview }) {
 interface AuditLite { items: Array<{ at: string; actor: string; action: string }> }
 
 /** Edge light: crit once the list has expired (RADIUS rejects everything), warn inside its last 12 hours or when unreadable. */
+// Same thresholds as the needs-action queue (posture.py): the list is rebuilt daily and valid for 72 hours, so under
+// 48 hours left means rebuilds are failing; under 12 hours, RADIUS is about to reject every certificate.
+const CRL_WARN_MS = 48 * 3600_000
+const CRL_CRIT_MS = 12 * 3600_000
 function crlRisk(crl: IssuingCrl | null, now: Date): 'crit' | 'warn' | undefined {
   if (!crl) return undefined
   if (!crl.available) return 'warn'
   if (!crl.next_update) return undefined
   const left = new Date(crl.next_update).getTime() - now.getTime()
-  return left <= 0 ? 'crit' : left < 12 * 3600_000 ? 'warn' : undefined
+  return left <= CRL_CRIT_MS ? 'crit' : left < CRL_WARN_MS ? 'warn' : undefined
 }
 
 function Crl({ root, crl, crlUrl }: { root?: CertificateAuthority; crl: IssuingCrl | null; crlUrl: string }) {
@@ -172,8 +186,10 @@ function Crl({ root, crl, crlUrl }: { root?: CertificateAuthority; crl: IssuingC
       <div className="space-y-3 text-[13.5px]">
         <p className="ee-ink-2">EasyEAP rebuilds the issuing CA’s revocation list after every revocation and every 24 hours. Each list is valid for 72 hours, and RADIUS checks devices against it on every full handshake.</p>
         {crl && !crl.available && <Callout tone="warn" title="The current revocation list couldn’t be read">The certificate authority didn’t answer. RADIUS keeps the last list it loaded; check System health.</Callout>}
-        {crl?.next_update && new Date(crl.next_update).getTime() <= now.getTime() && (
+        {crl?.next_update && new Date(crl.next_update).getTime() <= now.getTime() ? (
           <Callout tone="crit" title="The revocation list has expired">RADIUS rejects every certificate from this CA until a new list is published. Rebuild it now (Tenant or PKI Administrator), then check System health for the worker.</Callout>
+        ) : crl?.next_update && new Date(crl.next_update).getTime() - now.getTime() < CRL_WARN_MS && (
+          <Callout tone={crlRisk(crl, now) === 'crit' ? 'crit' : 'warn'} title="The revocation list expires soon">It’s normally rebuilt every day, so recent rebuilds haven’t happened. When it expires, RADIUS rejects every certificate from this CA. Rebuild it now, and check the background jobs in System health.</Callout>
         )}
         <dl className="ee-divide border-y border-[var(--ee-line)]">
           {crl?.this_update && (
@@ -188,9 +204,16 @@ function Crl({ root, crl, crlUrl }: { root?: CertificateAuthority; crl: IssuingC
                 : lastManual ? <span title={fmtDateTime(lastManual.at)}>{ago(lastManual.at, now)} by {lastManual.actor}</span>
                   : <span className="ee-ink-3">None from the console</span>}
           </Row>
-          {root?.crl_next_update && (
-            <Row k="Root CRL valid until">{fmtDate(root.crl_next_update)} <span className="ee-ink-3">({relative(root.crl_next_update, now)})</span></Row>
-          )}
+          {root?.crl_next_update && (() => {
+            const left = new Date(root.crl_next_update).getTime() - now.getTime()
+            const cls = left <= 0 ? 'text-[var(--ee-crit-ink)]' : left < 60 * 864e5 ? 'text-[var(--ee-warn-ink)]' : 'ee-ink-3'
+            return (
+              <Row k="Root CRL valid until">
+                {fmtDate(root.crl_next_update)} <span className={cls}>({relative(root.crl_next_update, now)})</span>
+                {left < 60 * 864e5 && <span className="ee-small ee-ink-2 block mt-0.5">RADIUS checks only the issuing CA’s list, so Wi-Fi isn’t affected. Clients that check the whole chain may refuse the RADIUS server once it lapses. Renewing it needs the offline root key.</span>}
+              </Row>
+            )
+          })()}
           <Row k="Published at"><span className="ee-mono text-[12.5px] break-all">{crlUrl}</span></Row>
         </dl>
       </div>

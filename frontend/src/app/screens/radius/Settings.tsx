@@ -206,7 +206,8 @@ export function ServerCertificateCard({ s }: { s: RadiusSettings }) {
         <Row k="Expires">
           <span className="flex flex-wrap items-baseline justify-between gap-x-3">
             <span>{fmtDate(c.not_after)}</span>
-            <span className={days < 30 ? 'ee-remaining text-[var(--ee-warn-ink)]' : 'ee-remaining ee-ink-2'}>{remaining(c.not_after, now)}</span>
+            {/* The queue calls an expiring or expired server certificate critical: devices refuse a server whose certificate has expired. */}
+            <span className={days < 0 ? 'ee-remaining text-[var(--ee-crit-ink)]' : days < 30 ? 'ee-remaining text-[var(--ee-warn-ink)]' : 'ee-remaining ee-ink-2'}>{days < 0 ? `Expired ${fmtDate(c.not_after)}: devices refuse to connect` : remaining(c.not_after, now)}</span>
           </span>
         </Row>
         <Row k="SHA-256"><span className="ee-mono text-[12px] leading-[1.6] break-all ee-ink-2">{fmtFingerprint(c.fingerprint_sha256)}</span></Row>

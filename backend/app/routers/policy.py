@@ -221,6 +221,11 @@ def update_settings(body: SettingsIn, ctx: TenantCtx = Depends(require("policy:w
     # Only changing the server-keygen setting needs the extra permission; saving other settings leaves it as it is.
     if body.allow_server_keygen != ps.allow_server_keygen and "enrollment:server_keygen" not in ctx.perms:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a Tenant Administrator can change whether server-generated keys are allowed.")
+    dc = ctx.session.get(m.DirectoryConfig, ctx.id)
+    if dc is not None and dc.enabled and dc.sync_interval_minutes * 60 * 2 > body.max_snapshot_age_seconds:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"The directory syncs every {dc.sync_interval_minutes} minutes, so fail closed after at least "
+                            f"{-(-dc.sync_interval_minutes * 2 // 60)} hours, or sync more often first (Directory).")
     before = settings_out(ps)
     for k, v in body.model_dump().items():
         setattr(ps, k, v)

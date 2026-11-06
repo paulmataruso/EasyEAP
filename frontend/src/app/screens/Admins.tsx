@@ -94,7 +94,7 @@ export default function Admins() {
                         {!a.platform_role && a.grants.length === 0 && <span className="text-[13px] text-[var(--ee-warn-ink)]">No role: sees no tenants</span>}
                       </div>
                       <div className="col-span-2 col-start-1 row-start-3 flex flex-wrap items-center gap-x-4 gap-y-1 md:contents">
-                        <span><span className="sr-only">Two-factor: </span>{a.mfa_enabled ? <Chip tone="valid" icon={<ShieldCheck aria-hidden />}>Two-factor on</Chip> : <Chip tone="warn" icon={<ShieldOff aria-hidden />}>Two-factor off</Chip>}</span>
+                        <span><span className="sr-only">Two-factor: </span>{a.mfa_enabled ? <Chip tone="valid" icon={<ShieldCheck aria-hidden />}>Two-factor on</Chip> : <Chip tone={a.platform_role === 'platform_owner' ? 'crit' : 'warn'} icon={<ShieldOff aria-hidden />}>Two-factor off</Chip>}</span>
                         <span className="text-[13px] ee-ink-2"><span className="md:sr-only">Last sign-in </span>{a.last_login_at ? ago(a.last_login_at, now) : 'never'}</span>
                       </div>
                       <div className="col-start-2 row-start-1 text-right md:col-start-auto md:row-start-auto">

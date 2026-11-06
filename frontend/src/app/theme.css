@@ -309,6 +309,23 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
   .ee-step { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px; border-radius: 999px; font-size: 12.5px; color: var(--ee-ink-3); border: 1px solid var(--ee-line); }
   .ee-step[data-state="current"] { color: var(--ee-ink); border-color: rgba(226, 194, 117, 0.6); background: rgba(226, 194, 117, 0.08); }
   .ee-step[data-state="done"] { color: var(--ee-valid-ink); border-color: rgba(45, 212, 191, 0.3); }
+
+  /* Determinate progress (backup upload). */
+  .ee-progress { height: 6px; border-radius: 3px; background: rgba(237, 234, 227, 0.08); overflow: hidden; }
+  .ee-progress > span { display: block; height: 100%; border-radius: 3px; background: var(--ee-gold); transition: width 200ms linear; }
+  /* File chooser that also accepts a dropped file. */
+  .ee-drop { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 26px 18px; border-radius: 10px; border: 1px dashed var(--ee-line-3); background: rgba(6, 9, 17, 0.35); text-align: center; cursor: pointer; transition: border-color 140ms, background-color 140ms; }
+  .ee-drop:hover, .ee-drop[data-over="true"] { border-color: rgba(226, 194, 117, 0.7); background: rgba(226, 194, 117, 0.05); }
+  .ee-drop:focus-within { outline: none; border-color: var(--ee-gold); box-shadow: 0 0 0 3px rgba(226, 194, 117, 0.18); }
+  /* Long-running server work, one row per step. */
+  .ee-runsteps { display: grid; gap: 2px; }
+  .ee-runsteps > li { display: flex; align-items: center; gap: 10px; min-height: 32px; font-size: 13.5px; color: var(--ee-ink-3); }
+  .ee-runsteps > li > svg, .ee-runsteps > li > .ee-runsteps-n { width: 18px; height: 18px; flex: none; }
+  .ee-runsteps-n { display: inline-grid; place-items: center; border-radius: 9px; border: 1px solid var(--ee-line-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .ee-runsteps > li[data-state="current"] { color: var(--ee-ink); font-weight: 560; }
+  .ee-runsteps > li[data-state="current"] > svg { color: var(--ee-gold); }
+  .ee-runsteps > li[data-state="done"] { color: var(--ee-ink-2); }
+  .ee-runsteps > li[data-state="done"] > svg { color: var(--ee-valid-ink); }
 }
 @media (prefers-reduced-motion: reduce) { .ee-skeleton { animation: none; } }
 @layer components {

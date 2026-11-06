@@ -36,6 +36,9 @@ class Settings(BaseSettings):
 
     agent_token: str | None = None  # bearer token for radius-agent (file://)
     setup_token_file: str = "/var/lib/easyeap/secrets/setup-token"  # noqa: S105 — a file path, not a secret
+    backup_dir: str = "/var/lib/easyeap/backups"  # encrypted backups made or uploaded in the console
+    control_dir: str = "/var/lib/easyeap/control"  # hand-off with the PKI supervisor (tmpfs)
+    backup_retention_hours: int = 24
     session_secret: str | None = None  # HMAC key for CSRF tokens (file://)
 
     public_url: str = "https://easyeap.localhost"  # console/enrollment base URL
@@ -62,6 +65,14 @@ class Settings(BaseSettings):
                 pw = quote(Path(f).read_text().strip(), safe="")
                 setattr(self, attr, f"postgresql+psycopg://{user}:{pw}@{self.db_host}:5432/{self.db_name}")
         return self
+
+    @property
+    def db_owner_password(self) -> str:
+        """The schema owner's password, for pg_dump/pg_restore during backup and restore."""
+        if self.db_owner_password_file and Path(self.db_owner_password_file).is_file():
+            return Path(self.db_owner_password_file).read_text().strip()
+        from sqlalchemy.engine import make_url
+        return make_url(self.database_owner_url).password or ""
 
     @property
     def is_dev(self) -> bool:

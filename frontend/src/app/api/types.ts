@@ -41,7 +41,12 @@ export interface Tenant {
   created_at: string | null
 }
 
-export interface TenantListItem extends Tenant { health: TenantHealth; roles: string[] }
+export interface TenantListItem extends Tenant {
+  health: TenantHealth
+  roles: string[]
+  /** The dashboard's enforcement status and its top needs-action item (absent from older API versions). */
+  posture?: { status: EnforcementStatus; top: { code: string; severity: Severity; title: string } | null; count: number }
+}
 export interface TenantDetail extends Tenant { health: TenantHealth; permissions: string[] }
 
 export interface EnforcementGap { code: string; message: string; target: ActionTarget }
@@ -64,9 +69,24 @@ export interface Enforcement {
   worker_alive: boolean
   worker_seen_at: string | null
   agent_online: boolean
+  /** FreeRADIUS process state as the agent last reported it (null: never reported). */
+  radius_state: RadiusState | null
+  config_ok: boolean | null
+  /** Whether the configuration RADIUS is running includes this tenant; null when the agent doesn't say. */
+  served: boolean | null
+  /** The snapshot is past its maximum age: RADIUS denies everyone. */
+  snapshot_expired: boolean
   agent_applied_version: number | null
   agent_in_sync: boolean
+  /** The latest snapshot is under two minutes old: "not applied yet" is expected, not a fault. */
+  applying: boolean
+  /** The one answer every chip, panel and list shows. */
+  status: EnforcementStatus
 }
+
+export type EnforcementState = 'suspended' | 'setup' | 'radius_offline' | 'radius_config' | 'radius_stopped' | 'starting' | 'no_snapshot'
+  | 'expired' | 'not_served' | 'at_risk' | 'applying' | 'pending' | 'overdue' | 'enforcing'
+export interface EnforcementStatus { state: EnforcementState; tone: 'valid' | 'warn' | 'crit' | 'neutral'; label: string; detail: string }
 
 /**
  * Where a needs-action item (or setup gap) sends the user. Screen names, optionally with a filter after a colon:
@@ -93,6 +113,21 @@ export type RadiusState = 'running' | 'idle' | 'starting' | 'stopped'
 export const radiusState = (a: Pick<AgentStatus, 'state' | 'radius_running'>): RadiusState => a.state ?? (a.radius_running ? 'running' : 'stopped')
 
 /** Poll quickly while RADIUS is starting for a new tenant, so the console shows "Running" within seconds. */
+/** The parts of an overview tenant that status helpers read. */
+export interface OverviewTenantLite { status: Tenant['status']; enforcement: Enforcement }
+
+/** One summary of the RADIUS service for chips and status lines (System health, Tenants). */
+export function radiusSummary(a: AgentStatus | null | undefined): { tone: 'valid' | 'neutral' | 'crit'; label: string; short: string } {
+  if (!a) return { tone: 'crit', label: 'RADIUS agent has never reported', short: 'Never reported' }
+  if (!a.online) return { tone: 'crit', label: 'RADIUS agent not reporting', short: 'Not reporting' }
+  if (a.config_ok === false) return { tone: 'crit', label: 'RADIUS rejected its configuration', short: 'Configuration rejected' }
+  const state = radiusState(a)
+  if (state === 'stopped') return { tone: 'crit', label: 'FreeRADIUS stopped', short: 'Stopped' }
+  if (state === 'idle') return { tone: 'neutral', label: 'RADIUS idle: no active tenants yet', short: 'Idle' }
+  if (state === 'starting') return { tone: 'neutral', label: 'RADIUS starting', short: 'Starting' }
+  return { tone: 'valid', label: 'RADIUS running', short: 'Running' }
+}
+
 export const agentPoll = (a: Pick<AgentStatus, 'state' | 'radius_running'> | null | undefined) => (a && radiusState(a) === 'starting' ? 5_000 : 30_000)
 
 export interface AgentStatus {
@@ -108,6 +143,8 @@ export interface AgentStatus {
   state?: RadiusState
   /** Tenants in the configuration the agent last applied. */
   serving?: number | null
+  /** Their IDs (absent from agents that don't report them). */
+  serving_ids?: string[] | null
   snapshot_versions: Record<string, number>
   config_version: string | number | null
   online: boolean
@@ -136,4 +173,20 @@ export interface Outcome {
   vlan_id: number | null
   attributes: RadiusAttribute[]
   steps: DecisionStep[]
+}
+
+/** Whether RADIUS has this tenant's latest snapshot and can use it: not only the version number, but also whether the
+ * agent is reporting, FreeRADIUS is running, the snapshot is unexpired and the running configuration includes the tenant. */
+export function snapshotState(t: OverviewTenantLite): { tone: 'valid' | 'warn' | 'crit' | 'neutral'; label: string } {
+  const e = t.enforcement
+  if (t.status !== 'active') return { tone: 'neutral', label: t.status === 'suspended' ? 'Not served: suspended' : 'Not served: setup' }
+  if (!e.snapshot_version) return { tone: 'crit', label: 'No snapshot yet' }
+  if (e.snapshot_expired) return { tone: 'crit', label: 'Expired: denying everyone' }
+  if (e.served === false && !e.applying) return { tone: 'crit', label: 'Not in RADIUS configuration' }
+  if (!e.agent_in_sync || e.served === false) {
+    if (e.applying) return { tone: 'neutral', label: 'Applying' }
+    return { tone: 'warn', label: e.agent_applied_version ? 'Older version' : 'Not loaded' }
+  }
+  if (!e.agent_online || e.radius_state !== 'running') return { tone: 'neutral', label: 'Applied (RADIUS not running)' }
+  return { tone: 'valid', label: 'Applied' }
 }

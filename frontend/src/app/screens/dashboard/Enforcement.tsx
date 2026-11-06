@@ -6,14 +6,19 @@ import { ArrowRight, CircleAlert, CircleCheck, CircleX, TriangleAlert } from 'lu
 import type { AgentStatus, Enforcement } from '../../api/types'
 import { ago, duration, fmtDateTime, relative } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
-import { targetPath } from '../../routes'
+import { paths, targetPath } from '../../routes'
 import { Chip, Panel, SectionHeader, type Tone } from '../../ui'
 
+/** The tenant's enforcement tone, as the backend computes it for every chip and panel (posture.status_of). */
 export function enforcementRisk(e: Enforcement): Tone {
-  if (!e.enforceable) return 'neutral'
-  if (!e.agent_online || !e.auto_refresh) return 'crit'
-  if (!e.agent_in_sync || !e.snapshot_built_at) return 'warn'
-  return 'valid'
+  return e.status.tone
+}
+
+const statusIcon = { valid: <CircleCheck aria-hidden />, warn: <TriangleAlert aria-hidden />, crit: <CircleX aria-hidden />, neutral: <CircleAlert aria-hidden /> }
+
+/** The tenant's enforcement status chip: the same label and tone on the dashboard, the Tenants page and anywhere else. */
+export function EnforcementChip({ e }: { e: Enforcement }) {
+  return <Chip tone={e.status.tone} icon={statusIcon[e.status.tone]} title={e.status.detail}>{e.status.label}</Chip>
 }
 
 function Line({ tone, children }: { tone: Tone; children: ReactNode }) {
@@ -30,11 +35,22 @@ function Line({ tone, children }: { tone: Tone; children: ReactNode }) {
 
 export function EnforcementPanel({ tid, enforcement: e, agent, className }: { tid: string; enforcement: Enforcement; agent: AgentStatus | null; className?: string }) {
   const now = useNow()
+  if (e.status.state === 'suspended') {
+    return (
+      <Panel risk="neutral" className={className} aria-labelledby="enf-h">
+        <div className="p-5">
+          <SectionHeader id="enf-h" title="Enforcement" actions={<EnforcementChip e={e} />} />
+          <p className="text-[13px] ee-ink-2">This tenant is suspended, so nobody here can connect. Its certificates, policy and directory settings are kept; reactivating it restores access.</p>
+          <Link to={targetPath(tid, 'tenant')} className="ee-btn ee-btn-sm mt-3">Tenant settings<ArrowRight aria-hidden /></Link>
+        </div>
+      </Panel>
+    )
+  }
   if (!e.enforceable) {
     return (
       <Panel risk="neutral" className={className} aria-labelledby="enf-h">
         <div className="p-5">
-          <SectionHeader id="enf-h" title="Enforcement" actions={<Chip tone="neutral" icon={<CircleAlert aria-hidden />}>Not enforceable yet</Chip>} />
+          <SectionHeader id="enf-h" title="Enforcement" actions={<EnforcementChip e={e} />} />
           <p className="text-[13px] ee-ink-2">Nobody in this tenant can connect until these steps are done:</p>
           <ol className="mt-3 space-y-1">
             {e.missing.map((m, i) => (
@@ -53,44 +69,62 @@ export function EnforcementPanel({ tid, enforcement: e, agent, className }: { ti
   }
 
   const deadline = e.deadline_at
-  const past = deadline ? new Date(deadline).getTime() <= now.getTime() : false
-  // The worker rebuilds the snapshot hourly while the directory is healthy; a snapshot well past an hour old means
-  // the rebuild is overdue (worker stopped or failing), so the deadline has stopped moving.
-  const overdue = !!(e.auto_refresh && e.snapshot_built_at && now.getTime() - new Date(e.snapshot_built_at).getTime() > 75 * 60_000)
+  const past = e.snapshot_expired || (deadline ? new Date(deadline).getTime() <= now.getTime() : false)
+  const radiusLine = !e.agent_online ? (
+    <Line tone="crit">
+      <p className="font-medium">RADIUS agent isn’t reporting</p>
+      <p className="ee-ink-2">{agent ? `Last heartbeat ${ago(agent.last_seen_at, now)}.` : 'No heartbeat has been received.'} If RADIUS is still running it keeps authenticating from its last snapshot.</p>
+    </Line>
+  ) : e.config_ok === false ? (
+    <Line tone="crit">
+      <p className="font-medium">RADIUS rejected its latest configuration</p>
+      <p className="ee-ink-2">It keeps running the previous one. {agent?.config_error ? <span className="ee-mono text-[12px]">{agent.config_error.split('\n')[0]}</span> : null}</p>
+    </Line>
+  ) : e.radius_state === 'stopped' ? (
+    <Line tone="crit">
+      <p className="font-medium">FreeRADIUS isn’t running</p>
+      <p className="ee-ink-2">The agent is reporting, but nobody can connect. The <Link to={paths.systemLog()} className="text-[var(--ee-ink)] underline">System log</Link> (source FreeRADIUS) shows why.</p>
+    </Line>
+  ) : e.radius_state === 'starting' ? (
+    <Line tone="neutral">
+      <p className="font-medium">RADIUS is starting for this tenant</p>
+      <p className="ee-ink-2">It picks up a newly activated tenant within about 15 seconds.</p>
+    </Line>
+  ) : e.served === false && !e.applying ? (
+    <Line tone="crit">
+      <p className="font-medium">RADIUS isn’t serving this tenant</p>
+      <p className="ee-ink-2">The configuration it’s running doesn’t include this tenant, so its controllers get no answer. Check <Link to={paths.system()} className="text-[var(--ee-ink)] underline">System health</Link>.</p>
+    </Line>
+  ) : !e.snapshot_built_at ? (
+    <Line tone="valid">
+      <p className="font-medium">RADIUS is running</p>
+      <p className="ee-ink-2">{agent ? `Heartbeat ${ago(agent.last_seen_at, now)}.` : 'Reporting.'}</p>
+    </Line>
+  ) : e.agent_in_sync && e.served !== false ? (
+    <Line tone="valid">
+      <p className="font-medium">RADIUS is on the latest snapshot</p>
+      <p className="ee-ink-2">Heartbeat {agent ? ago(agent.last_seen_at, now) : 'received'}. Policy, revocations and directory changes up to the snapshot are enforced.</p>
+    </Line>
+  ) : e.applying ? (
+    <Line tone="neutral">
+      <p className="font-medium">RADIUS is applying the latest snapshot</p>
+      <p className="ee-ink-2">It was built {ago(e.snapshot_built_at, now)}; RADIUS normally loads a new one within seconds.</p>
+    </Line>
+  ) : (
+    <Line tone="warn">
+      <p className="font-medium">RADIUS hasn’t applied the latest snapshot</p>
+      <p className="ee-ink-2">It’s still using an older version, so the most recent changes (including revocations) aren’t enforced yet.</p>
+    </Line>
+  )
+  const blocked = e.refresh_blocked_by === 'worker'
+    ? <>the background worker isn’t running. Check <Link to={paths.system()} className="text-[var(--ee-ink)] underline">System health</Link></>
+    : <>directory data is out of date (the last successful sync is older than the limit, or sync is failing). <Link to={targetPath(tid, 'directory')} className="text-[var(--ee-ink)] underline">Check the directory sync</Link></>
   return (
-    <Panel risk={overdue && enforcementRisk(e) === 'valid' ? 'warn' : enforcementRisk(e)} className={className} aria-labelledby="enf-h">
+    <Panel risk={e.status.tone} className={className} aria-labelledby="enf-h">
       <div className="p-5">
-        <SectionHeader
-          id="enf-h"
-          title="Enforcement"
-          actions={!e.agent_online || !e.auto_refresh
-            ? <Chip tone="crit" icon={<CircleX aria-hidden />}>At risk</Chip>
-            : !e.snapshot_built_at
-              ? <Chip tone="warn" icon={<TriangleAlert aria-hidden />}>Waiting for snapshot</Chip>
-              : <Chip tone="valid" icon={<CircleCheck aria-hidden />}>Enforcing</Chip>}
-        />
+        <SectionHeader id="enf-h" title="Enforcement" actions={<EnforcementChip e={e} />} />
         <ul className="space-y-3">
-          {!e.agent_online ? (
-            <Line tone="crit">
-              <p className="font-medium">RADIUS agent isn’t reporting</p>
-              <p className="ee-ink-2">{agent ? `Last heartbeat ${ago(agent.last_seen_at, now)}.` : 'No heartbeat has been received.'} If RADIUS is still running it keeps authenticating from its last snapshot.</p>
-            </Line>
-          ) : !e.snapshot_built_at ? (
-            <Line tone="valid">
-              <p className="font-medium">RADIUS agent is online</p>
-              <p className="ee-ink-2">{agent ? `Heartbeat ${ago(agent.last_seen_at, now)}.` : 'Reporting.'}</p>
-            </Line>
-          ) : e.agent_in_sync ? (
-            <Line tone="valid">
-              <p className="font-medium">RADIUS is on the latest snapshot</p>
-              <p className="ee-ink-2">Agent online{agent && <>, heartbeat {ago(agent.last_seen_at, now)}</>}. Policy, revocations and directory changes up to the snapshot are enforced.</p>
-            </Line>
-          ) : (
-            <Line tone="warn">
-              <p className="font-medium">RADIUS hasn’t applied the latest snapshot</p>
-              <p className="ee-ink-2">The agent is online but still using an older version, so the most recent changes (including revocations) aren’t enforced yet.</p>
-            </Line>
-          )}
+          {radiusLine}
 
           {e.snapshot_built_at ? (
             <Line tone="neutral">
@@ -107,22 +141,22 @@ export function EnforcementPanel({ tid, enforcement: e, agent, className }: { ti
           {deadline && (past ? (
             <Line tone="crit">
               <p className="font-medium">RADIUS has been denying everyone since {fmtDateTime(deadline)}</p>
-              <p className="ee-ink-2">The snapshot is older than its {duration(e.max_snapshot_age_seconds)} limit, so RADIUS fails closed. {e.auto_refresh ? 'Check that the EasyEAP worker is running.' : 'Directory sync is failing, so it isn’t being rebuilt.'}</p>
+              <p className="ee-ink-2">The snapshot is older than its {duration(e.max_snapshot_age_seconds)} limit, so RADIUS fails closed. {e.auto_refresh ? 'The worker is running, but the rebuild hasn’t happened: check the background jobs in System health.' : <>It isn’t rebuilt because {blocked}.</>}</p>
             </Line>
-          ) : e.auto_refresh && overdue ? (
+          ) : !e.auto_refresh ? (
+            <Line tone="crit">
+              <p className="font-medium">Refreshes have stopped: RADIUS denies everyone from {fmtDateTime(deadline)}</p>
+              <p className="ee-ink-2">That’s {relative(deadline, now)}. The snapshot isn’t rebuilt because {blocked}.</p>
+            </Line>
+          ) : e.refresh_overdue ? (
             <Line tone="warn">
               <p className="font-medium">RADIUS denies everyone from {fmtDateTime(deadline)} if refreshes stop</p>
-              <p className="ee-ink-2">That’s {relative(deadline, now)}. The snapshot is normally rebuilt every hour, but this one is {duration((now.getTime() - new Date(e.snapshot_built_at!).getTime()) / 1000)} old, so the rebuild is overdue. Check that the EasyEAP worker is running.</p>
-            </Line>
-          ) : e.auto_refresh ? (
-            <Line tone="neutral">
-              <p className="font-medium">RADIUS denies everyone from {fmtDateTime(deadline)} if refreshes stop</p>
-              <p className="ee-ink-2">That’s {relative(deadline, now)}. While the directory is healthy the snapshot is rebuilt hourly, so this deadline keeps moving forward.</p>
+              <p className="ee-ink-2">That’s {relative(deadline, now)}. The snapshot is normally rebuilt every hour, but this one is {duration((now.getTime() - new Date(e.snapshot_built_at!).getTime()) / 1000)} old, so the rebuild is overdue. Check the background jobs in System health.</p>
             </Line>
           ) : (
-            <Line tone="crit">
-              <p className="font-medium">Refreshes have stopped because directory sync is failing</p>
-              <p className="ee-ink-2">RADIUS denies everyone from {fmtDateTime(deadline)}, {relative(deadline, now)}. <Link to={targetPath(tid, 'directory')} className="text-[var(--ee-ink)] underline">Fix the directory connection</Link>.</p>
+            <Line tone="neutral">
+              <p className="font-medium">RADIUS denies everyone from {fmtDateTime(deadline)} if refreshes stop</p>
+              <p className="ee-ink-2">That’s {relative(deadline, now)}. While the directory and worker are healthy the snapshot is rebuilt hourly, so this deadline keeps moving forward.</p>
             </Line>
           ))}
         </ul>

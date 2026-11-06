@@ -38,12 +38,17 @@ services:
   easyeap-pki:
     image: openbao/openbao:2.4.1
     restart: unless-stopped
-    command: ["server", "-config=/openbao/config/config.hcl"]
-    secrets: [openbao_unseal_key]
+    # The supervisor runs OpenBao and carries out backup snapshots and restores requested by the API through the
+    # private control volume (no Docker socket anywhere). See openbao/supervisor.sh.
+    entrypoint: ["/usr/bin/dumb-init", "/bin/sh", "/openbao/supervisor.sh"]
+    secrets: [openbao_unseal_key]   # seeds the seal key on first start only; the active key is in easyeap-pki-state
     volumes:
       - ./openbao/config.hcl:/openbao/config/config.hcl:ro
+      - ./openbao/supervisor.sh:/openbao/supervisor.sh:ro
       - easyeap-pki:/openbao/file
+      - easyeap-pki-state:/openbao/state
       - easyeap-pki-logs:/openbao/logs
+      - easyeap-control:/control
     networks: [pki]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- 'http://127.0.0.1:8200/v1/sys/health?uninitcode=200&sealedcode=503' >/dev/null"]
@@ -60,6 +65,8 @@ services:
     secrets: [db_app_password, db_owner_password, agent_token, session_secret]
     volumes:
       - easyeap-secrets:/var/lib/easyeap/secrets
+      - easyeap-backups:/var/lib/easyeap/backups
+      - easyeap-control:/var/lib/easyeap/control
     networks: [app, data, pki, radius, egress]
     depends_on:
       easyeap-db: { condition: service_healthy }
@@ -157,8 +164,13 @@ networks:
 volumes:
   easyeap-db:
   easyeap-pki:
+  easyeap-pki-state:     # the active OpenBao seal key (and a rollback copy while a restore is pending)
   easyeap-pki-logs:
   easyeap-secrets:
+  easyeap-backups:       # encrypted backups made or uploaded in the console (purged after 24 hours)
+  # Hand-off between the API and the PKI supervisor. Memory-backed, so PKI snapshots never touch the disk unencrypted.
+  easyeap-control:
+    driver_opts: { type: tmpfs, device: tmpfs, o: "size=1g,uid=10001,gid=10001,mode=0700" }
   easyeap-radius:
   easyeap-lab-ad:
 

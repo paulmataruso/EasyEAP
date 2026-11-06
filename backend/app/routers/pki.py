@@ -91,7 +91,7 @@ def chain(ctx: TenantCtx = Depends(require("certificates:read"))) -> str:
 
 @router.post("/crl/rotate")
 def rotate(ctx: TenantCtx = Depends(require("ca:manage"))) -> dict:
-    pki.rotate_crl(OpenBao(), ctx.id)
+    pki.rotate_crl(OpenBao(), ctx.id, ctx.session)
     from app.radius.state import bump
     bump(ctx.session, ctx.id)
     audit.record(ctx.session, ctx.actor, "pki.crl_rotated", tenant_id=ctx.id, target_type="ca")

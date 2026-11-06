@@ -7,7 +7,7 @@ import { useDashboard, type DashboardResponse } from '../api/dashboard'
 import { useControllers, usePolicyLite } from '../api/events'
 import { useSession } from '../api/session'
 import { useTenant } from '../api/tenant'
-import { radiusState } from '../api/types'
+import { radiusState, radiusSummary, snapshotState } from '../api/types'
 import { ago, duration, fmtDate, fmtDateTime, fmtPercent, plural, remaining } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { paths } from '../routes'
@@ -300,9 +300,8 @@ export default function Dashboard() {
                   <ServiceRow
                     icon={<Router />}
                     title="RADIUS agent"
-                    tone={!agent || !agent.online || !agent.config_ok ? 'crit' : { running: 'valid', idle: 'neutral', starting: 'neutral', stopped: 'crit' }[radiusState(agent)] as Tone}
-                    status={!agent ? 'Never reported' : !agent.online ? 'Not reporting' : !agent.config_ok ? 'Config rejected'
-                      : { running: 'Online', idle: 'Idle', starting: 'RADIUS starting', stopped: 'RADIUS stopped' }[radiusState(agent)]}
+                    tone={radiusSummary(agent).tone}
+                    status={radiusSummary(agent).short}
                     detail={agent
                       ? <>Heartbeat {ago(agent.last_seen_at, now)}{agent.config_error ? ` · ${agent.config_error}`
                         : { running: ' · RADIUS running', idle: ' · RADIUS starts when a tenant is activated', starting: ' · loading this tenant, usually within 15 seconds', stopped: '' }[radiusState(agent)]}</>
@@ -311,8 +310,8 @@ export default function Dashboard() {
                   <ServiceRow
                     icon={<ShieldCheck />}
                     title="Authorization snapshot"
-                    tone={!snap.built_at ? 'warn' : snap.applied ? 'valid' : 'warn'}
-                    status={!snap.built_at ? 'Not built' : snap.applied ? 'Applied' : 'Not applied yet'}
+                    tone={snapshotState({ status: d.tenant.status, enforcement: d.enforcement }).tone}
+                    status={snapshotState({ status: d.tenant.status, enforcement: d.enforcement }).label}
                     detail={snap.built_at
                       ? <span title={fmtDateTime(snap.built_at)}>Built {ago(snap.built_at, now)} · maximum age {duration(snap.max_age_seconds)}</span>
                       : (d.enforcement.enforceable ? 'The background worker builds it after activation and after every policy or directory change.' : 'Built once setup is finished and the tenant is activated.')}
@@ -320,7 +319,7 @@ export default function Dashboard() {
                   <ServiceRow
                     icon={<KeyRound />}
                     title="Issuing CA"
-                    tone={!ca ? 'neutral' : new Date(ca.not_after).getTime() - now.getTime() < 180 * 864e5 ? 'warn' : 'valid'}
+                    tone={!ca ? 'neutral' : new Date(ca.not_after).getTime() <= now.getTime() ? 'crit' : new Date(ca.not_after).getTime() - now.getTime() < 180 * 864e5 ? 'warn' : 'valid'}
                     status={!ca ? 'Not initialized' : new Date(ca.not_after).getTime() <= now.getTime() ? 'Expired' : 'Valid'}
                     detail={ca
                       ? <>{ca.common_name} · valid until {fmtDate(ca.not_after)} ({remaining(ca.not_after, now)})</>

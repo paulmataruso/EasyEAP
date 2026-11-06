@@ -36,7 +36,8 @@ sudo ./install.sh --hostname easyeap.msp.example --radius-address 10.20.0.15
 `install.sh` is safe to re-run. It:
 
 1. generates every secret once into `deploy/secrets/` (0700 directory). These are the database passwords, the
-   RADIUS agent token, the session HMAC key, and the OpenBao unseal key;
+   RADIUS agent token, the session HMAC key, and the initial OpenBao seal key (copied into the PKI's own volume on
+   first start; from then on the volume's copy is the one in use, and it travels inside every backup);
 2. writes `deploy/.env` from `.env.example`;
 3. creates a temporary self-signed TLS certificate if none exists;
 4. builds the images and starts the stack.
@@ -63,10 +64,14 @@ Put your certificate chain and key at `deploy/secrets/tls.crt` and `deploy/secre
 
 ## First run
 
-1. Print the one-time setup token on the host:
+1. `install.sh` prints the one-time setup token when it finishes. To print it again:
    `docker compose exec easyeap-api easyeap setup-token`
-2. Open `https://<EASYEAP_HOSTNAME>/` and create the first Super Administrator with that token. There is no
-   default account; the token stops working once the account exists.
+2. Open `https://<EASYEAP_HOSTNAME>/`. The first-run page offers **Set up new** or **Restore a backup**; both need
+   the setup token, so nobody else who reaches a fresh server first can claim it. There is no default account; the
+   token stops working once an administrator exists.
+   - **Set up new:** create the first Super Administrator.
+   - **Restore a backup:** upload an `.easyeap` file and enter its passphrase. You get the server exactly as it was
+     when the backup was made, and sign in with an administrator from it. Skip the rest of this list.
 3. Turn on two-factor authentication from the Account page.
 4. Create a tenant. The setup wizard then guides you through it:
    1. **Certificate authority ceremony.** Choose a passphrase of at least 12 characters, download the encrypted
@@ -82,10 +87,11 @@ Put your certificate chain and key at `deploy/secrets/tls.crt` and `deploy/secre
 
 ## Upgrades
 
+Make a backup first (System health → Backup and restore → Create backup, then Download), then:
+
 ```sh
 cd /opt/easyeap && git pull
-cd deploy && sudo ./backup.sh --passphrase-file /root/easyeap-backup.pass
-docker compose build && docker compose up -d
+cd deploy && docker compose build && docker compose up -d
 ```
 
 Migrations run automatically when the API starts (under an advisory lock). RADIUS keeps authenticating from its
@@ -93,30 +99,57 @@ local snapshot while the API restarts.
 
 ## Backup and restore
 
-`backup.sh` writes an **encrypted** archive of the database, the OpenBao storage, the API secrets volume,
-`deploy/secrets` and `.env`. It pauses the PKI container for a few seconds to take a consistent copy; RADIUS keeps
-working throughout.
+Everything happens in the console: **System health → Backup and restore** (Super Administrator).
+
+- **Create backup.** Choose a passphrase (EasyEAP can generate one) and confirm your password and two-factor code.
+  The backup holds everything on the server: the database, every tenant's issuing CA keys (OpenBao storage and its
+  seal key) and the API's secrets. It's one `.easyeap` file, encrypted with [age](https://age-encryption.org)
+  (scrypt for the passphrase, authenticated streaming encryption for the contents). Download it; the server copy is
+  deleted after 24 hours, and a backup counts for System health only once it's been downloaded. Making one pauses
+  the CA service for a few seconds; RADIUS keeps authenticating.
+- **Restore.** Upload the file, enter its passphrase and review what's in it (date, tenants, counts, warnings), then
+  type `RESTORE` and confirm your password. The console shows each step. Everyone is signed out, and you sign in
+  with an administrator account from the backup. If any step fails, the server is rolled back to how it was.
+- **New server.** A fresh installation's first-run page restores the same file (see First run). Point DNS at the new
+  server: certificates carry the CRL and OCSP addresses of `EASYEAP_PKI_HOSTNAME`.
+
+**Protect the file and the passphrase like the CAs themselves.** Anyone with both can run your PKI. Store them
+apart. Without the passphrase, the file can't be opened by anyone, including us.
+
+**Installations set up before 1.0.0** have no OpenBao recovery keys, so a backup can regain CA access only while
+the token it carries is valid: restore it within 32 days of making it. The console shows each backup's restore-by
+date. New installations keep recovery keys and have no such limit.
+
+**Disaster-recovery caveat:** certificates issued after the backup was made aren't in it. RADIUS rejects them as
+unknown (fail closed), so re-issue them.
+
+**What isn't in a backup:** the console's TLS certificate (`deploy/secrets/tls.*`) and `.env`, which are host
+configuration. Keep them with your host build.
+
+### Scheduled backups from the host
+
+For automation only, `deploy/backup.sh` and `deploy/restore.sh` drive the same engine and produce or restore the
+same `.easyeap` files:
 
 ```sh
 sudo ./backup.sh --passphrase-file /root/easyeap-backup.pass --out /srv/backups
-sudo ./backup.sh --gpg-recipient backup@msp.example --out /srv/backups
+sudo ./restore.sh --file /srv/backups/easyeap-backup-20261106T081523Z.easyeap --passphrase-file /root/easyeap-backup.pass --yes
 ```
 
-The archive contains the OpenBao unseal key, so protect it like the CAs themselves. Schedule it (cron or a systemd
-timer) and copy it off the host.
-
-```sh
-sudo ./restore.sh --file /srv/backups/easyeap-20261105T104200Z.tar.gz.enc --passphrase-file /root/easyeap-backup.pass --yes
-```
-
-`restore.sh` replaces all current data, restarts the stack and verifies the audit chain. **Disaster-recovery
-caveat:** certificates issued after the backup are not in the restored database. RADIUS rejects them as unknown
-(fail closed), so re-issue them to their users.
+Backups made by EasyEAP before 1.0.0 (`.tar.gz.enc` or `.tar.gz.gpg`) aren't supported by the new restore.
 
 ## Operations
 
 - **Health:** System health in the console; `docker compose ps`; `GET /api/health` (liveness).
-- **Logs:** `docker compose logs -f easyeap-api easyeap-worker easyeap-radius`. Secrets are redacted from logs.
+- **Logs:** the console's **System log** (System health → System log) holds messages from the API, worker, RADIUS
+  agent and FreeRADIUS warnings and errors for 30 days. `docker compose logs -f` still shows everything, including
+  FreeRADIUS's full output. Secrets are redacted from logs.
+- **Remote syslog:** System health → Remote syslog sends the audit trail, every authentication and the system log
+  to up to four syslog servers or SIEMs, over TLS (recommended; paste the CA if a private one signed the server),
+  TCP or UDP, as RFC 5424 or RFC 3164 with a text or JSON body. **Send test message** checks the connection before
+  you save. TCP and TLS deliver each message at least once and resume where they stopped after an outage; UDP can
+  lose messages silently. A new destination starts with what happens from then on. The worker does the sending, so
+  it must be running; the panel shows each destination's state, errors and backlog.
 - **Audit chain:** `docker compose exec easyeap-api easyeap verify-audit`.
 - **RADIUS independence:** if the API, worker or database stops, RADIUS keeps authenticating from its local
   snapshot until the snapshot exceeds the tenant's maximum age (24 hours by default). After that it denies everyone

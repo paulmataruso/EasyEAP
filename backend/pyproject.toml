@@ -18,6 +18,7 @@ dependencies = [
   "cryptography>=43",
   "ldap3>=2.9",
   "python-multipart>=0.0.12",
+  "pyrage>=1.2",  # age encryption for backups (binding to the maintained rage implementation)
 ]
 
 [project.scripts]

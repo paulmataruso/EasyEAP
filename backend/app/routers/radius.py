@@ -88,6 +88,7 @@ def agent_out(s) -> dict | None:
         now = datetime.now(UTC)
         out = {"agent_id": a.agent_id, "last_seen_at": a.last_seen_at.isoformat(), "config_ok": a.config_ok, "config_error": a.config_error,
                "radius_running": a.radius_running, "state": radius_state(s, a, now), "serving": (a.detail or {}).get("tenants"),
+               "serving_ids": (a.detail or {}).get("tenant_ids"),
                "snapshot_versions": a.snapshot_versions, "config_version": a.config_version,
                "online": (now - a.last_seen_at).total_seconds() < 90, "detail": a.detail}
     return out

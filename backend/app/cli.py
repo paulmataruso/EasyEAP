@@ -16,11 +16,26 @@ def main(argv: list[str] | None = None) -> int:
     rp = sub.add_parser("reset-admin-mfa", help="Turn off two-factor authentication for an administrator (break-glass)")
     rp.add_argument("email")
     sub.add_parser("recompute", help="Recompute every tenant's access decisions")
-    bp = sub.add_parser("record-backup", help="Record a completed backup (called by deploy/backup.sh)")
-    bp.add_argument("--file", required=True)
-    bp.add_argument("--size", type=int, default=0)
-    bp.add_argument("--encrypted", action="store_true")
+    bk = sub.add_parser("backup", help="Full encrypted backup and restore (the same engine as the console)")
+    bsub = bk.add_subparsers(dest="action", required=True)
+    bc = bsub.add_parser("create", help="Make a backup; with --stdout the file is written to standard output")
+    bc.add_argument("--passphrase-file", required=True, help="File with the passphrase ('-' reads one line from standard input)")
+    bc.add_argument("--stdout", action="store_true", help="Write the backup to standard output and remove the server copy")
+    br = bsub.add_parser("restore", help="Restore a backup file that is on this container's backups volume or piped in")
+    br.add_argument("--file", default="-", help="Backup file inside the container, or '-' to read it from standard input")
+    br.add_argument("--passphrase-file", required=True, help="File with the passphrase (not '-' when the backup comes from standard input)")
+    br.add_argument("--yes", action="store_true", help="Confirm that every tenant, CA and setting on this server is replaced")
+    sub.add_parser("restore-recover", help="Finish or roll back a restore interrupted by a restart (run at API start)")
     args = parser.parse_args(argv)
+
+    if args.cmd == "restore-recover":
+        from app.backup.engine import recover
+        outcome = recover()
+        if outcome:
+            print(f"An interrupted restore was {outcome}.", file=sys.stderr)
+        return 0
+    if args.cmd == "backup":
+        return _backup_cli(args)
 
     from app import models as m
     from app.db import platform_session
@@ -65,17 +80,63 @@ def main(argv: list[str] | None = None) -> int:
             for t in s.scalars(select(m.Tenant)):
                 print(t.slug, recompute_tenant(s, t.id))
         return 0
-    if args.cmd == "record-backup":
-        from datetime import UTC, datetime
+    return 1
 
-        from app import audit
-        with platform_session() as s:
-            row = s.get(m.PlatformSetting, "last_backup") or m.PlatformSetting(key="last_backup", value={})
-            row.value = {"at": datetime.now(UTC).isoformat(), "file": args.file, "size": args.size, "encrypted": args.encrypted}
-            s.add(row)
-            audit.record(s, audit.Actor("system", "deploy/backup.sh"), "system.backup_created", target_type="backup", target_label=args.file,
-                         detail={"size": args.size, "encrypted": args.encrypted})
-        return 0
+
+def _read_passphrase(path: str) -> str:
+    raw = sys.stdin.readline() if path == "-" else open(path, encoding="utf-8").read()
+    return raw.strip("\r\n")
+
+
+def _backup_cli(args) -> int:
+    import shutil
+
+    from app import audit
+    from app.backup import engine
+    from app.backup.bundle import BundleError
+    try:
+        if args.action == "create":
+            rec = engine.start_backup(audit.Actor("system", "easyeap backup CLI"), _read_passphrase(args.passphrase_file), wait=True)
+            rec, path = engine.get_backup(rec["id"])
+            if rec.get("status") != "done":
+                print(f"error: {rec.get('error') or 'the backup failed'}", file=sys.stderr)
+                return 1
+            if args.stdout:
+                with open(path, "rb") as f:
+                    shutil.copyfileobj(f, sys.stdout.buffer)
+                engine.mark_downloaded(rec["id"], audit.Actor("system", "easyeap backup CLI"))
+                engine.delete_backup(rec["id"])
+            else:
+                print(path)
+            print(f"Backup {rec['file_name']}: {rec['size']} bytes, SHA-256 {rec['sha256']}", file=sys.stderr)
+            return 0
+        if args.action == "restore":
+            if not args.yes:
+                print("Restoring replaces every tenant, certificate authority, administrator and setting on this server. Re-run with --yes.", file=sys.stderr)
+                return 2
+            if args.file == "-" and args.passphrase_file == "-":  # noqa: S105 — "-" means standard input
+                print("error: the backup is read from standard input, so give the passphrase in a file.", file=sys.stderr)
+                return 2
+            passphrase = _read_passphrase(args.passphrase_file)
+            rid, partial = engine.new_upload_path()
+            if args.file == "-":
+                with open(partial, "wb") as out:
+                    shutil.copyfileobj(sys.stdin.buffer, out)
+            else:
+                shutil.copyfile(args.file, partial)
+            engine.finish_upload(rid, partial, "cli")
+            engine.start_restore(rid, passphrase, actor_label="easyeap backup CLI", source="cli", wait=True)
+            st = engine.restore_state() or {}
+            if st.get("status") != "done":
+                print(f"error: {st.get('error') or 'the restore failed'}", file=sys.stderr)
+                return 1
+            for w in st.get("warnings", []):
+                print(f"note: {w}", file=sys.stderr)
+            print("Restore complete. Sign in with an administrator account from the backup.", file=sys.stderr)
+            return 0
+    except BundleError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 1
 
 

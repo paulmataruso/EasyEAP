@@ -73,6 +73,7 @@ export function CommandPalette({ open, onOpenChange, start }: { open: boolean; o
     if (isPlatform) out.push({ id: 'go-tenants', label: 'All tenants', hint: 'Go to', icon: <Building aria-hidden />, run: () => go(paths.tenants()) })
     if (canManageAdmins) out.push({ id: 'go-admins', label: 'Administrators', hint: 'Go to', icon: <Users aria-hidden />, run: () => go(paths.admins()) })
     if (isPlatform) out.push({ id: 'go-system', label: 'System health', hint: 'Go to', icon: <ServerCog aria-hidden />, run: () => go(paths.system()) })
+    if (isPlatform) out.push({ id: 'go-system-log', label: 'System log', hint: 'Go to', icon: <ScrollText aria-hidden />, run: () => go(paths.systemLog()) })
     out.push({ id: 'signout', label: 'Sign out', icon: <LogOut aria-hidden />, run: async () => { close(); await signOut(); navigate(paths.login()) } })
     return out.filter((c) => !c.perm || tctx?.can(c.perm))
     // eslint-disable-next-line react-hooks/exhaustive-deps

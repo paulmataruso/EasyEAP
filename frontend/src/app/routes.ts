@@ -22,6 +22,7 @@ export const paths = {
   admins: () => '/admins',
   platformAudit: () => '/audit',
   system: () => '/system',
+  systemLog: () => '/system/logs',
   account: () => '/account',
   dashboard: (tid: string) => `${t(tid)}/dashboard`,
   users: (tid: string) => `${t(tid)}/users`,

@@ -25,4 +25,6 @@ export const qk = {
   audit: (params: object = {}) => ['audit', params] as const,
   admins: () => ['admins'] as const,
   systemHealth: () => ['system-health'] as const,
+  backups: () => ['backups'] as const,
+  backup: (id: string) => ['backups', id] as const,
 }

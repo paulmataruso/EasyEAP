@@ -11,11 +11,13 @@ import { Empty, ErrorState, LoadingBlock, Toaster } from './ui'
 import { ErrorBoundary } from './ui/ErrorBoundary'
 import { FirstRun } from './screens/FirstRun'
 import { Login } from './screens/Login'
+import { MaintenanceGate } from './screens/Maintenance'
 
 const Dashboard = lazy(() => import('./screens/Dashboard'))
 const Tenants = lazy(() => import('./screens/Tenants'))
 const NewTenant = lazy(() => import('./screens/NewTenant'))
 const System = lazy(() => import('./screens/System'))
+const SystemLog = lazy(() => import('./screens/SystemLog'))
 const Events = lazy(() => import('./screens/Events'))
 const Users = lazy(() => import('./screens/Users'))
 const UserDetail = lazy(() => import('./screens/UserDetail'))
@@ -108,6 +110,7 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <SessionProvider>
         <Tooltip.Provider delayDuration={250}>
+          <MaintenanceGate>
           <HashRouter>
             <ErrorBoundary fullPage>
             <Routes>
@@ -120,6 +123,7 @@ export function App() {
                 <Route path="admins" element={<Admins />} />
                 <Route path="audit" element={<Audit scope="platform" />} />
                 <Route path="system" element={<System />} />
+                <Route path="system/logs" element={<SystemLog />} />
                 <Route path="account" element={<Account />} />
                 <Route path="t/:tid" element={<TenantRoute />}>
                   <Route index element={<Navigate to="dashboard" replace />} />
@@ -142,6 +146,7 @@ export function App() {
             </Routes>
             </ErrorBoundary>
           </HashRouter>
+          </MaintenanceGate>
           <Toaster />
         </Tooltip.Provider>
       </SessionProvider>

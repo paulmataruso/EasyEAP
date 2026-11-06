@@ -10,7 +10,7 @@ import {
   cancelEnrollment, disconnectIdentity, downloadPackage, invalidatePeople, updateIdentity, useDirectory, useDirectoryGroups, useIdentities, useIdentity, usePolicy, useRadius,
   type AuthEvent, type Certificate, type IdentityDetail, type IdentityEnrollment,
 } from '../api/people'
-import type { Outcome } from '../api/types'
+import type { EnforcementStatus, Outcome } from '../api/types'
 import { paths, targetPath } from '../routes'
 import {
   AccessStateChip, Btn, Callout, CertChip, Chip, EDialog, Empty, ErrorState, errorMessage, Field, LoadingBlock, PageHeader, Panel, PlatformIcon, platformLabels,
@@ -93,6 +93,7 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
   const listQ = useIdentities(tid, { q: u.username, state: u.account_state === 'deleted' ? 'deleted' : undefined, page_size: 200 })
   const listed = listQ.data?.items.find((i) => i.id === u.id)
   const enforceable = listQ.data?.enforceable
+  const enforcement = listQ.data?.enforcement_status
   const missing = listQ.data?.enforcement_missing ?? []
 
   const [revoking, setRevoking] = useState<Certificate | null>(null)
@@ -160,7 +161,7 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
         )}
       </PageHeader>
 
-      <AccessStatement u={u} live={live} listed={listed} enforceable={enforceable} missing={missing} loading={listQ.isLoading} rules={rules} vlans={vlans} tenantName={tenant.name}
+      <AccessStatement u={u} live={live} listed={listed} enforceable={enforceable} enforcement={enforcement} missing={missing} loading={listQ.isLoading} rules={rules} vlans={vlans} tenantName={tenant.name}
         onIssue={canIssue ? () => setIssueOpen(true) : undefined} />
 
       <div className="mt-6 grid items-start gap-6 xl:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
@@ -224,11 +225,12 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
 }
 
 // ── Can they connect now? ───────────────────────────────────────────────
-function AccessStatement({ u, live, listed, enforceable, missing, loading, rules, vlans, tenantName, onIssue }: {
+function AccessStatement({ u, live, listed, enforceable, enforcement, missing, loading, rules, vlans, tenantName, onIssue }: {
   u: IdentityDetail
   live: Certificate[]
   listed: { access: { status: 'can_connect' | 'allowed_no_certificate' | 'denied'; vlan_id: number | null; reason_code: string | null } } | undefined
   enforceable: boolean | undefined
+  enforcement: EnforcementStatus | undefined
   missing: Array<{ code: string; message: string; target: string }>
   loading: boolean
   rules: Array<{ id: string; name: string }>
@@ -261,6 +263,14 @@ function AccessStatement({ u, live, listed, enforceable, missing, loading, rules
         ? <>Denied by the rule “{rules.find((r) => r.id === u.access.user.deciding_rule_id)!.name}”. Deny rules win wherever they sit in the order.</>
         : <>{reasonText[code ?? ''] ?? 'Denied by policy'}.{live.length > 0 && ' Their certificates are valid, but the policy rejects them.'}</>
     if (u.account_state === 'enabled') action = <Link to={paths.policy(tid)} className="ee-btn ee-btn-sm">Review access policy</Link>
+  } else if (enforcement?.state === 'suspended') {
+    tone = 'neutral'
+    title = `${tenantName} is suspended`
+    body = <>Nobody in this tenant can connect while it’s suspended. Reactivating it in <Link to={targetPath(tid, 'tenant')} className="underline hover:text-[var(--ee-ink)]">tenant settings</Link> restores access; the policy {policyAllows ? 'would allow' : 'would deny'} {first(u.display_name)}.</>
+  } else if (enforceable !== false && enforcement?.tone === 'crit' && status !== 'allowed_no_certificate') {
+    tone = 'crit'
+    title = <>{first(u.display_name)} can’t connect right now</>
+    body = <>The policy allows them {why}{live.length ? ` and they hold ${plural(live.length, 'valid certificate')}` : ''}, but RADIUS isn’t accepting anyone in {tenantName}: {enforcement.label.toLowerCase()}. {enforcement.detail} <Link to={paths.dashboard(tid)} className="underline hover:text-[var(--ee-ink)]">See the dashboard</Link>.</>
   } else if (enforceable === false) {
     tone = 'neutral'
     title = 'Not enforceable yet'
@@ -285,7 +295,7 @@ function AccessStatement({ u, live, listed, enforceable, missing, loading, rules
 
   return (
     <Panel risk={tone} className="flex flex-wrap items-start gap-x-4 gap-y-3 px-5 py-4" aria-live="polite" aria-label="Can this user connect">
-      <div className="pt-0.5">{loading && enforceable === undefined ? <span className="ee-skeleton block h-[22px] w-28" /> : <AccessStateChip status={status} enforceable={enforceable ?? true} />}</div>
+      <div className="pt-0.5">{loading && enforceable === undefined ? <span className="ee-skeleton block h-[22px] w-28" /> : <AccessStateChip status={status} enforceable={enforceable ?? true} enforcement={enforcement} />}</div>
       <div className="min-w-0 flex-1 basis-[280px]">
         <p className="text-[15px] font-semibold">{title}</p>
         {body && <div className="ee-small ee-ink-2 mt-1 max-w-[80ch]">{body}</div>}
@@ -306,7 +316,6 @@ function CertRow({ tid, c, now, onRevoke, linkRef }: { tid: string; c: Certifica
           <span className="text-[13.5px] font-semibold">{c.device?.name ?? 'No device recorded'}</span>
           {c.device && <span className="ee-small ee-ink-3">{platformLabels[c.device.platform] ?? c.device.platform}</span>}
           <CertChip status={c.status} />
-          {c.stored_status === 'superseded' && <Chip tone="neutral">Renewed</Chip>}
         </div>
         <p className="ee-small ee-ink-3 mt-1 flex flex-wrap gap-x-2">
           <Link ref={linkRef} to={paths.certificate(tid, c.id)} className="ee-mono ee-ink-2 underline decoration-[var(--ee-line-3)] hover:text-[var(--ee-ink)]" aria-label={`Open certificate ${fmtSerial(c.serial)}`}>{fmtSerial(c.serial).slice(0, 19)}…</Link>

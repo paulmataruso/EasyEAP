@@ -111,12 +111,13 @@ def platform_queue(s: Session, p: Principal, now: datetime | None = None) -> lis
         b = s.get(m.PlatformSetting, "last_backup")
         at = datetime.fromisoformat(b.value["at"]) if b and b.value.get("at") else None
         if at is None:
-            add("no_backup", "warning", "No backup recorded",
-                "deploy/backup.sh has never reported a backup. If this server is lost, every tenant's issuing CA, policy and audit trail go with it.",
-                "Open System health", "system")
+            add("no_backup", "warning", "No backup downloaded yet",
+                "If this server is lost, every tenant's issuing CA, policy and audit trail go with it. Create a backup in System health, "
+                "download it and keep it with its passphrase somewhere safe.",
+                "Create a backup", "system")
         elif now - at > BACKUP_MAX_AGE:
             add("backup_overdue", "warning", f"Last backup {(now - at).days} days ago",
-                "Schedule deploy/backup.sh to run daily. Anything changed since the last backup can't be restored.", "Open System health", "system",
+                "Anything changed since then can't be restored. Create a new backup in System health and download it.", "Create a backup", "system",
                 source_at=at)
     if not p.admin.mfa_enabled:
         add("own_mfa_off", "critical" if p.admin.platform_role == "platform_owner" else "warning", "Your account has no two-factor authentication",

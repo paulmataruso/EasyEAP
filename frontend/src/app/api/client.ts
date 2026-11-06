@@ -13,14 +13,24 @@ export class ApiError extends Error {
 
 let csrfToken: string | null = null
 export const setCsrfToken = (t: string | null) => { csrfToken = t }
+export const getCsrfToken = () => csrfToken
 
 type Listener = () => void
 const unauthorizedListeners = new Set<Listener>()
 /** Called when any request returns 401 (session expired or signed out elsewhere). */
 export const onUnauthorized = (fn: Listener) => { unauthorizedListeners.add(fn); return () => { unauthorizedListeners.delete(fn) } }
+export const notifyUnauthorized = () => unauthorizedListeners.forEach((fn) => fn())
+
+/** A restore is running: the API answers 503 with {"maintenance": {...}} to everything but the progress endpoint. */
+const maintenanceListeners = new Set<(state: unknown) => void>()
+export const onMaintenance = (fn: (state: unknown) => void) => { maintenanceListeners.add(fn); return () => { maintenanceListeners.delete(fn) } }
+export const notifyMaintenance = (state: unknown) => maintenanceListeners.forEach((fn) => fn(state))
+/** Whether an error body is the API's "a restore is running" answer. */
+export const maintenanceFrom = (status: number, body: unknown): unknown =>
+  status === 503 && body && typeof body === 'object' && 'maintenance' in body ? (body as { maintenance: unknown }).maintenance : null
 
 /** FastAPI errors: {"detail": "text"} or {"detail": [{"msg": …, "loc": […]}]} for validation. */
-function messageFrom(body: unknown, status: number): string {
+export function messageFrom(body: unknown, status: number): string {
   if (body && typeof body === 'object' && 'detail' in body) {
     const d = (body as { detail: unknown }).detail
     if (typeof d === 'string') return d
@@ -48,10 +58,12 @@ async function request<T>(method: string, path: string, body?: unknown, init?: {
     if ((e as Error).name === 'AbortError') throw e
     throw new ApiError(0, messageFrom(null, 0))
   }
-  if (res.status === 401 && !path.startsWith('/api/auth/login')) unauthorizedListeners.forEach((fn) => fn())
+  if (res.status === 401 && !path.startsWith('/api/auth/login')) notifyUnauthorized()
   if (!res.ok) {
     let parsed: unknown = null
     try { parsed = await res.json() } catch { /* non-JSON error body */ }
+    const maintenance = maintenanceFrom(res.status, parsed)
+    if (maintenance) notifyMaintenance(maintenance)
     throw new ApiError(res.status, messageFrom(parsed, res.status), parsed)
   }
   if (init?.raw) return res as unknown as T

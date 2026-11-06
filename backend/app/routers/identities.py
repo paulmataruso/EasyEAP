@@ -42,7 +42,10 @@ def list_identities(ctx: TenantCtx = Depends(require("identities:read")), q: str
     else:
         stmt = stmt.where(m.Identity.account_state != "deleted")
     if enrolled is not None:
-        stmt = stmt.where(m.Identity.enrolled.is_(enrolled))
+        # Enrolled = holds a certificate RADIUS would accept now; the stored flag only records that someone once enrolled.
+        valid = select(m.Certificate.id).where(m.Certificate.identity_id == m.Identity.id, m.Certificate.status != "revoked",
+                                               m.Certificate.not_after > now, m.Certificate.purpose.in_(("user", "device"))).exists()
+        stmt = stmt.where(valid if enrolled else ~valid)
     if group_id:
         stmt = stmt.where(m.Identity.id.in_(select(m.IdentityGroup.identity_id).where(m.IdentityGroup.group_id == group_id)))
     total = s.scalar(select(func.count()).select_from(stmt.subquery())) or 0
@@ -51,12 +54,15 @@ def list_identities(ctx: TenantCtx = Depends(require("identities:read")), q: str
     counts = dict(s.execute(select(m.Certificate.identity_id, func.count()).where(m.Certificate.identity_id.in_(ids)).group_by(m.Certificate.identity_id)).all()) if ids else {}
     active = dict(s.execute(select(m.Certificate.identity_id, func.count()).where(m.Certificate.identity_id.in_(ids), m.Certificate.status == "active",
                                                                                  m.Certificate.not_after > now).group_by(m.Certificate.identity_id)).all()) if ids else {}
+    valid_holders = set(s.scalars(select(m.Certificate.identity_id).where(
+        m.Certificate.identity_id.in_(ids), m.Certificate.status != "revoked", m.Certificate.not_after > now,
+        m.Certificate.purpose.in_(("user", "device"))))) if ids else set()
     access = _access(ctx, rows, now)
     from app.posture import enforcement
     from app.routers.radius import agent_out
     enf = enforcement(s, ctx.tenant, agent_out(s), now)
-    return {"total": total, "page": page, "page_size": page_size, "enforceable": enf["enforceable"], "enforcement_missing": enf["missing"],
-            "items": [{**identity_out(i, counts.get(i.id, 0), active.get(i.id, 0)), "access": access[i.id]} for i in rows]}
+    return {"total": total, "page": page, "page_size": page_size, "enforceable": enf["enforceable"], "enforcement_missing": enf["missing"], "enforcement_status": enf["status"],
+            "items": [{**identity_out(i, counts.get(i.id, 0), active.get(i.id, 0)), "enrolled": i.id in valid_holders, "access": access[i.id]} for i in rows]}
 
 
 def _access(ctx: TenantCtx, rows: list[m.Identity], now: datetime) -> dict[uuid.UUID, dict]:
@@ -71,7 +77,7 @@ def _access(ctx: TenantCtx, rows: list[m.Identity], now: datetime) -> dict[uuid.
     decisions: dict[uuid.UUID, list] = {}
     for d in s.execute(select(m.Decision.identity_id, m.Decision.outcome, m.Decision.vlan_id, m.Decision.reason_code)
                        .join(m.Certificate, m.Certificate.id == m.Decision.certificate_id)
-                       .where(m.Decision.identity_id.in_(ids), m.Certificate.status == "active", m.Certificate.not_after > now)):
+                       .where(m.Decision.identity_id.in_(ids), m.Certificate.status != "revoked", m.Certificate.not_after > now)):
         decisions.setdefault(d.identity_id, []).append(d)
     ps = policy_settings(s, ctx.id)
     rules, dv = load_rules(s, ctx.id), _default_vlan(s, ps)
@@ -118,7 +124,7 @@ def get_identity(identity_id: uuid.UUID, ctx: TenantCtx = Depends(require("ident
     enf = enforcement(s, ctx.tenant, agent_out(s), datetime.now(UTC))
     return {
         **identity_out(i),
-        "enforceable": enf["enforceable"], "enforcement_missing": enf["missing"],
+        "enforceable": enf["enforceable"], "enforcement_missing": enf["missing"], "enforcement_status": enf["status"],
         "access_now": _access(ctx, [i], datetime.now(UTC))[i.id],
         "object_guid": i.object_guid,
         "devices": [{"id": str(d.id), "name": d.name, "platform": d.platform, "last_seen_mac": d.last_seen_mac, "created_at": d.created_at.isoformat() if d.created_at else None} for d in devices],

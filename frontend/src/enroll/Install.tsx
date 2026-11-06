@@ -204,8 +204,8 @@ function HelperInstall({ token, result, c, onResult, onUseBrowser, onGone }: {
       </section>
       <div role="status" aria-live="polite">
         {result.finished ? (
-          <Note tone="valid" title="Setup finished on this computer" icon={<CircleCheck aria-hidden />}>
-            The helper used this link to get your certificate. You can connect now.
+          <Note tone="valid" title="Your certificate was issued" icon={<CircleCheck aria-hidden />}>
+            The helper used this link to get your certificate. When it says <b>Done</b>, the Wi-Fi profile is installed and you can connect.
           </Note>
         ) : (
           <Note icon={<LoaderCircle className="en-spin" aria-hidden />} title="Waiting for the helper to finish">

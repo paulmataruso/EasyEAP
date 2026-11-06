@@ -5,6 +5,7 @@ import { Link, useNavigate } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { UserPlus, Users as UsersIcon, X } from 'lucide-react'
 import { useTenant } from '../api/tenant'
+import type { EnforcementStatus } from '../api/types'
 import { createIdentity, invalidatePeople, useDirectory, useDirectoryGroups, useIdentities, usePolicy, type IdentityListItem, type PolicyVlan } from '../api/people'
 import { paths, targetPath } from '../routes'
 import { AccessStateChip, Btn, Callout, EDialog, Empty, ErrorState, errorMessage, ESelect, Field, PageHeader, Panel, Seg, SourceTag, toast, VlanTag } from '../ui'
@@ -53,7 +54,15 @@ export default function Users() {
         actions={can('identities:write') && <Btn onClick={() => setCreateOpen(true)}><UserPlus aria-hidden />Add local user</Btn>}
       />
 
-      {data && !data.enforceable && (
+      {data?.enforcement_status?.state === 'suspended' ? (
+        <Callout tone="neutral" className="mb-5" title={`${tenant.name} is suspended: nobody can connect`}>
+          Reactivate it in <Link to={targetPath(tid, 'tenant')} className="text-[var(--ee-ink)] underline underline-offset-2">tenant settings</Link> to restore access. Certificates, policy and directory data are kept.
+        </Callout>
+      ) : data?.enforceable && data.enforcement_status?.tone === 'crit' ? (
+        <Callout tone="crit" className="mb-5" title={`${data.enforcement_status.label}: nobody in ${tenant.name} can connect right now`}>
+          {data.enforcement_status.detail} Users the policy allows show as “Can’t connect now”. <Link to={paths.dashboard(tid)} className="text-[var(--ee-ink)] underline underline-offset-2">See the dashboard</Link>.
+        </Callout>
+      ) : data && !data.enforceable && (
         <Callout tone="warn" className="mb-5" title={`Not enforceable yet: nobody in ${tenant.name} can connect`}>
           RADIUS isn’t enforcing this tenant, so users the policy allows show as “Not enforceable yet”. Still to do:
           <ul className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
@@ -120,7 +129,7 @@ export default function Users() {
                         </span>
                         <span className="ee-small ee-ink-3 block truncate">{[u.upn ?? u.username, u.department].filter(Boolean).join(' · ')}</span>
                       </td>
-                      <td><AccessCell u={u} enforceable={data.enforceable} vlans={vlans} /></td>
+                      <td><AccessCell u={u} enforceable={data.enforceable} enforcement={data.enforcement_status} vlans={vlans} /></td>
                       <td className="text-right ee-num whitespace-nowrap"><CertCount u={u} /></td>
                       <td className="max-w-[260px]"><Groups u={u} /></td>
                       <td className="text-right whitespace-nowrap ee-ink-2 ee-num">
@@ -143,7 +152,7 @@ export default function Users() {
                 </div>
                 <p className="ee-small ee-ink-3 mt-0.5 break-all">{u.upn ?? u.username}</p>
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                  <AccessCell u={u} enforceable={data.enforceable} vlans={vlans} />
+                  <AccessCell u={u} enforceable={data.enforceable} enforcement={data.enforcement_status} vlans={vlans} />
                   <span className="ee-small ee-ink-2 ee-num"><CertCount u={u} /></span>
                 </div>
                 <p className="ee-small ee-ink-3 mt-1.5">{u.last_auth_at ? <>Last authenticated {ago(u.last_auth_at, now)}</> : 'Never authenticated'}</p>
@@ -159,11 +168,11 @@ export default function Users() {
   )
 }
 
-function AccessCell({ u, enforceable, vlans }: { u: IdentityListItem; enforceable: boolean; vlans: PolicyVlan[] }) {
+function AccessCell({ u, enforceable, enforcement, vlans }: { u: IdentityListItem; enforceable: boolean; enforcement?: EnforcementStatus; vlans: PolicyVlan[] }) {
   const vlan = vlans.find((v) => v.vlan_id === u.access.vlan_id)
   return (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <AccessStateChip status={u.access.status} enforceable={enforceable} />
+      <AccessStateChip status={u.access.status} enforceable={enforceable} enforcement={enforcement} />
       {u.access.status !== 'denied' && u.access.vlan_id !== null && <VlanTag vlanId={u.access.vlan_id} name={vlan?.name} color={vlan?.color} />}
       {u.access.status === 'denied' && u.access.reason_code && <span className="ee-small ee-ink-3">{denyReason[u.access.reason_code] ?? u.access.reason_code}</span>}
     </span>

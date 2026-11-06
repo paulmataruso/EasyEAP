@@ -10,12 +10,17 @@ never making authentication depend on the API being reachable:
   tenant's `valid_until` only advances when fresh data arrives, so a long outage fails closed.
 * events: FreeRADIUS writes JSON lines to the spool; the agent ships them in batches and deletes shipped files.
 * CoA: pending Disconnect-Requests are sent with radclient and the result reported back.
+* logs: the agent's own messages and FreeRADIUS warnings and errors go to EasyEAP's system log (and from there to
+  remote syslog). They wait in a bounded in-memory buffer while the API is away; FreeRADIUS output still reaches the
+  container log unchanged.
 """
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import socket
@@ -43,6 +48,80 @@ SPOOL = STATE / "spool"
 log = logging.getLogger("radius-agent")
 _stop = threading.Event()
 _nudge = threading.Event()
+
+# ── System log buffer ───────────────────────────────────────────────────────
+
+LOG_BUFFER_MAX = 2000
+_logbuf: collections.deque[dict] = collections.deque(maxlen=LOG_BUFFER_MAX)
+_logbuf_lock = threading.Lock()
+_FR_LINE = re.compile(r"^.*? : (Error|ERROR|Warning|WARNING|WARN|Auth|Info|Debug|Proxy): (.*)$")
+
+
+def buffer_log(level: str, source: str, message: str, logger: str = "") -> None:
+    with _logbuf_lock:
+        _logbuf.append({"at": time.time(), "level": level, "source": source, "logger": logger, "message": message[:4000]})
+
+
+class BufferHandler(logging.Handler):
+    """The agent's own INFO and above, for EasyEAP's system log."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = {logging.WARNING: "warning", logging.ERROR: "error", logging.CRITICAL: "critical"}.get(record.levelno, "info")
+            msg = record.getMessage()
+            if record.exc_info:
+                msg = f"{msg}\n{logging.Formatter().formatException(record.exc_info)}"
+            buffer_log(level, "radius-agent", msg, record.name)
+        except Exception:  # noqa: BLE001, S110 — logging must never break the agent
+            pass
+
+
+def classify_freeradius(line: str) -> tuple[str, str] | None:
+    """(level, message) for FreeRADIUS warnings and errors; None for everything else (info, auth results)."""
+    m = _FR_LINE.match(line.rstrip())
+    if not m:
+        return None
+    kind, msg = m.group(1).lower(), m.group(2)
+    if kind == "error":
+        return "error", msg
+    if kind in ("warning", "warn"):
+        return "warning", msg
+    return None
+
+
+def pump_freeradius(stream) -> None:
+    """Copy FreeRADIUS output to the container log line by line, keeping warnings and errors for the system log.
+    Runs for the life of one FreeRADIUS process; it must keep reading, or FreeRADIUS would block on a full pipe."""
+    for raw in iter(stream.readline, b""):
+        try:
+            sys.stdout.buffer.write(raw)
+            sys.stdout.flush()
+        except Exception:  # noqa: BLE001, S110
+            pass
+        try:
+            hit = classify_freeradius(raw.decode("utf-8", "replace"))
+            if hit:
+                buffer_log(hit[0], "freeradius", hit[1])
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+
+def ship_logs() -> int:
+    """Send buffered log lines; on failure they go back to the front of the buffer (oldest dropped when full)."""
+    sent = 0
+    while True:
+        with _logbuf_lock:
+            batch = [_logbuf.popleft() for _ in range(min(len(_logbuf), 500))]
+        if not batch:
+            return sent
+        try:
+            api("POST", "/api/agent/logs", {"items": batch})
+        except Exception:
+            with _logbuf_lock:
+                room = LOG_BUFFER_MAX - len(_logbuf)
+                _logbuf.extendleft(reversed(batch[-room:] if room > 0 else []))
+            raise
+        sent += len(batch)
 
 
 def token() -> str:
@@ -127,7 +206,8 @@ class Radius:
             if self.proc and self.proc.poll() is None:
                 return
             log.info("Starting FreeRADIUS")
-            self.proc = subprocess.Popen(["freeradius", "-f", "-l", "stdout", "-d", str(LIVE)], stdout=sys.stdout, stderr=sys.stderr)
+            self.proc = subprocess.Popen(["freeradius", "-f", "-l", "stdout", "-d", str(LIVE)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)  # noqa: S603, S607
+            threading.Thread(target=pump_freeradius, args=(self.proc.stdout,), name="freeradius-log", daemon=True).start()
 
     def stop(self) -> None:
         with self.lock:
@@ -180,7 +260,8 @@ def apply_config(radius: Radius, desired: dict) -> tuple[bool, str | None]:
         if LIVE.exists():
             LIVE.rename(old)
         new_live.rename(LIVE)
-        (STATE / "config.json").write_text(json.dumps({"version": desired["version"], "applied_at": int(time.time())}))
+        (STATE / "config.json").write_text(json.dumps({"version": desired["version"], "applied_at": int(time.time()),
+                                                       "tenants": [t["id"] for t in desired.get("tenants", [])]}))
         radius.restart()
         return True, None
     except Exception as exc:  # noqa: BLE001
@@ -201,6 +282,15 @@ def current_config_version() -> str | None:
     try:
         return json.loads((STATE / "config.json").read_text())["version"]
     except (OSError, ValueError, KeyError):
+        return None
+
+
+def served_tenants() -> list[str] | None:
+    """Tenant IDs in the configuration FreeRADIUS is running (None if it was applied by an older agent)."""
+    try:
+        ids = json.loads((STATE / "config.json").read_text()).get("tenants")
+        return [str(x) for x in ids] if isinstance(ids, list) else None
+    except (OSError, ValueError):
         return None
 
 
@@ -298,6 +388,7 @@ def send_coa(desired: dict | None) -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s radius-agent %(levelname)s %(message)s", stream=sys.stdout)
+    logging.getLogger().addHandler(BufferHandler(level=logging.INFO))
     for d in (STATE / "raddb", SPOOL, STATE / "run", STATE / "radacct"):
         d.mkdir(parents=True, exist_ok=True)
     os.umask(0o077)
@@ -318,7 +409,8 @@ def main() -> None:
     while not _stop.is_set():
         try:
             desired = api("GET", "/api/agent/config")
-            if desired.get("version") != current_config_version() or not (LIVE / "radiusd.conf").exists():
+            # served_tenants() is None once after upgrading from an agent that didn't record them: re-apply to record them.
+            if desired.get("version") != current_config_version() or not (LIVE / "radiusd.conf").exists() or served_tenants() is None:
                 if desired.get("tenants"):
                     ok, err = apply_config(radius, desired)
                     config_error = err
@@ -332,10 +424,11 @@ def main() -> None:
                 apply_snapshot(conn, snap)
             drop_removed_tenants(conn, snaps.get("tenants", []))
             ship_events()
+            ship_logs()
             send_coa(desired)
             api("POST", "/api/agent/status", {"agent_id": AGENT_ID, "config_version": current_config_version() or "", "config_ok": config_error is None,
                                               "config_error": config_error, "snapshot_versions": applied_versions(conn), "radius_running": radius.running,
-                                              "detail": {"tenants": len((desired or {}).get("tenants", []))}})
+                                              "detail": {"tenants": len((desired or {}).get("tenants", [])), "tenant_ids": served_tenants()}})
             last_ok = time.time()
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
             if time.time() - last_ok > 60:

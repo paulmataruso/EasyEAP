@@ -24,6 +24,12 @@ ACTIONABLE_REJECTS = {"unknown_ca", "cert_unknown", "cert_expired", "cert_revoke
 # The worker heartbeats every minute and rebuilds every tenant's snapshot hourly.
 WORKER_STALE = timedelta(minutes=3)
 REBUILD_OVERDUE = timedelta(minutes=75)
+# The agent polls every few seconds; a new snapshot or configuration not applied after this is a real delay.
+APPLY_GRACE = timedelta(minutes=2)
+# The issuing CA's revocation list is rebuilt daily and valid for 72 hours (FreeRADIUS: allow_expired_crl = no).
+CRL_WARN = timedelta(hours=48)
+CRL_CRIT = timedelta(hours=12)
+ROOT_CRL_WARN = timedelta(days=60)
 
 
 def _iso(d: datetime | None) -> str | None:
@@ -38,7 +44,7 @@ def worker_seen_at(s: Session) -> datetime | None:
 
 def certificate_holders(s: Session, tenant_id: uuid.UUID, now: datetime) -> int:
     return s.scalar(select(func.count(distinct(m.Certificate.identity_id))).where(
-        m.Certificate.tenant_id == tenant_id, m.Certificate.status == "active", m.Certificate.not_after > now,
+        m.Certificate.tenant_id == tenant_id, m.Certificate.status != "revoked", m.Certificate.not_after > now,
         m.Certificate.purpose.in_(("user", "device")))) or 0
 
 
@@ -67,7 +73,8 @@ def enforcement(s: Session, t: m.Tenant, agent: dict | None, now: datetime | Non
     worker_at = worker_seen_at(s)
     worker_alive = bool(worker_at and now - worker_at < WORKER_STALE)
     applied = ((agent or {}).get("snapshot_versions") or {}).get(str(t.id))
-    return {
+    serving = (agent or {}).get("serving_ids")
+    e = {
         "enforceable": not missing, "missing": missing,
         "snapshot_built_at": _iso(built), "snapshot_version": rs.snapshot_version if rs else None,
         "deadline_at": _iso(built + max_age) if built else None, "max_snapshot_age_seconds": ps.max_snapshot_age_seconds,
@@ -79,9 +86,63 @@ def enforcement(s: Session, t: m.Tenant, agent: dict | None, now: datetime | Non
         "directory_fresh": directory_fresh,
         "worker_alive": worker_alive, "worker_seen_at": _iso(worker_at),
         "agent_online": bool(agent and agent.get("online")),
+        "radius_state": (agent or {}).get("state"),
+        "config_ok": (agent or {}).get("config_ok"),
+        # None when the agent doesn't report which tenants its configuration serves (older agents).
+        "served": None if serving is None else str(t.id) in serving,
+        "snapshot_expired": bool(built and now >= built + max_age),
         "agent_applied_version": applied,
         "agent_in_sync": applied is not None and rs is not None and applied == rs.snapshot_version,
+        # A change is normally applied within seconds; until APPLY_GRACE has passed, "not applied yet" is not a fault.
+        "applying": bool(built and now - built <= APPLY_GRACE),
     }
+    e["status"] = status_of(t, e, dc)
+    return e
+
+
+def _status(state: str, tone: str, label: str, detail: str) -> dict:
+    return {"state": state, "tone": tone, "label": label, "detail": detail}
+
+
+def status_of(t: m.Tenant, e: dict, dc: m.DirectoryConfig | None) -> dict:
+    """One answer to "is RADIUS enforcing this tenant?", shared by every chip, panel and list in the console.
+
+    tone: valid (enforcing), warn (enforcing, but something is late), crit (denying everyone or about to), neutral
+    (by design: not set up, suspended, or applying a change right now).
+    """
+    if t.status == "suspended":
+        return _status("suspended", "neutral", "Suspended", "Nobody in this tenant can connect while it's suspended.")
+    if not e["enforceable"]:
+        return _status("setup", "neutral", "Not enforceable yet", "Setup isn't finished, so nobody can connect yet.")
+    if not e["agent_online"]:
+        return _status("radius_offline", "crit", "RADIUS not reporting",
+                       "EasyEAP hasn't heard from the RADIUS agent. If RADIUS is still running it keeps using its last snapshot.")
+    if e["config_ok"] is False:
+        return _status("radius_config", "crit", "Configuration rejected", "RADIUS rejected its latest configuration and is running the previous one.")
+    if e["radius_state"] == "stopped":
+        return _status("radius_stopped", "crit", "RADIUS stopped", "FreeRADIUS isn't running, so nobody can connect.")
+    if e["radius_state"] == "starting":
+        return _status("starting", "neutral", "Starting", "RADIUS is starting for this newly activated tenant.")
+    if not e["snapshot_built_at"]:
+        return _status("no_snapshot", "crit", "Denying everyone", "No authorization snapshot has been built yet, so RADIUS denies everyone.")
+    if e["snapshot_expired"]:
+        return _status("expired", "crit", "Denying everyone", "The authorization snapshot is past its limit, so RADIUS fails closed.")
+    if e["served"] is False and not e["applying"]:
+        return _status("not_served", "crit", "Not served by RADIUS", "RADIUS's running configuration doesn't include this tenant, so nobody can connect.")
+    if not e["auto_refresh"]:
+        if e["refresh_blocked_by"] == "worker":
+            return _status("at_risk", "crit", "At risk", "The background worker isn't running, so the snapshot isn't refreshed. RADIUS denies everyone when it expires.")
+        failing = dc is not None and dc.last_sync_status == "failed"
+        return _status("at_risk", "crit", "At risk",
+                       ("Directory sync is failing" if failing else "The directory hasn't synced recently" if dc and dc.last_sync_at else "The directory has never synced")
+                       + ", so the snapshot isn't refreshed. RADIUS denies everyone when it expires.")
+    if e["served"] is False or not e["agent_in_sync"]:
+        if e["applying"]:
+            return _status("applying", "neutral", "Applying a change", "A new snapshot was just built; RADIUS normally applies it within seconds.")
+        return _status("pending", "warn", "Update pending", "RADIUS is still using an older snapshot, so recent changes (including revocations) aren't enforced yet.")
+    if e["refresh_overdue"]:
+        return _status("overdue", "warn", "Refresh overdue", "The snapshot hasn't been rebuilt in over an hour. Check the background jobs.")
+    return _status("enforcing", "valid", "Enforcing", "RADIUS is enforcing this tenant's latest policy.")
 
 
 def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: datetime | None = None) -> list[dict]:
@@ -97,7 +158,11 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
         items.append({"code": code, "severity": severity, "title": title, "detail": detail, "action": {"label": action, "target": target},
                       "affected": affected, "impact_at": _iso(impact_at), "source_at": _iso(source_at)})
 
-    if enf["missing"]:
+    if t.status == "suspended":
+        add("tenant_suspended", "warning", "Tenant is suspended",
+            "Nobody in this tenant can connect while it's suspended. Its certificates, policy and directory settings are kept.",
+            "Reactivate the tenant", "tenant", affected=holders, impact_at=None, source_at=None)
+    elif enf["missing"]:
         steps = "; ".join(x["message"] for x in enf["missing"])
         add("not_enforceable", "warning", "Not enforceable yet", f"Nobody in this tenant can connect until setup is finished: {steps}.",
             "Continue setup", enf["missing"][0]["target"], affected=users, impact_at=None, source_at=now)
@@ -110,7 +175,16 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
         elif agent.get("config_ok") is False:
             add("radius_config", "critical", "RADIUS rejected its configuration", agent.get("config_error") or "The last configuration failed to load.",
                 "Review RADIUS settings", "radius", affected=holders, impact_at=None, source_at=datetime.fromisoformat(agent["last_seen_at"]))
-        elif not enf["agent_in_sync"] and enf["snapshot_built_at"] and now - datetime.fromisoformat(enf["snapshot_built_at"]) > timedelta(minutes=2):
+        elif enf["radius_state"] == "stopped":
+            add("radius_stopped", "critical", "FreeRADIUS isn't running",
+                "The RADIUS agent is reporting, but FreeRADIUS itself has stopped, so nobody can connect. "
+                "The System log (source: FreeRADIUS) shows why.", "Check RADIUS service", "system", affected=holders, impact_at=now,
+                source_at=datetime.fromisoformat(agent["last_seen_at"]))
+        elif enf["served"] is False and not enf["applying"]:
+            add("radius_not_serving", "critical", "RADIUS isn't serving this tenant",
+                "The configuration RADIUS is running doesn't include this tenant, so its controllers get no answer.",
+                "Check RADIUS service", "system", affected=holders, impact_at=now, source_at=datetime.fromisoformat(agent["last_seen_at"]))
+        elif not enf["agent_in_sync"] and enf["snapshot_built_at"] and not enf["applying"]:
             add("snapshot_pending", "warning", "RADIUS hasn't applied the latest policy",
                 "The newest authorization snapshot was built but RADIUS is still using an older one, so recent changes (including revocations) "
                 "are not enforced yet.", "Check RADIUS service", "system", affected=holders,
@@ -120,6 +194,13 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
                 "The tenant is active, but no authorization snapshot has been built yet, so RADIUS denies everyone. "
                 "Snapshots are built by the background worker.", "Check system health", "system",
                 affected=holders, impact_at=now, source_at=now)
+        elif enf["snapshot_expired"]:
+            cause = ("The background worker isn't running, so it isn't rebuilt." if enf["refresh_blocked_by"] == "worker" else
+                     "Directory data is out of date, so it isn't rebuilt. Fix the directory sync." if enf["refresh_blocked_by"] == "directory" else
+                     "The worker is running but the rebuild hasn't happened. Check the background jobs for failures.")
+            add("snapshot_expired", "critical", "RADIUS is denying everyone",
+                f"This tenant's authorization snapshot is past its limit, so RADIUS fails closed. {cause}", "Check system health", "system" if enf["refresh_blocked_by"] != "directory" else "directory",
+                affected=holders, impact_at=deadline, source_at=datetime.fromisoformat(enf["snapshot_built_at"]))
         elif not enf["worker_alive"]:
             seen = datetime.fromisoformat(enf["worker_seen_at"]) if enf["worker_seen_at"] else None
             add("worker_offline", "critical", "Background worker is not running",
@@ -133,6 +214,13 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
                 affected=holders, impact_at=deadline, source_at=datetime.fromisoformat(enf["snapshot_built_at"]))
 
     dc = s.get(m.DirectoryConfig, t.id)
+    if (dc is not None and dc.enabled and dc.last_sync_status != "failed" and not enf["directory_fresh"] and enf["worker_alive"]
+            and t.status == "active"):
+        add("directory_stale", "critical", "Directory hasn't synced recently" if dc.last_sync_at else "Directory has never synced",
+            (f"The last successful sync is older than the {round(ps.max_snapshot_age_seconds / 3600)}-hour limit, " if dc.last_sync_at else
+             "No sync has completed yet, ") + "so the snapshot isn't refreshed and RADIUS denies everyone when it expires. "
+            "Start a sync from the Directory page.", "Open directory", "directory",
+            affected=holders, impact_at=deadline, source_at=dc.last_sync_at)
     if dc is not None and dc.enabled and dc.last_sync_status == "failed":
         detail = f"The last sync failed: {dc.last_sync_error or 'no detail recorded'}. "
         detail += ("Account and group changes in Active Directory are not reaching RADIUS. The snapshot is no longer refreshed, "
@@ -150,10 +238,28 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
                 "Rotate server certificate", "radius", affected=holders, impact_at=sc.not_after, source_at=sc.not_before)
 
     ca = s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == t.id, m.CertificateAuthority.role == "issuing")).first()
-    if ca is not None and ca.not_after <= now + timedelta(days=180):
+    if ca is not None and ca.not_after <= now:
+        add("issuing_ca_expired", "critical", "Issuing CA has expired",
+            "Every certificate it issued has stopped working, and no new ones can be issued. A new issuing CA from the offline root is needed.",
+            "Review PKI", "pki", affected=holders, impact_at=ca.not_after, source_at=ca.not_before)
+    elif ca is not None and ca.not_after <= now + timedelta(days=180):
         add("issuing_ca_expiring", "warning", "Issuing CA expires within six months",
             "Certificates can't outlive the CA that issued them. Plan a new issuing CA from the offline root before it expires.",
             "Review PKI", "pki", affected=holders, impact_at=ca.not_after, source_at=ca.not_before)
+    if ca is not None and ca.not_after > now and ca.crl_next_update is not None and ca.crl_next_update - now <= CRL_WARN:
+        lapsed = ca.crl_next_update <= now
+        add("crl_expiring", "critical" if ca.crl_next_update - now <= CRL_CRIT else "warning",
+            "Revocation list has expired" if lapsed else "Revocation list expires soon",
+            ("RADIUS rejects every certificate from this CA until a new list is published. " if lapsed else
+             "It's normally rebuilt every day, so the last rebuilds have failed. When it expires, RADIUS rejects every certificate from this CA. ")
+            + "Rebuild it from the PKI page, and check the background jobs in System health.",
+            "Rebuild revocation list", "pki", affected=holders, impact_at=ca.crl_next_update, source_at=None)
+    root = s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == t.id, m.CertificateAuthority.role == "root")).first()
+    if root is not None and root.crl_next_update is not None and root.crl_next_update - now <= ROOT_CRL_WARN:
+        add("root_crl_expiring", "warning", "Root revocation list has expired" if root.crl_next_update <= now else "Root revocation list expires soon",
+            "RADIUS checks only the issuing CA's list, so Wi-Fi isn't affected. Devices and controllers that check the whole chain may "
+            "start refusing the RADIUS server when it lapses. Renewing it needs the offline root key.",
+            "Review PKI", "pki", affected=holders, impact_at=root.crl_next_update, source_at=None)
 
     soon = now + timedelta(days=ps.expiry_warning_days)
     exp = s.execute(select(func.count(), func.min(m.Certificate.not_after), func.count(distinct(m.Certificate.identity_id))).where(

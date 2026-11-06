@@ -46,7 +46,15 @@ export const actionLabels: Record<string, string> = {
   'rule.reordered': 'Access rules reordered',
   'rule.updated': 'Access rule changed',
   'setup.first_admin_created': 'First administrator created',
+  'auth.reauth_failed': 'Password re-entry failed',
   'system.backup_created': 'Backup created',
+  'system.backup_deleted': 'Backup deleted from the server',
+  'system.backup_downloaded': 'Backup downloaded',
+  'system.backup_restored': 'Backup restored',
+  'system.restore_started': 'Restore started',
+  'system.syslog_added': 'Syslog destination added',
+  'system.syslog_removed': 'Syslog destination removed',
+  'system.syslog_updated': 'Syslog destination changed',
   'template.created': 'Certificate template created',
   'template.updated': 'Certificate template changed',
   'tenant.created': 'Tenant created',
@@ -70,7 +78,7 @@ export function actionLabel(action: string, detail?: Record<string, unknown>): s
 export function actionTone(action: string, detail?: Record<string, unknown>): Tone | null {
   if (action === 'directory.synced' && detail?.ok === false) return 'crit'
   if (/(revoked|deleted|failed|disabled|mfa_reset)/.test(action)) return 'crit'
-  if (action === 'policy.published' || /rotated|settings/.test(action)) return 'gold'
+  if (action === 'policy.published' || action === 'system.backup_restored' || action === 'system.restore_started' || /rotated|settings/.test(action)) return 'gold'
   return null
 }
 

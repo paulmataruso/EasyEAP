@@ -6,7 +6,9 @@ Schedule (per tenant unless noted):
   directory has been failing longer than the limit, the refresh stops and RADIUS fails closed);
 * CRL rotation daily (OpenBao CRLs are issued with a 72h lifetime);
 * expiry of enrollment links, purge of undelivered server-generated keys (and revocation of their certificates);
-* OpenBao token renewal, job pruning, event retention (platform).
+* OpenBao token renewal, job pruning, event and system log retention (platform).
+
+A second thread forwards the audit trail, authentication events and the system log to remote syslog (app.logs.syslog).
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ from app.security.redact import configure_logging
 log = logging.getLogger("easyeap.worker")
 _stop = False
 EVENT_RETENTION_DAYS = 180
+SYSTEM_LOG_RETENTION_DAYS = 30
 
 
 def _handle(job: m.Job) -> None:
@@ -50,13 +53,14 @@ def _handle(job: m.Job) -> None:
             from app.pki.service import rotate_crl
             from app.radius.state import bump
             if s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == tid, m.CertificateAuthority.role == "issuing")).first():
-                rotate_crl(OpenBao(), tid)
+                rotate_crl(OpenBao(), tid, s)
                 bump(s, tid)
         elif job.kind == "enrollment.purge":
             _purge_escrow(s)
         elif job.kind == "events.retention":
             s.execute(text("DELETE FROM auth_events WHERE at < now() - make_interval(days => :d)"), {"d": EVENT_RETENTION_DAYS})
             s.execute(text("DELETE FROM accounting_sessions WHERE updated_at < now() - make_interval(days => :d)"), {"d": EVENT_RETENTION_DAYS})
+            s.execute(text("DELETE FROM system_logs WHERE at < now() - make_interval(days => :d)"), {"d": SYSTEM_LOG_RETENTION_DAYS})
             queue.prune(s)
         elif job.kind == "openbao.renew":
             from app.pki.openbao import renew_token
@@ -125,7 +129,10 @@ def schedule() -> None:
             directory_fresh = dc is None or not dc.enabled or (dc.last_sync_status == "ok" and dc.last_sync_at and now - dc.last_sync_at < max_age)
             if directory_fresh and due(f"refresh:{t.id}", timedelta(hours=1)):
                 queue.enqueue(s, "policy.recompute", tenant_id=t.id, dedupe_key=f"policy.recompute:{t.id}")
-            if due(f"crl:{t.id}", timedelta(hours=24)):
+            issuing = s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == t.id, m.CertificateAuthority.role == "issuing")).first()
+            # Installs from before the CRL's expiry was recorded catch up within an hour instead of a day.
+            unrecorded = issuing is not None and issuing.crl_next_update is None
+            if due(f"crl:{t.id}", timedelta(hours=24)) or (unrecorded and due(f"crl-record:{t.id}", timedelta(hours=1))):
                 queue.enqueue(s, "crl.rotate", tenant_id=t.id, dedupe_key=f"crl.rotate:{t.id}")
 
 
@@ -164,9 +171,18 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    from app.logs.dbhandler import install as install_db_logging
+    from app.logs.syslog import Forwarder
+    install_db_logging("worker")
     log.info("EasyEAP worker started")
+    forwarder = Forwarder()
+    forwarder.start()
     last_schedule = 0.0
+    from app.backup.engine import maintenance
     while not _stop:
+        if maintenance():  # a restore is replacing the database and PKI; resume when it is done
+            time.sleep(3)
+            continue
         try:
             if time.monotonic() - last_schedule > 30:
                 schedule()
@@ -176,6 +192,7 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001 — keep the worker alive; DB may be restarting
             log.error("Worker loop error: %s", exc)
             time.sleep(5)
+    forwarder.stop_event.set()
     log.info("EasyEAP worker stopped")
 
 
