@@ -27,11 +27,37 @@ the code. Report vulnerabilities privately to the maintainers. Don't open public
 | RADIUS server private key | Transit ciphertext in the database; plaintext only on the RADIUS volume (0600) | The RADIUS agent |
 | Tenant secrets (shared secrets, bind password, escrowed PKCS#12) | Transit ciphertext (key `t-<tenant>`) in the database | The API, through its OpenBao token |
 | Admin TOTP secrets | Transit ciphertext (platform key) | The API, at verification time |
-| OpenBao unseal key | `deploy/secrets/openbao_unseal_key` (0644 file in a 0700 directory, mounted as a Compose secret) | Root on the host |
+| OpenBao seal key | The PKI's `easyeap-pki-seal` volume (seeded once from `deploy/secrets/openbao_unseal_key`) and, encrypted, inside each backup | The PKI container; root on the host |
+| OpenBao recovery keys | The API's secrets volume (0600), on installations made with 1.0.0 or later | The API |
 | OpenBao API token | The API's secrets volume (0600) | The API and worker |
 | Database passwords, agent token, session HMAC key | `deploy/secrets/*`, mounted as Compose secrets | The containers that need each one |
 
-Backups contain the unseal key and are therefore always encrypted (`deploy/backup.sh` refuses to write an unencrypted archive).
+### Backups
+
+A console backup is **complete by design**: the database, the OpenBao storage with every issuing CA key, its seal
+key, and the API's secrets. That makes the backup file, together with its passphrase, as sensitive as the CAs, and it
+is a deliberate exception to "CA keys never leave OpenBao". The controls:
+
+- Only a Super Administrator can create, download or restore one. Creating and restoring need their password and
+  two-factor code again. Every step is audited (who, when, size and the file's SHA-256).
+- Backups are always encrypted with age (scrypt for the passphrase, authenticated streaming encryption for the
+  contents). There is no unencrypted option. Passphrases are at least 12 characters with at least 5 distinct ones,
+  EasyEAP can generate one, and the passphrase is never stored or logged.
+- The database dump is encrypted as it streams; the PKI archive is in plaintext only on a tmpfs volume shared by the
+  API and PKI containers, for seconds. The server keeps the encrypted file for 24 hours so it can be downloaded,
+  then deletes it.
+- Restoring checks the whole file before changing anything, keeps the previous database, PKI and secrets until the
+  new ones are verified, and rolls back on any failure. It signs everyone out. A first-run restore needs the
+  installer's setup token, so a fresh server can't be claimed by restoring someone else's backup onto it.
+
+### Logs and syslog
+
+The system log (30 days in the database) and remote syslog carry operational messages, the audit trail and
+authentication events: user names, MAC addresses, NAS addresses, certificate serials, VLANs and reasons. They never
+carry secrets, keys or passwords: every line passes the same redacting filter before it's stored or sent. Use TLS
+for remote syslog so this metadata isn't readable on the network; the console warns when TCP or UDP is chosen. A
+TLS destination's certificate and host name are always verified (TLS 1.2 or later), against a pasted CA or the
+system's trust store.
 
 ## Controls in the code
 
@@ -78,5 +104,8 @@ The console states this wherever revocation happens, and never claims revocation
 - Bind the published ports to internal interfaces where possible (`EASYEAP_*_BIND` in `.env`). RADIUS/UDP must not cross untrusted networks: use a site-to-site VPN.
 - Turn on two-factor authentication for every administrator (Account page).
 - Store each tenant's root key file and passphrase offline, separately, as you would any CA key.
-- Run `deploy/backup.sh` on a schedule with a passphrase file or GPG recipient, and test `deploy/restore.sh` regularly.
+- Make a backup from the console at least weekly (the dashboard warns after 7 days), keep the file off the server
+  and its passphrase somewhere else, and test a restore on a spare server from time to time. `deploy/backup.sh`
+  can schedule them.
+- Forward the audit trail to a remote syslog server or SIEM over TLS, so a copy of it exists outside EasyEAP.
 - Never enable lab mode or the lab profile on a production host.

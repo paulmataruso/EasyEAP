@@ -7,7 +7,10 @@ Status as of 2026-11-05 (release 1.0.0).
 ### Platform and deployment
 - [x] Compose stack: proxy, API, worker, PostgreSQL 18, OpenBao 2.4.1, FreeRADIUS 3.2.7 + radius-agent
 - [x] Segmented internal networks; RADIUS has no route to the database or OpenBao
-- [x] `install.sh` (secrets generated once, `.env`, temporary TLS), encrypted `backup.sh`, `restore.sh` with audit verification
+- [x] `install.sh` (secrets generated once, `.env`, temporary TLS)
+- [x] Full backup and restore from the console and the first-run page (age-encrypted `.easyeap`, step-by-step
+      progress, automatic rollback); `backup.sh` / `restore.sh` wrap the same engine for scheduling
+- [x] System log (30 days) and remote syslog (TLS/TCP/UDP, RFC 5424/3164, text/JSON, at-least-once with catch-up)
 - [x] Lab profile: Samba AD domain controller and `eapol_test` Wi-Fi client
 - [x] Development override with a hot-reloading API
 
@@ -80,6 +83,12 @@ Status as of 2026-11-05 (release 1.0.0).
 - **PKCS#12 MAC.** Packages use PBES2 (PBKDF2-SHA256, 600,000 iterations) with AES-256-CBC, but the integrity MAC
   uses 2,048 iterations (the OpenSSL default, kept for device compatibility). The generated passwords are strong
   enough that this is not the weak point; see SECURITY.md.
+
+- **Root CRL renewal.** The root CA's revocation list is signed at the ceremony and valid for a year. RADIUS
+  doesn't check it, but clients that check the whole chain may refuse the RADIUS server once it lapses. Renewing it
+  needs the offline root key, and the console can't do that yet; the dashboard warns 60 days ahead.
+- **Backups of installations made before 1.0.0** can regain CA access only within 32 days of being made (no OpenBao
+  recovery keys were kept). The console shows each backup's restore-by date.
 
 ## Planned
 

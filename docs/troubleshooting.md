@@ -41,6 +41,40 @@ Some failures never produce an authentication event:
   "Starting" while the agent picks up the new configuration. "Not running" after that is a real fault: check the
   Configuration status on the RADIUS screen and `docker compose logs easyeap-radius`.
 
+## What each enforcement status means
+
+Every tenant has one enforcement status. The dashboard, the Tenants page, the tenant switcher and each user's
+"Can connect" all show the same one.
+
+| Status | Meaning | What to do |
+|---|---|---|
+| Enforcing | RADIUS is running, serves the tenant and has its latest snapshot. | Nothing. |
+| Applying a change | A new snapshot was built under two minutes ago; RADIUS normally loads it within seconds. | Nothing, unless it turns into Update pending. |
+| Update pending | RADIUS is still on an older snapshot after two minutes, so recent changes (including revocations) aren't enforced. | System health: is the RADIUS agent reporting? Any configuration error? |
+| Refresh overdue | The worker is running, but the snapshot hasn't been rebuilt in over an hour. | System health → Background jobs for failures. |
+| At risk | The snapshot isn't being refreshed: the worker is down, or directory data is out of date (sync failing, too old, or never run). RADIUS denies everyone when it expires; the dashboard shows when. | Start the worker, or fix the directory sync. |
+| Denying everyone | No snapshot yet, or it's past its limit: RADIUS fails closed for this tenant. | As for At risk. Recovery is automatic within seconds of a fresh snapshot. |
+| RADIUS stopped / not reporting / configuration rejected / not served by RADIUS | RADIUS itself can't serve the tenant. | System health and System log (source FreeRADIUS or RADIUS agent). |
+| Starting | The tenant was just activated; RADIUS picks it up within about 15 seconds. | Nothing. |
+| Not enforceable yet | Setup isn't finished. | The dashboard lists the steps. |
+| Suspended | Suspended on purpose; nobody can connect. | Reactivate in tenant settings. |
+
+The revocation list has its own item: it's rebuilt daily and valid for 72 hours, so under 48 hours left means
+rebuilds are failing (warning), and under 12 hours is critical, because RADIUS rejects every certificate from the CA
+once it expires. **PKI → Rebuild now** publishes a new one at once.
+
+## Remote syslog and backups
+
+- **"The server's certificate isn't trusted."** The syslog server's certificate isn't signed by a public CA: paste
+  the CA certificate that signed it into the destination. The host name you enter must match the certificate.
+- **"Connection refused" / "timed out".** Nothing is listening on that port, or a firewall blocks it. The worker
+  sends from the EasyEAP host.
+- **A destination keeps failing.** Messages wait in EasyEAP and are sent when it recovers (TCP and TLS). The System
+  log is kept 30 days; the audit trail and authentication events follow their own retention.
+- **A restore says the backup is from a newer version.** Upgrade this server to that version first.
+- **A restore can't regain CA access.** The backup came from an installation without recovery keys and is more than
+  32 days old. Use a more recent backup.
+
 ## Useful commands
 
 ```sh

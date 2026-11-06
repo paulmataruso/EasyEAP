@@ -188,6 +188,17 @@ validity and PKI health instead of being hard-coded.
 - **Then deploy to the demo instance.** Only proxy, API, worker and PKI are recreated, after the seal migration has
   been proven on the lab.
 
+## Outcome (2026-11-06)
+All sections are implemented and tested on the lab:
+- console and first-run restore (including on a fresh throwaway instance);
+- remote syslog to a test receiver over TLS, TCP and UDP, including authentication events from the e2e suite and
+  catch-up after the worker was stopped;
+- the 18 status findings below.
+
+The status logic now lives in one place, `posture.status_of()`: every enforcement chip, panel and list reads it,
+and it has unit tests for each state. Known gaps are listed in PROGRESS.md: root CRL renewal, and the 32-day
+restore window for pre-1.0 installations.
+
 ## Status audit findings (independent review, 2026-11-06)
 Each will be verified against the code before it is fixed. Ordered by severity.
 1. FreeRADIUS stopped while its agent heartbeats: "Enforcing" stays green and the queue says nothing. Add a critical
