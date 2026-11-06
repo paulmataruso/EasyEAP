@@ -1,5 +1,5 @@
 # EasyEAP proxy: builds the console + enrollment portal, serves them with nginx (non-root).
-FROM node:24-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /src
 RUN corepack enable && corepack prepare pnpm@12.15.0 --activate
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
