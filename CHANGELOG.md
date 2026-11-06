@@ -5,10 +5,12 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-06
+
 ### Changed
 
 - FreeRADIUS 3.2.10 (was 3.2.7) and nginx 1.31 (was 1.29) as the RADIUS and proxy base images. Verified with the
-  end-to-end EAP-TLS suite, the console smoke test, and on a running installation.
+  end-to-end EAP-TLS suite, the console smoke test, and with an iPhone on a live Cisco Catalyst 9800.
 - Dependabot proposes monthly, grouped minor and patch updates; major versions are upgraded by hand.
 
 ### Security
@@ -155,5 +157,6 @@ Verified end to end with a live Cisco Catalyst 9800 and an iPhone enrolled throu
 - Backups made by the preview (`.tar.gz.enc` or `.tar.gz.gpg`) can't be restored. Make a new backup from the
   console after upgrading.
 
-[Unreleased]: https://github.com/paulmataruso/EasyEAP/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/paulmataruso/EasyEAP/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/paulmataruso/EasyEAP/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/paulmataruso/EasyEAP/releases/tag/v1.0.0

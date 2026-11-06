@@ -1,6 +1,6 @@
 # Progress
 
-Status as of 2026-11-06 (release 1.0.0).
+Status as of 2026-11-06 (release 1.0.1).
 
 ## Complete
 

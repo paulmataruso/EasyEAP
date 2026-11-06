@@ -87,12 +87,16 @@ Put your certificate chain and key at `deploy/secrets/tls.crt` and `deploy/secre
 
 ## Upgrades
 
-Make a backup first (System health → Backup and restore → Create backup, then Download), then:
+Make a backup first (System health → Backup and restore → Create backup, then Download). Then check out the
+release you want from [Releases](https://github.com/paulmataruso/EasyEAP/releases), here 1.0.1, and rebuild:
 
 ```sh
-cd /opt/easyeap && git pull
-cd deploy && docker compose build && docker compose up -d
+cd /opt/easyeap && git fetch --tags && git checkout v1.0.1
+cd deploy && sed -i 's/^EASYEAP_VERSION=.*/EASYEAP_VERSION=1.0.1/' .env
+docker compose build && docker compose up -d
 ```
+
+`EASYEAP_VERSION` only names the images; System health shows the version that's actually running.
 
 Migrations run automatically when the API starts (under an advisory lock). RADIUS keeps authenticating from its
 local snapshot while the API restarts.
