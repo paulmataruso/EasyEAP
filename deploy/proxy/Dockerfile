@@ -7,7 +7,7 @@ RUN pnpm install --frozen-lockfile
 COPY frontend/ ./
 RUN pnpm build
 
-FROM nginxinc/nginx-unprivileged:1.29-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 COPY deploy/proxy/default.conf.template /etc/nginx/templates/default.conf.template
 COPY deploy/proxy/security-headers.conf deploy/proxy/proxy-params.conf /etc/nginx/snippets/
 COPY --from=build /src/dist /usr/share/nginx/html
