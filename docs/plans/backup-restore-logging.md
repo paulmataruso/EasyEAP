@@ -187,3 +187,41 @@ validity and PKI health instead of being hard-coded.
 - **Regression:** backend tests, frontend tests, `tests/e2e/run.sh`, console smoke.
 - **Then deploy to the demo instance.** Only proxy, API, worker and PKI are recreated, after the seal migration has
   been proven on the lab.
+
+## Status audit findings (independent review, 2026-11-06)
+Each will be verified against the code before it is fixed. Ordered by severity.
+1. FreeRADIUS stopped while its agent heartbeats: "Enforcing" stays green and the queue says nothing. Add a critical
+   `radius_stopped` item, and require `radius_running` and `config_ok` before showing "Enforcing".
+2. An expiring CRL never reaches the queue, although `allow_expired_crl = no` means every certificate is rejected.
+   Add a CRL posture item: warning under 48 h, critical under 12 h or unreadable.
+3. "Directory sync is failing" is shown whenever refreshes stop, even when the worker is down. Branch on
+   `refresh_blocked_by`.
+4. The "Enforcing" chip contradicts its panel (denying everyone, out of sync). Derive both from one function.
+   `snapshot_overdue` becomes critical past the deadline.
+5. The issuing CA chip is hard-coded "Online · signs certificates". Base it on CA expiry and PKI reachability.
+6. "Applied" compares versions only. Require agent online, FreeRADIUS running and the snapshot unexpired. Name
+   tenants missing from the RADIUS config (the agent reports served tenant IDs).
+7. An expired issuing CA is shown as a warning titled "expires within six months". Make it critical, "has expired".
+8. The Tenants page shows idle RADIUS as a fault. Use `radiusState()`.
+9. The tenant switcher uses a narrower health definition (`health.issues`). Use the posture queue.
+10. System health:
+    - every passing check is labelled "Running";
+    - the "Online" chip ignores failures;
+    - "configuration applied" is never compared;
+    - the PKI check only tests the seal, so an expired token passes.
+11. Setup and suspended tenants show a warn "Not loaded" in the snapshot list. Make it neutral, "Not served".
+12. Suspension is presented as "setup". Add a separate `tenant_suspended` item with a Reactivate action.
+13. "Can connect" ignores RADIUS enforcement health.
+14. A stale-but-not-failed directory, or one that has never synced, is unreported. Add `directory_stale`, and stop
+    sync intervals at or above the snapshot age limit.
+15. The frontend shows "Update pending" with no grace; the backend allows 2 minutes. Align them.
+16. Certificates: superseded ones show "Active", and the counts disagree. Add a "Renewed" marker and one definition.
+17. The audit verification claims removal is detected, but tail deletions can't be. Reword it.
+18. Minor:
+    - an expired RADIUS server certificate shows warn text;
+    - MFA "Off" is warn for owners although the queue calls it critical;
+    - CoA "awaiting reply" never times out;
+    - the portal's "finished on this computer" claim;
+    - no warning on the root CRL;
+    - `identity.enrolled` is never cleared;
+    - the root "Offline" chip.

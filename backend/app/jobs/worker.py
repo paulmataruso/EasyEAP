@@ -166,7 +166,11 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop)
     log.info("EasyEAP worker started")
     last_schedule = 0.0
+    from app.backup.engine import maintenance
     while not _stop:
+        if maintenance():  # a restore is replacing the database and PKI; resume when it is done
+            time.sleep(3)
+            continue
         try:
             if time.monotonic() - last_schedule > 30:
                 schedule()

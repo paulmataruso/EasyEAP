@@ -16,7 +16,10 @@ wait_for() {
 
 case "$role" in
   api)
-    wait_for python -c "import psycopg; from app.config import get_settings as g; psycopg.connect(g().database_owner_url.replace('postgresql+psycopg','postgresql')).close()"
+    # Wait for the database server (the maintenance database: an interrupted restore may have renamed ours aside).
+    wait_for python -c "import psycopg; from sqlalchemy.engine import make_url; from app.config import get_settings as g; u=make_url(g().database_owner_url); psycopg.connect(host=u.host, port=u.port or 5432, user=u.username, password=g().db_owner_password, dbname='postgres').close()"
+    # A restore interrupted by a restart is finished or rolled back before anything else touches the database.
+    python -m app.cli restore-recover
     # Migrations run as the schema owner under an advisory lock (see alembic/env.py).
     alembic upgrade head
     python -m app.cli bootstrap

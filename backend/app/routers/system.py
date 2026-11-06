@@ -19,7 +19,11 @@ router = APIRouter(prefix="/api", tags=["system"])
 
 @router.get("/health")
 def liveness(s: Session = Depends(db)) -> dict:
-    """Unauthenticated liveness for container health checks. Reveals nothing beyond up/down."""
+    """Unauthenticated liveness for container health checks. Reveals nothing beyond up/down. During a restore the
+    database is being replaced, which is expected: the API is alive, so it stays healthy."""
+    from app.backup.engine import maintenance
+    if maintenance():
+        return {"status": "maintenance"}
     s.execute(text("SELECT 1"))
     return {"status": "ok"}
 
