@@ -2,7 +2,18 @@
 
 EasyEAP controls who gets onto a network, so its failures must deny rather than permit, and its secrets must stay
 where they belong. This document describes the threat model, how keys and secrets are held, and the controls in
-the code. Report vulnerabilities privately to the maintainers. Don't open public issues for them.
+the code.
+
+## Reporting a vulnerability
+
+Report vulnerabilities privately through GitHub's
+[private vulnerability reporting](https://github.com/paulmataruso/EasyEAP/security/advisories/new). Don't open public
+issues for them. Include the version, what an attacker could do, and steps to reproduce if you have them. You'll get
+an acknowledgement, and a fix is coordinated with you before anything is disclosed.
+
+| Version | Supported with security fixes |
+|---|---|
+| 1.0.x | Yes |
 
 ## Threat model
 

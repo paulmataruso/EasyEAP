@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest something EasyEAP should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation and what's hard about it today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to happen?
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: Controllers, directory setup, number of tenants or devices, or other tools involved.
