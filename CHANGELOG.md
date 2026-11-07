@@ -83,6 +83,19 @@ versions follow [Semantic Versioning](https://semver.org/).
     replaced by recorders; renewals signed by the script's own code verify in EasyEAP. Not yet run on a real Windows 11 PC.
 - **Windows Group Policy guide** ([docs/windows-group-policy.md](docs/windows-group-policy.md)) and a Windows Group
   Policy dialog on the RADIUS screen with the CA certificates and the Wi-Fi and wired profiles to import.
+- **Switch audit (SNMP)**: EasyEAP reads a Cisco Catalyst's own view of its ports and 802.1X/MAB sessions and
+  compares it with what EasyEAP decided and sent ([docs/switch-audit.md](docs/switch-audit.md),
+  [plan and critique](docs/plans/switch-audit.md)).
+  - **Findings**: planned ports not protected or open before authentication when enforcing, devices authorized without
+    or despite EasyEAP, devices still connected after EasyEAP denied them (CoA missing), sessions outside the VLAN
+    EasyEAP sent, MAB EasyEAP has off, critical authentication, err-disabled ports, a replaced switch, and SNMP failures.
+    Two polls to open and two to resolve; acknowledge with a note; open ones in the needs-action queue.
+  - **SNMPv2c by default** with a generated community bound to a read-only view and an ACL, or **SNMPv3** (SHA-256 or
+    SHA-1, AES-128 or AES-256). The configuration block is generated; the credentials are shown once and stored
+    encrypted. Test connection checks which tables the switch answers before monitoring turns on.
+  - A new **`easyeap-collector`** container polls the switches (at most eight at once, every 15 minutes by default,
+    "Poll now"), with its own heartbeat in System health and its own source in the system log.
+  - **Enforce** uses the switch's polled session list instead of a pasted `show access-session` when it's recent.
 - **Group Policy autoenrollment (preview)**: domain PCs and the users who sign in to them get certificates from
   EasyEAP through Group Policy, as from AD CS, and Windows renews them
   ([docs/autoenrollment.md](docs/autoenrollment.md), [plan and critique](docs/plans/gpo-autoenrollment.md)).

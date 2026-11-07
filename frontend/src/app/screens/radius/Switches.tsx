@@ -21,6 +21,7 @@ import { Btn, Callout, Chip, CopyButton, EDialog, ESelect, ESwitch, ErrorState, 
 import { paths } from '../../routes'
 import { addressProblem } from './Controllers'
 import { Marked } from './Guide'
+import { SwitchAuditPanel } from './SwitchAudit'
 
 type SwitchVendor = (typeof SWITCH_VENDORS)[number]
 const reasonTitle = (code: string | null) => (code ? failureExplanations[code as FailureCode]?.title ?? code : null)
@@ -544,8 +545,9 @@ export function SwitchPanel({ client, settings }: { client: RadiusClient; settin
             </span>
           </p>
           <p className="ee-small ee-ink-3 mt-1">
-            Set in EasyEAP{p.mode_set_at ? ` on ${fmtDate(p.mode_set_at)}` : ''}{p.mode_set_by ? ` by ${p.mode_set_by}` : ''}. EasyEAP can’t read the switch:
-            check with <span className="ee-mono">{client.vendor === 'cisco-switch' ? (p.platform === 'classic' ? 'show authentication sessions' : 'show access-session') : 'the UniFi port settings'}</span>.
+            Set in EasyEAP{p.mode_set_at ? ` on ${fmtDate(p.mode_set_at)}` : ''}{p.mode_set_by ? ` by ${p.mode_set_by}` : ''}.
+            {client.monitoring?.enabled ? ' The switch audit below reads what the switch itself reports.' : <> EasyEAP can’t read the switch{client.vendor === 'cisco-switch' ? ' unless the switch audit is set up' : ''}:
+              check with <span className="ee-mono">{client.vendor === 'cisco-switch' ? (p.platform === 'classic' ? 'show authentication sessions' : 'show access-session') : 'the UniFi port settings'}</span>.</>}
             {client.wired_mode === 'monitor' && since !== null && since >= 14 && <span className="text-[var(--ee-warn-ink)]"> In monitor mode for {since} days.</span>}
           </p>
         </div>
@@ -564,6 +566,7 @@ export function SwitchPanel({ client, settings }: { client: RadiusClient; settin
         </dl>
       )}
       {MAB_VENDORS.includes(client.vendor) && <MabRow client={client} onChange={() => setMabChange(true)} />}
+      {client.vendor === 'cisco-switch' && <SwitchAuditPanel client={client} />}
       {view && (guide.isLoading ? <LoadingBlock rows={5} label="Loading the configuration" />
         : guide.error ? <ErrorState error={guide.error} onRetry={() => guide.refetch()} />
           : guide.data ? <WiredGuideBody guide={guide.data} settings={settings} secretOf={client.name} /> : null)}
@@ -701,8 +704,27 @@ function SessionsCheckView({ client }: { client: RadiusClient }) {
   const { tid } = useTenant()
   const id = useId()
   const check = useCheckSessions(tid)
+  const readiness = useReadiness(tid, client.id)
   const [text, setText] = useState('')
+  const [paste, setPaste] = useState(false)
   const cmd = client.wired_profile?.platform === 'classic' ? 'show authentication sessions' : 'show access-session'
+  const polled = readiness.data?.switch_sessions
+  if (polled && !paste) {
+    return (
+      <div className="space-y-2">
+        <p className="ee-small ee-ink-3">From the switch audit’s latest poll, {fmtDateTime(polled.at)}. <button type="button" className="underline decoration-[var(--ee-line-3)] underline-offset-2" onClick={() => setPaste(true)}>Paste the session list instead</button></p>
+        {polled.would_lose_access.length === 0
+          ? <Callout tone="valid" title={`All ${polled.sessions} session${polled.sessions === 1 ? ' is' : 's are'} authorized`}>Nothing the switch reported would lose access.</Callout>
+          : (
+            <Callout tone="crit" title={`${polled.would_lose_access.length} of ${polled.sessions} would lose access`}>
+              <ul className="mt-1 space-y-0.5">{polled.would_lose_access.slice(0, 50).map((s) => <li key={`${s.interface}-${s.mac}`} className="ee-mono text-[12.5px]">{s.interface} · {s.mac} · {s.status}</li>)}</ul>
+              {polled.would_lose_access.length > 50 && <p className="mt-1">…and {polled.would_lose_access.length - 50} more.</p>}
+              <p className="mt-2">Move those ports to “leave alone” (Edit port plan), or enroll the devices, before you enforce.</p>
+            </Callout>
+          )}
+      </div>
+    )
+  }
   const r = check.data
   return (
     <div className="space-y-3">

@@ -102,6 +102,8 @@ export interface RadiusClient {
   /** Rollout mode EasyEAP was told (it can't read the switch); null when not registered for wired. Clients from
    * before wired 802.1X have no port plan and are "enforce": EasyEAP sends VLANs on wired requests as it always did. */
   wired_mode: 'monitor' | 'enforce' | null
+  /** Switch audit over SNMP (Cisco Catalyst): credentials stored, and polling on. Absent from older API versions. */
+  monitoring?: { set_up: boolean; enabled: boolean }
 }
 
 /** A switch or controller registered for wired 802.1X. */
@@ -175,9 +177,11 @@ export interface ReadinessDevice { mac: string | null; username: string | null; 
 /** MAC authentication on this switch in the readiness window. Unknown devices are logged once an hour each. */
 export interface MabHealth { enabled: boolean; answered: number; accepted: number; unknown: number; last_at: string | null; unknown_action: 'block' | 'vlan'; unknown_vlan: number | null }
 export interface ReadinessPort { port: string; devices: ReadinessDevice[]; accepted: number; rejected: number }
-export interface Readiness { hours: number; ports: ReadinessPort[]; events: number; would_assign_vlans: number[]; rejected_devices: number; session_command: string; mab?: MabHealth | null }
 export interface SwitchSession { interface: string; mac: string; method: string; domain: string; status: string; authorized: boolean }
 export interface SessionsCheck { sessions: number; authorized: number; would_lose_access: SwitchSession[]; parsed: boolean }
+export interface Readiness { hours: number; ports: ReadinessPort[]; events: number; would_assign_vlans: number[]; rejected_devices: number; session_command: string; mab?: MabHealth | null
+  /** The switch's own session list from the switch audit's latest poll (when monitoring is on and recent). */
+  switch_sessions?: (Omit<SessionsCheck, 'parsed'> & { at: string }) | null }
 
 export interface ActivityEvent { id: string; at: string; result: 'accept' | 'reject'; reason_code: string | null; username: string | null; calling_station_id: string | null;
   network: Network | null; nas_port_id: string | null; vlan_id: number | null; monitor: boolean; explanation: { title: string; explanation: string; fix: string } | null }

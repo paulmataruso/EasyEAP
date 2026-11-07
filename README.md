@@ -119,6 +119,18 @@ TACACS+, with roles, an admin log of every command, and the device's local accou
 
 </td>
 </tr>
+<tr>
+<td width="50%" valign="top">
+
+**A switch audit that checks the switch**<br>
+EasyEAP reads what each Cisco switch reports over SNMP (v2c, or v3 encrypted) and compares it with its own answers:
+unprotected ports, devices it never accepted or has since denied, sessions in the wrong VLAN.
+
+</td>
+<td width="50%" valign="top">
+
+</td>
+</tr>
 </table>
 
 ## A tour of the console
@@ -274,6 +286,7 @@ issue.
 | [docs/controllers/](docs/controllers/README.md) | Cisco Catalyst 9800, Cisco AireOS, UniFi and Catalyst switch configuration |
 | [docs/enrollment.md](docs/enrollment.md) | Issuing certificates and what users do on each platform |
 | [docs/device-administration.md](docs/device-administration.md) | Switch and controller logins with AD and EasyEAP accounts over TACACS+ |
+| [docs/switch-audit.md](docs/switch-audit.md) | The switch audit: what Cisco switches report over SNMP compared with EasyEAP's decisions |
 | [docs/windows-setup.md](docs/windows-setup.md) | The Windows setup file: one download that sets up a PC, with computer certificates and renewal |
 | [docs/windows-group-policy.md](docs/windows-group-policy.md) | Setting up domain-joined Windows PCs for 802.1X with Group Policy |
 | [docs/autoenrollment.md](docs/autoenrollment.md) | Group Policy autoenrollment (preview): certificates for domain PCs and users from EasyEAP, as from AD CS |

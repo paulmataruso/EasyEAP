@@ -67,7 +67,9 @@ def client_out(c: m.RadiusClient) -> dict:
             "networks": networks, "wired_profile": profile or None,
             # Monitor mode is what EasyEAP was told; it can't read the switch. Without a port plan (a client registered
             # before wired 802.1X) EasyEAP sends VLANs on wired requests as it always did: "enforce".
-            "wired_mode": (profile.get("mode") or "enforce") if "wired" in networks else None}
+            "wired_mode": (profile.get("mode") or "enforce") if "wired" in networks else None,
+            # Switch audit (SNMP): set up, and polling.
+            "monitoring": {"set_up": bool((c.monitoring or {}).get("host") and c.snmp_secret_ct), "enabled": bool((c.monitoring or {}).get("enabled"))}}
 
 
 # The agent polls every 15 s and FreeRADIUS starts in seconds, so a tenant activated longer ago than this should be served.
@@ -537,8 +539,12 @@ def readiness(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius:rea
     vlans = sorted({d["vlan_id"] for p in out for d in p["devices"] if d["vlan_id"] and d["result"] == "accept"})
     profile = c.wired_profile or {}
     mab_rows = [e for e in rows if e.method in ("mab", "mab-eap") and e.reason_code != "mab_not_enabled"]
+    from app.switchaudit.service import polled_sessions
     return {"hours": hours, "ports": out, "events": len(rows), "would_assign_vlans": vlans,
             "rejected_devices": sum(p["rejected"] for p in out), "session_command": wired.session_command(c.wired_profile),
+            # The switch's own session list from the switch audit's latest poll, when monitoring is on: no paste needed.
+            "switch_sessions": polled_sessions(s.get(m.SwitchState, c.id), int((c.monitoring or {}).get("interval_minutes") or 15))
+            if (c.monitoring or {}).get("enabled") else None,
             # MAC authentication health: requests answered in the window (unknown devices are logged once an hour each).
             "mab": {"enabled": bool(profile.get("mab")), "answered": len(mab_rows), "accepted": sum(e.result == "accept" for e in mab_rows),
                     "unknown": len({e.mac for e in mab_rows if e.reason_code == "mac_unknown"}),

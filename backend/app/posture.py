@@ -276,6 +276,24 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
                 "enforce when every device that should connect is accepted.", "Review the switch", f"radius:client:{c.id}",
                 affected=0, impact_at=None, source_at=since)
 
+    # Switch audit: open findings nobody has acknowledged, one item per switch (docs/plans/switch-audit.md §7).
+    from app.switchaudit.findings import TEXT as AUDIT_TEXT
+    open_rows = s.execute(select(m.SwitchFinding, m.RadiusClient.name).join(m.RadiusClient, m.RadiusClient.id == m.SwitchFinding.client_id)
+                          .where(m.SwitchFinding.tenant_id == t.id, m.SwitchFinding.resolved_at.is_(None), m.SwitchFinding.opened_at.is_not(None),
+                                 m.SwitchFinding.acknowledged_at.is_(None))
+                          .order_by(m.SwitchFinding.opened_at)).all()
+    by_switch: dict[uuid.UUID, list] = {}
+    for f, name in open_rows:
+        by_switch.setdefault(f.client_id, []).append((f, name))
+    for cid, rows in by_switch.items():
+        crit = [f for f, _ in rows if f.severity == "critical"]
+        top = (crit or [f for f, _ in rows])[0]
+        n = len(rows)
+        where = f" ({top.port})" if top.port else ""
+        add(f"switch_audit:{cid}", "critical" if crit else "warning", f"{rows[0][1]}: {n} switch audit finding{'s' if n != 1 else ''}",
+            AUDIT_TEXT.get(top.kind, ("", ""))[0] + where + (f" And {n - 1} more." if n > 1 else ""),
+            "Review the switch audit", f"radius:client:{cid}", affected=0, impact_at=None, source_at=top.opened_at)
+
     soon = now + timedelta(days=ps.expiry_warning_days)
     exp = s.execute(select(func.count(), func.min(m.Certificate.not_after), func.count(distinct(m.Certificate.identity_id))).where(
         m.Certificate.tenant_id == t.id, m.Certificate.status == "active", m.Certificate.not_after > now, m.Certificate.not_after <= soon,

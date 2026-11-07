@@ -16,6 +16,8 @@ export const qk = {
   policy: (tid: string) => ['t', tid, 'policy'] as const,
   /** GET /api/tenants/:tid/radius (raw) */
   radius: (tid: string) => ['t', tid, 'radius'] as const,
+  /** GET /api/tenants/:tid/radius/clients/:id/monitoring (raw): the switch audit */
+  switchAudit: (tid: string, clientId: string) => ['t', tid, 'radius', 'monitoring', clientId] as const,
   /** GET /api/tenants/:tid/mac (raw): the MAC allow list */
   mac: (tid: string) => ['t', tid, 'mac'] as const,
   /** GET /api/tenants/:tid/device-admin (raw), plus its config and events under the same prefix */

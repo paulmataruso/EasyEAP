@@ -111,6 +111,10 @@ Status as of 2026-11-06 (release 1.0.1).
   Kerberos client written from MS-XCEP and MS-WSTEP (channel binding, both request forms, refusals), through the real
   proxy, CA and FreeRADIUS. Windows' own parsing of the policy and of the CMC response, the TPM-or-software provider
   fallback and the sign-in-screen connection are unverified ([docs/autoenrollment.md](docs/autoenrollment.md)).
+- **The switch audit is not verified on switch hardware.** It's tested against net-snmp's agent (SNMPv2c and SNMPv3
+  SHA-256/AES-128) serving Catalyst-like CISCO-AUTH-FRAMEWORK-MIB and CISCO-ERR-DISABLE-MIB tables. Which IOS-XE
+  releases implement those tables, and the cost of walking the session table on large stacks, are unverified
+  ([docs/switch-audit.md](docs/switch-audit.md)).
 - **Wired 802.1X gaps.** No IP-phone voice domain, no
   merge with an existing 802.1X configuration on a switch, no profiling or automatic approval for MAC authentication.
 - **Directory sources** other than Active Directory over LDAPS (Entra ID, Google Workspace) are not supported.
@@ -135,8 +139,8 @@ Status as of 2026-11-06 (release 1.0.1).
 ## Planned
 
 - SCEP for MDM-managed devices
-- Switch audit: SNMP and syslog from switches to check that ports enforce 802.1X as configured
-  ([docs/plans/switch-audit.md](docs/plans/switch-audit.md))
+- Switch audit v1.1: syslog from switches (allow-listed messages, shown as "the switch says"), then UniFi through the
+  UniFi Network application ([docs/plans/switch-audit.md](docs/plans/switch-audit.md) §9, §11)
 - Group Policy autoenrollment: key attestation for TPM keys, and confirming it on real Windows 11 PCs
 - Device administration phase 2: TACACS+ over TLS, command authorization, other vendors
 - RadSec

@@ -123,6 +123,30 @@ def access_ranges(interfaces: str, exclude: str = "") -> list[PortRange]:
     return out
 
 
+_PORTNAME = re.compile(r"^(?P<type>[A-Za-z][A-Za-z-]*?)\s*(?P<num>\d{1,4}(?:/\d{1,4}){0,3})$")
+
+
+def canonical_port(name: str | None) -> str:
+    """One spelling per port, shared by the port plan, RADIUS's NAS-Port-Id and SNMP's ifName: `Gi1/0/5`,
+    `gi1/0/5` and `GigabitEthernet1/0/5` are all `GigabitEthernet1/0/5`. Other interfaces come back as given."""
+    raw = (name or "").strip()
+    mt = _PORTNAME.match(raw)
+    kind = PORT_TYPES.get(mt.group("type").lower()) if mt else None
+    return f"{kind}{mt.group('num')}" if mt and kind else raw
+
+
+def planned_ports(profile: dict | None) -> set[str]:
+    """The canonical names of the ports a switch's plan configures (access ports minus those left alone)."""
+    p = profile or {}
+    if not p.get("interfaces"):
+        return set()
+    try:
+        ranges = access_ranges(p["interfaces"], p.get("exclude") or "")
+    except WiredConfigError:
+        return set()
+    return {f"{kind}{prefix}{n}" for r in ranges for kind, prefix, n in r.ports()}
+
+
 def interface_range_lines(ranges: list[PortRange]) -> list[str]:
     """`interface range` commands of at most five ranges each."""
     return ["interface range " + ", ".join(r.text() for r in ranges[i:i + RANGES_PER_LINE]) for i in range(0, len(ranges), RANGES_PER_LINE)]

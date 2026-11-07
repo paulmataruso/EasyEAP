@@ -50,6 +50,16 @@ def health(p: Principal = Depends(platform("platform:read")), s: Session = Depen
     alive = bool(last and now - last < timedelta(minutes=3))
     check("worker", alive, "valid" if alive else "crit", "Running" if alive else "Not running",
           "Background jobs running" if alive else "No recent worker heartbeat", last_seen_at=last.isoformat() if last else None)
+    # The switch audit's collector: shown once any switch has monitoring on (it has nothing to do before that).
+    monitored = s.scalar(select(func.count()).select_from(m.RadiusClient).where(m.RadiusClient.monitoring["enabled"].as_boolean().is_(True))) or 0
+    if monitored:
+        cb = s.get(m.PlatformSetting, "collector_heartbeat")
+        clast = datetime.fromisoformat(cb.value["at"]) if cb and cb.value.get("at") else None
+        calive = bool(clast and now - clast < timedelta(minutes=3))
+        check("collector", calive, "valid" if calive else "crit", "Running" if calive else "Not running",
+              f"Polling {monitored} switch{'es' if monitored != 1 else ''} over SNMP" if calive else
+              "No recent collector heartbeat: switches aren't being audited. Check the easyeap-collector container.",
+              last_seen_at=clast.isoformat() if clast else None)
     from app.logs import syslog
     dests = [d for d in syslog.load_destinations(s) if d.enabled]
     if dests:

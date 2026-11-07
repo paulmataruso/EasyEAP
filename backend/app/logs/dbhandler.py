@@ -19,7 +19,7 @@ LEVELS = {logging.DEBUG: "debug", logging.INFO: "info", logging.WARNING: "warnin
 MAX_QUEUE = 5000
 MAX_MESSAGE = 4000
 BATCH = 500
-SOURCES = ("api", "worker", "radius-agent", "freeradius")
+SOURCES = ("api", "worker", "collector", "radius-agent", "freeradius")
 
 
 def wanted(record: logging.LogRecord) -> bool:

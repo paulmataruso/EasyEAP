@@ -17,6 +17,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -417,11 +418,17 @@ class RadiusClient(Base):
     tacacs_key_set_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     tacacs_prev_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
     tacacs_prev_until: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    # Switch audit (docs/plans/switch-audit.md): how to poll the switch over SNMP (app/switchaudit/service.py
+    # MonitoringIn; no secrets) and the community or SNMPv3 keys as one Transit-encrypted JSON object.
+    monitoring: Mapped[dict] = mapped_column(JSONB, default=dict)
+    snmp_secret_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AuthEvent(Base):
     __tablename__ = "auth_events"
-    __table_args__ = (Index("ix_auth_events_tenant_network_at", "tenant_id", "network", "at"),)
+    __table_args__ = (Index("ix_auth_events_tenant_network_at", "tenant_id", "network", "at"),
+                      # The switch audit's "EasyEAP's latest answer for this MAC from this switch".
+                      Index("ix_auth_events_client_mac_at", "nas_client_id", "mac", "at"))
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
     event_uid: Mapped[str] = mapped_column(String(64), unique=True)  # dedupe key from the agent
@@ -624,6 +631,55 @@ class AdminEvent(Base):
     port: Mapped[str | None] = mapped_column(String(64), nullable=True)
     task_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class SwitchState(Base):
+    """The latest SNMP poll of one switch (replaced by every poll), and when to poll it next."""
+    __tablename__ = "switch_states"
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radius_clients.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    polled_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    error_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)  # timeout | auth | protocol | config | too_big
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failures: Mapped[int] = mapped_column(Integer, default=0)  # consecutive failed polls
+    last_ok_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    facts: Mapped[dict] = mapped_column(JSONB, default=dict)
+    capabilities: Mapped[dict] = mapped_column(JSONB, default=dict)
+    ports: Mapped[list] = mapped_column(JSONB, default=list)
+    sessions: Mapped[list] = mapped_column(JSONB, default=list)
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    slow: Mapped[bool] = mapped_column(Boolean, default=False)  # the last poll took over half the interval: polled half as often
+    next_poll_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    poll_requested_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)  # "Poll now"
+
+
+class SwitchFinding(Base):
+    """An audit finding (app/switchaudit/findings.py). Open while resolved_at is NULL: one per switch, kind, port and MAC."""
+    __tablename__ = "switch_findings"
+    __table_args__ = (Index("uq_switch_findings_open", "client_id", "kind", "port", "mac", unique=True,
+                            postgresql_where=text("resolved_at IS NULL")),
+                      Index("ix_switch_findings_tenant_resolved", "tenant_id", "resolved_at"))
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radius_clients.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    severity: Mapped[str] = mapped_column(String(8))  # critical | warning
+    port: Mapped[str] = mapped_column(String(64), default="")
+    mac: Mapped[str] = mapped_column(String(12), default="")
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+    detail_hash: Mapped[str] = mapped_column(String(32), default="")
+    first_seen_at: Mapped[datetime] = mapped_column(TS)
+    last_seen_at: Mapped[datetime] = mapped_column(TS)
+    seen_count: Mapped[int] = mapped_column(Integer, default=1)
+    missing_count: Mapped[int] = mapped_column(Integer, default=0)
+    opened_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)  # NULL: seen once, not confirmed yet
+    resolved_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    ack_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ack_hash: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class AgentStatus(Base):

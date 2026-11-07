@@ -1,5 +1,5 @@
 #!/bin/sh
-# EasyEAP api/worker entrypoint.
+# EasyEAP api/worker/collector entrypoint.
 set -eu
 role="${1:-api}"
 
@@ -30,6 +30,12 @@ case "$role" in
     # Wait until the api has migrated and bootstrapped OpenBao.
     wait_for test -f /var/lib/easyeap/secrets/openbao-api-token
     exec python -m app.jobs.worker
+    ;;
+  collector)
+    # The switch audit's SNMP poller (app/switchaudit/collector.py): same database and OpenBao access as the worker.
+    wait_for python -c "import psycopg; from app.config import get_settings as g; psycopg.connect(g().database_url.replace('postgresql+psycopg','postgresql')).close()"
+    wait_for test -f /var/lib/easyeap/secrets/openbao-api-token
+    exec python -m app.switchaudit.collector
     ;;
   *)
     exec "$@"

@@ -9,12 +9,14 @@
 # switch in monitor mode, readiness evidence, enforce, VLAN mapping on switch ports, wrong-network refusals; MAC
 # authentication (Cisco MAB and UniFi MAC-Based): the allow list, "Seen, not allowed", the Enforce gate, VLANs, block;
 # the wrong-secret diagnosis, wired enrollment packages and the Windows wired kit; device administration (TACACS+):
-# switch logins with AD groups and EasyEAP accounts, the Admin log, key rotation, break-glass.
+# switch logins with AD groups and EasyEAP accounts, the Admin log, key rotation, break-glass; the switch audit (SNMP
+# from a pretend Catalyst: every finding, hysteresis, acknowledgement, a replaced switch, wrong keys, Poll now, v2c).
 #
 #   E2E_DEPLOY_DIR=<dir>   a deployment directory other than deploy/ (COMPOSE_PROJECT_NAME and COMPOSE_FILE are honoured)
 #   E2E_WIRED=0            skip the wired 802.1X steps (a build from before wired 802.1X)
 #   E2E_ADMIN=0            skip the device-administration (TACACS+) steps (a build from before device administration)
 #   E2E_WINSETUP=0         skip the Windows setup steps (a build from before the Windows setup)
+#   E2E_AUDIT=0            skip the switch audit steps (a build from before the switch audit)
 set -uo pipefail
 shopt -s lastpipe   # `… | jok` runs jok in this shell, so its PASS/FAIL counts
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -593,6 +595,112 @@ pc computer 'PC-AE02$' pc-ae02 '{"dns": "dc1.lab.easyeap.test"}' | jok "PC-AE02 
   'd["notes"].get("ces_status") == 500 and "match its account name" in d["notes"]["ces_fault"]["reason"]'
 drive call PUT /autoenroll '{"enabled": false, "computers": true, "users": true, "computer_group_id": null, "require_channel_binding": true, "response_format": "unsigned"}' >/dev/null
 pc cep 'PC-AE01$' pc-ae01 | jok "turned off: EasyEAP doesn't answer Group Policy" 'd["notes"]["status"] == 404'
+fi
+
+
+if [ "${E2E_AUDIT:-1}" != 0 ] && [ -n "${SW1_ID:-}" ]; then
+step "11d. Switch audit: SNMP from a pretend Catalyst, findings against EasyEAP's own answers"
+LABSW="$DC exec -T easyeap-lab-switch"
+LABSW_IP="$(ip_of "$($DC ps -q easyeap-lab-switch)")"
+# dataset <json spec> — what the pretend switch reports (tests/e2e/lab_switch.py)
+dataset() { python3 "$ROOT/tests/e2e/lab_switch.py" "$1" | $LABSW sh -c 'cat > /lab/data/new.json && mv /lab/data/new.json /lab/data/dataset.json'; }
+spoll() { $DC exec -T easyeap-collector python -m app.switchaudit.collector --once "$SW1_ID" 2>/dev/null | tail -1; }
+SCENE='{"ports": {"2": {"open": true}, "3": {"control": 3}}, "errdis": {"10": 2}, "sessions": [
+  {"port": 1, "mac": "02:00:00:00:11:01", "vlan": 220, "user": "nina"},
+  {"port": 4, "mac": "02:00:00:00:99:01"},
+  {"port": 5, "mac": "02:00:00:00:11:03"},
+  {"port": 6, "mac": "02:00:00:00:11:02", "vlan": 999},
+  {"port": 8, "mac": "02:00:00:00:10:08", "method": "mab"},
+  {"port": 9, "mac": "02:00:00:00:99:02", "critical": 60},
+  {"port": 11, "mac": "02:00:00:00:99:03", "status": 5}]}'
+must "write the switch's dataset" dataset "$SCENE"
+# A MAB device EasyEAP accepted, then blocked without the switch hearing of it (no CoA on this lab switch).
+T5="$(lab now)"
+mexpect "camera 02:00:00:00:10:08 on the allow list: accepted (monitor mode)" "accept none" "$SW1" "$SW1_SECRET" 020000001008
+CAM_ID="$(drive call GET /mac | python3 -c 'import json,sys; print(next(x["id"] for x in json.load(sys.stdin)["body"]["devices"] if x["mac"] == "02:00:00:00:10:08"))')"
+event "the camera's accept is logged" "$T5" "e['method'] == 'mab' and e['device_mac'] == '020000001008' and e['result'] == 'accept'"
+drive call PUT "/mac/devices/$CAM_ID" '{"enabled": false}' | jok "camera blocked on the allow list" 'd["status"] == 200'
+drive call POST "/radius/clients/$SW1_ID/wired-mode" '{"mode": "enforce", "confirmed": true}' | jok "lab-access-1 enforcing" 'd["status"] == 200'
+
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "not set up yet; the switch's RADIUS address offered as the SNMP address" \
+  'd["status"] == 200 and not d["body"]["monitoring"]["set_up"] and d["body"]["default_host"] == "'"$SW1_IP"'" and d["body"]["config"] is None'
+drive call POST "/radius/clients/$SW2_ID/monitoring/setup" '{"host": "10.0.0.9"}' | jok "a UniFi switch can't be audited over SNMP" 'd["status"] == 400'
+drive call POST "/radius/clients/$SW1_ID/monitoring/setup" '{"host": "127.0.0.1"}' | jok "a loopback address is refused, naming the field" 'd["status"] == 422 and d["body"]["detail"]["field"] == "host"'
+drive call POST "/radius/clients/$SW1_ID/monitoring/setup" "{\"host\": \"$LABSW_IP\", \"version\": \"v3\", \"auth\": \"sha\", \"priv\": \"aes256\"}" \
+  | jok "AES-256 with SHA-1 is refused" 'd["status"] == 422 and d["body"]["detail"]["field"] == "priv"'
+SETUP="$(drive call POST "/radius/clients/$SW1_ID/monitoring/setup" "{\"host\": \"$LABSW_IP\", \"version\": \"v3\", \"interval_minutes\": 15}")"
+echo "$SETUP" | jok "SNMPv3 set up: keys shown once, the block has placeholders, monitoring off until tested" \
+  'd["status"] == 200 and len(d["body"]["credentials"]["auth_key"]) == 24 and d["body"]["credentials"]["auth_key"] not in d["body"]["config"] and "snmp-server user easyeap EASYEAP v3 auth sha-2 256 <authentication key> priv aes 128 <privacy key>" in d["body"]["config"] and not d["body"]["monitoring"]["enabled"]'
+AUTHK="$(echo "$SETUP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"]["credentials"]["auth_key"])')"
+PRIVK="$(echo "$SETUP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"]["credentials"]["priv_key"])')"
+drive call POST "/radius/clients/$SW1_ID/monitoring/test" | jok "Test connection before the switch is configured: no answer" 'd["status"] == 200 and not d["body"]["ok"] and d["body"]["error_kind"] in ("timeout", "auth")'
+must "configure the lab switch (SNMPv3 SHA-256/AES-128)" $LABSW /lab/configure.sh - easyeap "$AUTHK" "$PRIVK" SHA-256 AES
+sleep 2
+drive call POST "/radius/clients/$SW1_ID/monitoring/test" | jok "Test connection: the model, IOS-XE version and serial, the 802.1X tables answer; monitoring on" \
+  'd["body"]["ok"] and d["body"]["facts"]["model"] == "C9300-48P" and d["body"]["facts"]["version"] == "17.9.4a" and d["body"]["facts"]["serial"] == "FOC1234X0AB" and d["body"]["capabilities"] == {"caf": True, "errdisable": True} and d["body"]["monitoring"]["enabled"]'
+spoll | jok "the collector polls the switch: 24 ports, 7 sessions" 'd["ok"] and d["ports"] == 24 and d["sessions"] == 7'
+spoll >/dev/null
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "after two polls: every staged finding is open, and nothing for nina's correct session or the excluded uplink" \
+  '{(f["kind"], f["port"], f["mac"]) for f in d["body"]["findings"]} == {("open_access_in_enforce", "GigabitEthernet1/0/2", None), ("port_not_covered", "GigabitEthernet1/0/3", None), ("authorized_without_easyeap", "GigabitEthernet1/0/4", "020000009901"), ("authorized_despite_reject", "GigabitEthernet1/0/5", "020000001103"), ("vlan_mismatch", "GigabitEthernet1/0/6", "020000001102"), ("authorized_after_deny", "GigabitEthernet1/0/8", "020000001008"), ("critical_auth", "GigabitEthernet1/0/9", "020000009902"), ("err_disabled", "GigabitEthernet1/0/10", None)}'
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "severities and details: the VLAN EasyEAP sent, why the camera is denied, the err-disable cause; the polled sessions are stored" \
+  '(lambda f: f["vlan_mismatch"]["detail"]["sent"] == 220 and f["vlan_mismatch"]["detail"]["vlan"] == 999 and f["authorized_after_deny"]["detail"]["reason"] == "blocked on the MAC allow list" and f["err_disabled"]["detail"]["cause"] == "BPDU guard" and f["authorized_despite_reject"]["severity"] == "critical" and f["port_not_covered"]["severity"] == "critical")({x["kind"]: x for x in d["body"]["findings"]}) and len(d["body"]["state"]["sessions"]) == 7 and d["body"]["state"]["facts"]["name"] == "lab-sw1"'
+drive call GET "/radius/clients/$SW1_ID/readiness" | jok "readiness uses the switch's own sessions: 7, one not authorized" \
+  'd["body"]["switch_sessions"]["sessions"] == 7 and d["body"]["switch_sessions"]["authorized"] == 6 and [r["interface"] for r in d["body"]["switch_sessions"]["would_lose_access"]] == ["GigabitEthernet1/0/11"]'
+drive call GET /dashboard | jok "the dashboard lists the switch's findings as critical" \
+  'any(q["code"] == "switch_audit:'"$SW1_ID"'" and q["severity"] == "critical" for q in d["body"]["queue"])'
+VM_ID="$(drive call GET "/radius/clients/$SW1_ID/monitoring" | python3 -c 'import json,sys; print(next(f["id"] for f in json.load(sys.stdin)["body"]["findings"] if f["kind"] == "vlan_mismatch"))')"
+drive call POST "/radius/clients/$SW1_ID/monitoring/findings/$VM_ID/ack" '{"note": "VLAN 999 is the lab quarantine"}' \
+  | jok "acknowledged with a note" 'd["status"] == 200 and d["body"]["finding"]["ack_note"] == "VLAN 999 is the lab quarantine" and d["body"]["finding"]["acknowledged_by"]'
+drive call GET /radius/switch-audit | jok "the summary counts open findings nobody acknowledged (3 critical, 4 warnings)" \
+  'd["body"]["switches"][0]["critical"] == 3 and d["body"]["switches"][0]["warning"] == 4'
+
+must "fix the ports on the switch" dataset "$(echo "$SCENE" | python3 -c 'import json,sys; s=json.load(sys.stdin); s["ports"]={}; print(json.dumps(s))')"
+spoll >/dev/null; spoll >/dev/null
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "two clean polls later the port findings are resolved; the acknowledged one stays acknowledged" \
+  '(lambda k: "open_access_in_enforce" not in k and "port_not_covered" not in k and k["vlan_mismatch"]["acknowledged_at"])({f["kind"]: f for f in d["body"]["findings"]}) and {f["kind"] for f in d["body"]["resolved"]} >= {"open_access_in_enforce", "port_not_covered"}'
+
+must "replace the switch" dataset "$(echo "$SCENE" | python3 -c 'import json,sys; s=json.load(sys.stdin); s["ports"]={}; s["serial"]="FOC9999Z1ZZ"; print(json.dumps(s))')"
+spoll >/dev/null
+SC_ID="$(drive call GET "/radius/clients/$SW1_ID/monitoring" | python3 -c 'import json,sys; print(next((f["id"] for f in json.load(sys.stdin)["body"]["findings"] if f["kind"] == "switch_changed"), ""))')"
+[ -n "$SC_ID" ] && ok "a different serial number at the switch's address: switch_changed after one poll" || bad "switch_changed not raised"
+drive call POST "/radius/clients/$SW1_ID/monitoring/findings/$SC_ID/ack" '{"note": "replaced under RMA"}' | jok "acknowledging accepts the new switch" 'd["status"] == 200 and d["body"]["finding"]["resolved_at"]'
+spoll >/dev/null
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "the new serial is pinned: no new switch_changed" \
+  'd["body"]["monitoring"]["pinned"]["serial"] == "FOC9999Z1ZZ" and not any(f["kind"] == "switch_changed" for f in d["body"]["findings"])'
+
+must "change the key on the switch" $LABSW /lab/configure.sh - easyeap "wrong-$AUTHK" "$PRIVK" SHA-256 AES
+sleep 2
+spoll | jok "polling with a key the switch doesn't accept fails as an authentication error" 'not d["ok"] and d["error_kind"] == "auth"'
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "snmp_auth is open at once; the session findings stay as they were (no evidence either way)" \
+  '{"snmp_auth", "authorized_despite_reject"} <= {f["kind"] for f in d["body"]["findings"]}'
+must "restore the key" $LABSW /lab/configure.sh - easyeap "$AUTHK" "$PRIVK" SHA-256 AES
+sleep 2
+spoll | jok "polling works again" 'd["ok"]'
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "snmp_auth resolved by one good poll" '"snmp_auth" not in {f["kind"] for f in d["body"]["findings"]}'
+
+BEFORE="$(drive call GET "/radius/clients/$SW1_ID/monitoring" | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"]["state"]["polled_at"])')"
+drive call POST "/radius/clients/$SW1_ID/monitoring/poll" | jok "Poll now: accepted" 'd["status"] == 202'
+drive call POST "/radius/clients/$SW1_ID/monitoring/poll" | jok "Poll now again at once: refused" 'd["status"] == 429'
+polled=""
+for _ in $(seq 1 20); do
+  polled="$(drive call GET "/radius/clients/$SW1_ID/monitoring" | python3 -c 'import json,sys; b=json.load(sys.stdin)["body"]; print(b["state"]["polled_at"] if not b["poll_requested_at"] else "")')"
+  [ -n "$polled" ] && [ "$polled" != "$BEFORE" ] && break
+  sleep 3
+done
+[ -n "$polled" ] && [ "$polled" != "$BEFORE" ] && ok "the collector service picked up Poll now" || bad "Poll now wasn't picked up by the collector (last poll $polled)"
+
+V2="$(drive call POST "/radius/clients/$SW1_ID/monitoring/setup" "{\"host\": \"$LABSW_IP\", \"version\": \"v2c\"}")"
+echo "$V2" | jok "switching to SNMPv2c: a new community, and the lines that retire the v3 user" \
+  'len(d["body"]["credentials"]["community"]) == 24 and "no snmp-server user easyeap EASYEAP v3" in d["body"]["retire"] and "snmp-server community <community> view EASYEAP-RO RO EASYEAP-SNMP" in d["body"]["config"]'
+COMM="$(echo "$V2" | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"]["credentials"]["community"])')"
+must "configure the lab switch (SNMPv2c)" $LABSW /lab/configure.sh "$COMM"
+sleep 2
+drive call POST "/radius/clients/$SW1_ID/monitoring/test" | jok "SNMPv2c test connection" 'd["body"]["ok"] and d["body"]["monitoring"]["enabled"] and d["body"]["monitoring"]["version"] == "v2c"'
+spoll | jok "SNMPv2c poll" 'd["ok"] and d["sessions"] == 7'
+drive call DELETE "/radius/clients/$SW1_ID/monitoring" | jok "monitoring removed: the lines to take EasyEAP's access off the switch" \
+  'd["status"] == 200 and "no snmp-server view EASYEAP-RO" in d["body"]["removal"]'
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "nothing open after removal, credentials gone" 'not d["body"]["findings"] and not d["body"]["monitoring"]["set_up"]'
+drive call POST "/radius/clients/$SW1_ID/wired-mode" '{"mode": "monitor"}' >/dev/null
 fi
 
 step "12. Audit"

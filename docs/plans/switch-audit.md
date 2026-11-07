@@ -4,7 +4,36 @@ Status: revised after critique (2026-11-07), then revised again with the user's 
 text (§0). Request: "a way for EasyEAP to see into the switch to see if port security
 is working as it should / audit — maybe SNMP + a syslog from each device."
 
-## 0. Revision 2 (2026-11-07): user decisions and MIB corrections
+## 0. Revision 3 (2026-11-07): implementation decisions
+
+Supersedes §2 and the library, migration and table names below where they differ.
+
+- **The collector runs from the API image, not the RADIUS image.** `easyeap-collector` (`entrypoint.sh collector`) is
+  attached to the networks the worker uses (data, pki, egress), reads the switches to poll from the database and writes
+  the polled state and the findings itself, in one transaction per poll. That removes the collector token, the two
+  collector endpoints and the decrypted keys in transit between containers (§2), and it still never shares a process
+  with FreeRADIUS or the job worker: a hung walk can't delay a directory sync or a RADIUS answer. It pauses during a
+  restore like the worker and writes a heartbeat (`platform_settings.collector_heartbeat`).
+- **SNMP client written in-house** (`app/switchaudit/snmp.py`): EasyEAP needs GET and GETBULK only, and pysnmp's API has
+  changed with every major version and maintainer. BER, v2c, and v3 USM: HMAC-SHA-1-96 or HMAC-SHA-256-192 (RFC 7860,
+  the default), AES-128-CFB (RFC 3826, the default) or AES-256 only together with SHA-256 (a 32-byte localized key, so
+  no key extension, whose two variants vendors disagree on). Tested against the RFC 3414 key-localization vectors and,
+  end to end, against net-snmp's independent implementation.
+- **Test connection runs in the API** (it's on the egress network too), bounded to about 10 s, and saves nothing but the
+  capability probe's answer.
+- **Migration `0009_switch_audit`**; tables `switch_states` and `switch_findings` (not `audit_findings`, which reads as
+  the admin audit trail). Credentials in one Transit-encrypted column `radius_clients.snmp_secret_ct` (a JSON object:
+  the community, or the v3 keys).
+- **`switch_changed` replaces `snmp_engine_changed`**: the v3 engine id *or* the chassis serial differs from the one
+  pinned at the first successful poll. It stays open until acknowledged; acknowledging pins the new values.
+- **Findings are evaluated per kind only when their evidence was read**: a failed poll touches only the `snmp_*`
+  findings, and a switch without the CAF tables gets none of the session or port findings.
+- **The generated block has no secrets in it** (placeholders, like the RADIUS configuration); the community or keys are
+  shown once when monitoring is set up or the credentials are regenerated, and the console fills them in then.
+- **Lab switch for the end-to-end test**: net-snmp's snmpd with a `pass_persist` script serving a Catalyst-like dataset
+  (CAF port and session tables, err-disable), on v2c and v3 SHA-256/AES-128, instead of snmpsim.
+
+## 0b. Revision 2 (2026-11-07): user decisions and MIB corrections
 
 - **SNMPv2c is the default** (the user's call), SNMPv3 authPriv an option. With v2c the community travels in clear, so
   EasyEAP generates a random 24-character community, the generated switch configuration binds it to the read-only view
@@ -27,10 +56,10 @@ polled session list replaces the manual "paste `show access-session`" readiness 
 
 Evidence only: nothing here changes a switch or a RADIUS decision.
 
-v1 is Cisco Catalyst over SNMPv3. UniFi has no documented 802.1X MIB (and Flex/Ultra switches have no SNMP), so it waits
+v1 is Cisco Catalyst over SNMPv2c (default) or SNMPv3. UniFi has no documented 802.1X MIB (and Flex/Ultra switches have no SNMP), so it waits
 for phase 2 (the UniFi Network application's API, after a hardware check). Syslog is v1.1 (§9).
 
-## 2. Where polling runs: a collector next to RADIUS
+## 2. Where polling runs: a collector next to RADIUS (superseded by §0, revision 3)
 
 The API and worker sit on the internal network and don't reach switches; RADIUS does (it already sends CoA to them). So
 polling runs in a new **collector** process in its own container, `easyeap-collector`, built from the RADIUS image and
@@ -93,7 +122,7 @@ plan uses.
 `snmp_*`). **Acknowledge** with a note hides it from the dashboard until its detail changes. An open finding is unique per
 (tenant, switch, kind, port, MAC) by a partial unique index `WHERE resolved_at IS NULL`. History kept 90 days.
 
-## 5. Data model (migration `0007_switch_audit`)
+## 5. Data model (migration `0009_switch_audit`; table names per §0)
 
 All tables carry `tenant_id` with the usual RLS policy.
 
@@ -193,3 +222,19 @@ neighbours to suggest "leave alone" ports; a scheduled audit report.
 | The view was wider than needed | minor | Six subtrees. |
 | A replaced or impersonating switch goes unnoticed | minor | Engine id pinned; `snmp_engine_changed`. |
 | Several RADIUS nodes would each poll | minor | One collector per switch (§2). |
+
+### Revision 3: critique of the implementation
+
+| Finding | Severity | Change |
+|---|---|---|
+| `radius:write` could point the switch's monitoring at another address, and the v2c community would follow it | major | Changing the address or port needs `radius:secrets`, like seeing the credentials. |
+| An error that isn't an SNMP error (an out-of-range engine boots, an odd index) escaped the poll: Test connection gave a 500, and the collector re-polled the switch every minute without recording anything | major | Engine boots/time validated; a poll always ends with a result; a result that can't be stored is recorded as such and waits an interval. |
+| A MAB accept and a later 802.1X reject (or the reverse) were compared as one device | medium | EasyEAP's answers are compared per method family (802.1X, MAB), as the switch keeps them as separate sessions. |
+| Two polls of one switch (the service and `--once`, or Test connection) could write at once | medium | The switch's row is locked while a result is written. |
+| A poll that ended during a restore could write into the database being replaced | medium | The result is dropped when a restore is running. |
+| The "slow switch" threshold could never be reached, sessions over the limit failed the whole poll, and findings past a cut list were resolved | low | Slow after a minute; long session lists are cut short and marked; findings past the cut are left as they were; only the three port-configuration columns are walked. |
+| SNMPv3 responses: no time-window check, predictable request ids, an authenticated but unencrypted response accepted | low | RFC 3414 §3.2 step 7 checks; independent random ids; responses must be encrypted. |
+| A switch moved from v2c to v3 never had its engine ID pinned | low | Serial and engine ID are pinned one by one. |
+| Secrets in object reprs; one-time credentials kept in the page after the dialog closed; the collector held secrets it doesn't use | low | `repr=False`; the dialog clears them; the collector gets only the application role's password. |
+| Test connection had no rate limit, and a sealed OpenBao gave a 500 | low | Six tests a minute per switch; 503 with a message. |
+| The `auth_events` index is built without `CONCURRENTLY` | low | Not changed: events reach the database only through the API, which applies the migration before it serves, and RADIUS resends what it couldn't deliver. |

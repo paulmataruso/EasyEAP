@@ -92,6 +92,24 @@ services:
     depends_on:
       easyeap-api: { condition: service_healthy }
 
+  # The switch audit's SNMP poller (docs/switch-audit.md). Polls only switches with monitoring set up; idle otherwise.
+  easyeap-collector:
+    image: easyeap-api:${EASYEAP_VERSION:-1.0.1}
+    restart: unless-stopped
+    command: ["/app/entrypoint.sh", "collector"]
+    environment:
+      <<: *api-env
+      # The collector only reads and writes as the application role and decrypts SNMP credentials through OpenBao.
+      EASYEAP_DB_OWNER_PASSWORD_FILE: ""
+      EASYEAP_AGENT_TOKEN: ""
+      EASYEAP_SESSION_SECRET: ""
+    secrets: [db_app_password]
+    volumes:
+      - easyeap-secrets:/var/lib/easyeap/secrets
+    networks: [data, pki, egress]   # egress: SNMP (UDP 161) to the switches
+    depends_on:
+      easyeap-api: { condition: service_healthy }
+
   easyeap-radius:
     build: ../services/radius
     image: easyeap-radius:${EASYEAP_VERSION:-1.0.1}
@@ -153,6 +171,13 @@ services:
     image: easyeap-lab-client:dev
     entrypoint: ["sleep", "infinity"]
     volumes: [./lab/certs:/certs]
+    networks: [egress]
+
+  # A pretend Cisco Catalyst answering SNMP (net-snmp) for the switch audit's end-to-end test.
+  easyeap-lab-switch:
+    profiles: [lab]
+    build: ./lab/switch
+    image: easyeap-lab-switch:dev
     networks: [egress]
 
 networks:
