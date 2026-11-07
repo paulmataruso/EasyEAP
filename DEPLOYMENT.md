@@ -20,10 +20,13 @@ EasyEAP runs as one Docker Compose project (`easyeap`) on a Linux host. One depl
 | 1820–1839 | UDP | Wireless controllers | easyeap-radius | Dedicated per-tenant port pairs (only when two tenants' controllers share addresses) |
 | 3799 (1700 on Catalyst 9800) | UDP | easyeap-radius | Controllers | CoA Disconnect-Request (outbound) |
 | 636 | TCP | easyeap-api, easyeap-worker | Customer domain controllers | LDAPS directory sync (outbound) |
+| 49 | TCP | Switches and controllers (management addresses) | easyeap-radius | TACACS+ admin logins ([device administration](docs/device-administration.md)); published only when `EASYEAP_TACACS_BIND` is set to a reachable address |
+| 636 (389 StartTLS) | TCP | easyeap-radius | Customer domain controllers | AD admin logins: the administrator's own bind (outbound; only with device administration and directory access) |
 
 RADIUS over UDP must not cross the internet unprotected: route it through a VPN. Restrict the published ports to
 internal interfaces with `EASYEAP_HTTPS_BIND`, `EASYEAP_HTTP_BIND` and `EASYEAP_RADIUS_BIND` where possible, and
-firewall 1812/1813 to your controllers' addresses.
+firewall 1812/1813 to your controllers' addresses. TACACS+ only obfuscates its packets: keep TCP 49 on the management
+network.
 
 ## Install
 
@@ -59,6 +62,7 @@ Put your certificate chain and key at `deploy/secrets/tls.crt` and `deploy/secre
 | `EASYEAP_PKI_HOSTNAME` | Host in the CRL and OCSP URLs embedded in every certificate (port 80). Defaults to `EASYEAP_HOSTNAME`. It must stay stable for the life of the certificates. |
 | `EASYEAP_RADIUS_ADDRESS` | The IP controllers use to reach RADIUS, shown in the controller guides and snippets. Loopback and unspecified addresses (`127.0.0.1`, `0.0.0.0`) are not shown to controllers; the console warns instead. |
 | `EASYEAP_*_BIND`, `EASYEAP_HTTP_PORT`, `EASYEAP_HTTPS_PORT` | Published interfaces and ports. Certificates assume CRLs are on port 80. |
+| `EASYEAP_TACACS_BIND`, `EASYEAP_TACACS_PORT` | Where TACACS+ for device administration is published (default `127.0.0.1:49`, which keeps it off the network). Set the bind to the address switches reach EasyEAP on to accept admin logins. |
 | `EASYEAP_RADIUS_NODE` | Agent identifier shown in System health. |
 | `EASYEAP_LAB_MODE` | `true` enables insecure test options (keeping a root CA online, plain LDAP). Never in production. |
 

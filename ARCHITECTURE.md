@@ -23,7 +23,8 @@ flowchart LR
     radius["easyeap-radius<br/>FreeRADIUS 3.2 + radius-agent"]
   end
   admin(("Admins /<br/>enrolling users")) -->|HTTPS| proxy
-  nas(("Wireless controllers")) -->|"UDP 1812/1813"| radius
+  nas(("Controllers and switches")) -->|"UDP 1812/1813"| radius
+  nas -->|"TACACS+ TCP 49 (admin logins)"| radius
   radius -->|"CoA UDP 3799/1700"| nas
   proxy --> api
   api --> db
@@ -33,6 +34,7 @@ flowchart LR
   radius -->|"pull snapshot / push events (HTTPS, agent token)"| api
   api -.->|"LDAPS 636"| ad(("Customer AD"))
   worker -.->|"LDAPS 636"| ad
+  radius -.->|"LDAPS 636 (AD admin logins)"| ad
 ```
 
 | Container | Image base | Runs as | Purpose |
@@ -42,9 +44,9 @@ flowchart LR
 | `easyeap-worker` | same image as api | uid 10001 | Background jobs: directory sync, hourly policy recomputation (which keeps the snapshot fresh while the directory is healthy), CRL rotation, enrollment-link expiry, purge of undelivered server-generated keys, event retention, OpenBao token renewal. |
 | `easyeap-db` | postgres 18-alpine | postgres | Application database. Row-level security isolates tenants. |
 | `easyeap-pki` | openbao 2.4.1 | openbao | One PKI secrets-engine mount per tenant (issuing CA), one Transit key per tenant (envelope encryption of tenant secrets). Static auto-unseal from a key file. Raft/file storage on its own volume. |
-| `easyeap-radius` | freeradius 3.2.10 | freerad | FreeRADIUS plus `radius-agent` (Python) under a small supervisor. Renders and validates its own configuration from the API's desired state, keeps a local authorization snapshot, ships events. |
+| `easyeap-radius` | freeradius 3.2.10 | freerad | FreeRADIUS plus `radius-agent` (Python) under a small supervisor. Renders and validates its own configuration from the API's desired state, keeps a local authorization snapshot, ships events. The agent also supervises EasyEAP's TACACS+ service for device administration (`tacacs.py`) while any tenant has a device with admin logins on. |
 
-Only `easyeap-proxy` (TCP 80/443) and `easyeap-radius` (UDP 1812/1813) publish ports. The API is never published directly. RADIUS has **no route** to the database or to OpenBao; it only talks to the API over an authenticated channel, and it keeps working without it.
+Only `easyeap-proxy` (TCP 80/443) and `easyeap-radius` (UDP 1812/1813, and TCP 49 for TACACS+ when `EASYEAP_TACACS_BIND` names a reachable address) publish ports. The API is never published directly. RADIUS has **no route** to the database or to OpenBao; it only talks to the API over an authenticated channel, and it keeps working without it.
 
 ## 2. Multi-tenancy
 
@@ -127,9 +129,11 @@ sequenceDiagram
 - **Freshness:** directory sync every 15 min (configurable) and on demand; certificate, rule and revocation changes republish immediately. The agent pulls every 15 seconds (and on SIGHUP), so a change reaches RADIUS within about 15 seconds. Snapshot age is shown on the dashboard and enforced by RADIUS.
 - **Revocation latency, honestly:** new authentications are rejected within seconds of revocation (snapshot + CRL). A device **already connected** keeps its session until it re-authenticates: controllers re-authenticate on `Session-Timeout` (default 8h, tenant-configurable) and may skip full EAP on roaming (PMK caching / OKC / 802.11r). For controllers with CoA enabled, EasyEAP sends a Disconnect-Request immediately to end the session (UDP 3799; Catalyst 9800 defaults to 1700). TLS session resumption is disabled by default so a resumed session cannot bypass the snapshot check.
 - **Blast-RADIUS (CVE-2024-3596):** `require_message_authenticator = yes` and `limit_proxy_state = yes` on every client. RADIUS/UDP must not cross untrusted networks; use a site-to-site VPN, or RadSec where the controller supports it (planned).
-- **Wired 802.1X** ([plan and critique](docs/plans/wired-8021x.md)). Each RADIUS client is registered for Wi-Fi, wired or both (`radius_clients.networks`). FreeRADIUS decides which network a request is, in this order: a `Called-Station-Id` of the form `MAC:` with an empty SSID (hostapd's wired form) → wired; `NAS-Port-Type` Ethernet → wired, Wireless-802.11 → Wi-Fi; the client's only registered network; an SSID in `Called-Station-Id` → Wi-Fi, otherwise wired. A request for a network the client isn't registered for is rejected (`network_not_enabled`) before EAP; `Service-Type = Call-Check` (MAB) is rejected as `mab_unsupported`. Nested registrations (a switch inside a controller's range) resolve to the longest prefix, in FreeRADIUS and in EasyEAP's event attribution and CoA.
+- **Wired 802.1X** ([plan and critique](docs/plans/wired-8021x.md)). Each RADIUS client is registered for Wi-Fi, wired or both (`radius_clients.networks`). FreeRADIUS decides which network a request is, in this order: a `Called-Station-Id` of the form `MAC:` with an empty SSID (hostapd's wired form) → wired; `NAS-Port-Type` Ethernet → wired, Wireless-802.11 → Wi-Fi; the client's only registered network; an SSID in `Called-Station-Id` → Wi-Fi, otherwise wired. A request for a network the client isn't registered for is rejected (`network_not_enabled`) before EAP; a MAC authentication request (`Service-Type = Call-Check`) from a client without MAC authentication is rejected as `mab_not_enabled`. Nested registrations (a switch inside a controller's range) resolve to the longest prefix, in FreeRADIUS and in EasyEAP's event attribution and CoA.
 - **VLANs on switch ports.** Each decision has a Wi-Fi VLAN and a wired VLAN (`decisions.wired_vlan_id`), from each VLAN's `wired_mode`: the same VLAN, none (the port keeps its own), or another ID. The snapshot carries both; the agent stores the wired VLAN in `authz_wired`, tied to the snapshot version, so any mix of agent, configuration and API versions falls back to the Wi-Fi VLAN (1.0.1 behaviour) and never to another decision.
 - **Monitor mode.** A switch whose port plan is in monitor mode is rendered with `easyeap_monitor = yes`: FreeRADIUS still decides and logs, but sends no Tunnel or extra attributes, and the event records the VLAN it would have assigned. The switch's own configuration keeps its ports open. Enforce is an explicit, audited step; the console asks for the switch's session list first.
+- **MAC authentication** ([plan and critique](docs/plans/mac-auth.md)). A switch with MAC authentication on is rendered with `easyeap_mab = pap` (Cisco MAB: PAP with the MAC as user and password, `Calling-Station-Id` must match) or `eap` (UniFi MAC-Based: EAP-MD5 in its own `eapmd5_<tenant>` module, so `eap_<tenant>` stays TLS-only). A request is MAB only with positive wired evidence; everything else takes the EAP-TLS path. The MAC is normalised once and looked up in `authz_mac` for the current snapshot version (devices in groups, each group with its switch VLAN): unknown, expired, blocked or group off → reject with the reason, and the attempt is recorded as a sighting ("Seen, not allowed"). Blocks, expiry and group changes reach live sessions by CoA (Disconnect, or a Cisco re-authenticate / bounce CoA-Request).
+- **Device administration** ([plan and critique](docs/plans/device-admin.md)). `tacacs.py` is an asyncio TACACS+ server (RFC 8907) on TCP 4949 in the container, published as 49. It reads `admin.json` (0600), which the agent writes from the snapshot's admin part: devices with admin logins on and their keys (plus the previous key during the 24-hour rotation grace), local accounts with scrypt hashes and TOTP secrets, roles, AD group mappings with SIDs, and the directory's TLS settings; it expires with the snapshot age limit. Local accounts are checked against their hash; AD users bind as themselves over verified LDAPS or StartTLS, and RootDSE `tokenGroups` of that connection gives their groups, nested included. Real denials answer FAIL; outages, stale data, key mismatches and break-glass names answer ERROR so IOS falls back to its local accounts. Failures are answered after a uniform delay; AD failed binds are capped below the domain's lockout threshold. Events (commands masked by `tacmask.py`, identical to the API's `app/admin/mask.py`) go to the agent's spool and `POST /api/agent/admin-events`.
 - **Configuration management:** the agent fetches the desired state (tenants, clients, virtual servers, certificates) from the API, renders FreeRADIUS configuration from templates, validates it with `freeradius -C` in a staging directory, swaps it atomically and restarts FreeRADIUS; on validation failure it keeps the running configuration and reports the error to the API (shown in System Health). Shared secrets reach the agent over the authenticated channel and live only on the RADIUS volume (mode 0600).
 
 ## 6. Access-policy precedence
@@ -165,6 +169,8 @@ LDAPS (636) or LDAP + StartTLS with certificate verification against an uploaded
 | Policy | `vlans` (with what switch ports get), `access_rules`, `access_rule_groups`, `policy_settings`, `decisions` (per certificate, with trace and the wired VLAN) |
 | RADIUS | `radius_settings` (snapshot version and build time, server key ciphertext, wired enrollment on/off), `radius_clients` (secret ciphertext, networks served, the switch's port plan and rollout mode), `auth_events` (network, switch port, monitor), `accounting_sessions`, `coa_requests`, `agent_status` |
 | Enrollment | `enrollments` (token hash, method, status, expiry), `key_escrow` (ciphertext, one-time) |
+| MAC authentication | `device_groups` (switch VLAN), `mac_devices` (normalised MAC, status, expiry, last seen), `mac_sightings` (MACs switches asked about) |
+| Device administration | `admin_roles` (privilege level), `admin_users` (scrypt hash, TOTP secret ciphertext, sites, expiry), `admin_group_maps` (AD group → role, ordered), `admin_settings` (local-only names, log retention), `admin_events`; on `radius_clients`: `admin_enabled` and the TACACS+ key ciphertexts |
 
 Migrations: Alembic, run automatically by the api container on start (`alembic upgrade head`) under an advisory lock.
 

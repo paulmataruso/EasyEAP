@@ -344,3 +344,24 @@ def test_config_sync_tells_when_a_change_is_live():
     assert config_sync({"detail": {"config_versions": {str(tid): 6}}}, tid, rs)["tenant_config_in_sync"] is False
     assert config_sync({"detail": {"config_versions": {}}}, tid, rs)["tenant_config_in_sync"] is False  # not served yet
     assert config_sync({"detail": {"tenant_ids": [str(tid)]}}, tid, rs)["tenant_config_in_sync"] is None  # an older agent
+
+
+def test_group_policy_guide_has_the_tenants_values_and_no_secrets():
+    _, root = _self_signed("Corp Root CA")
+    _, issuing = _self_signed("Corp Issuing CA")
+    g = profiles.group_policy_guide(server_name="radius.corp.example", ssid="CorpNet", wpa3=True, root_pem=root, issuing_pem=issuing, slug="corp")
+    text = "\n".join(s for sec in g["sections"] for s in sec["steps"])
+    assert g["root_cn"] == "Corp Root CA" and g["issuing_cn"] == "Corp Issuing CA" and len(g["root_thumbprint"].split()) == 20
+    assert "radius.corp.example" in text and "CorpNet" in text and g["root_thumbprint"] in text
+    assert "Wired AutoConfig" in text and "NTAuth" in text and "Don't prompt user" in text and "WPA3-Enterprise" in text
+    names = [f["name"] for f in g["files"]]
+    assert names == ["corp-root.cer", "corp-issuing.cer", "corp-wifi.xml", "corp-wired.xml"]
+    wifi = g["files"][2]["content"]
+    assert "<authentication>WPA3ENT</authentication>" in wifi and "<ServerNames>radius.corp.example</ServerNames>" in wifi
+    assert "PRIVATE KEY" not in str(g)
+    # The documentation mirrors the console's steps.
+    doc = Path(__file__).resolve().parents[2] / "docs" / "windows-group-policy.md"
+    if doc.exists():
+        body = doc.read_text()
+        for sec in g["sections"]:
+            assert sec["title"] in body, f"docs/windows-group-policy.md lacks the section {sec['title']}"

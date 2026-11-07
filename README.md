@@ -101,6 +101,22 @@ authentications and system log can forward to your SIEM over TLS.
 
 </td>
 </tr>
+<tr>
+<td width="50%" valign="top">
+
+**MAC authentication for what can't do 802.1X**<br>
+Printers, cameras and phones on switch ports get on by MAC address (Cisco MAB, UniFi MAC-Based), each group on its
+own VLAN. Switches report what they see, so you build the allow list in monitor mode before you enforce.
+
+</td>
+<td width="50%" valign="top">
+
+**Switch logins with AD accounts**<br>
+Network administrators log in to Cisco switches and controllers with their AD account or an EasyEAP account over
+TACACS+, with roles, an admin log of every command, and the device's local accounts as fallback.
+
+</td>
+</tr>
 </table>
 
 ## A tour of the console
@@ -255,6 +271,8 @@ issue.
 | [SECURITY.md](SECURITY.md) | Threat model, key custody, controls, the RBAC matrix, what revocation means in practice |
 | [docs/controllers/](docs/controllers/README.md) | Cisco Catalyst 9800, Cisco AireOS, UniFi and Catalyst switch configuration |
 | [docs/enrollment.md](docs/enrollment.md) | Issuing certificates and what users do on each platform |
+| [docs/device-administration.md](docs/device-administration.md) | Switch and controller logins with AD and EasyEAP accounts over TACACS+ |
+| [docs/windows-group-policy.md](docs/windows-group-policy.md) | Setting up domain-joined Windows PCs for 802.1X with Group Policy |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Every failure reason and status, and how to fix it |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Repository layout, the development stack, tests, conventions |
 | [DESIGN.md](DESIGN.md) | The console's design system |
@@ -269,8 +287,9 @@ and authenticated an enrolled iPhone through a live Cisco Catalyst 9800. Known l
 - No SCEP or MDM enrollment (Intune, Jamf) yet. Apple devices enroll with a configuration profile from the portal.
 - No RadSec yet. Route RADIUS between sites over a VPN.
 - One RADIUS node per deployment.
-- Wired 802.1X is tested on real FreeRADIUS with real EAP-TLS, but not yet on Catalyst or UniFi switch hardware. No
-  MAC Authentication Bypass: devices without 802.1X stay on ports EasyEAP doesn't configure.
+- Wired 802.1X and MAC authentication are tested on real FreeRADIUS with real EAP-TLS, but not yet on Catalyst or
+  UniFi switch hardware. Device administration (TACACS+) is tested against a protocol client, not yet on Cisco
+  hardware.
 - The root CA's revocation list must be re-signed with the offline root key once a year. The dashboard warns 60 days
   ahead, but the console can't do the re-signing yet.
 

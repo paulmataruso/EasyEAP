@@ -5,7 +5,7 @@ import { Link } from 'react-router'
 import { Dialog } from 'radix-ui'
 import { ArrowRight, Check, ChevronDown, Minus, X } from 'lucide-react'
 import { cn } from '@/ui/lib'
-import { controllerFor, networkLabels, useEvent, type AuthEvent, type ClientLite, type RuleLite, type VlanLite } from '../../api/events'
+import { controllerFor, isMab, networkLabels, useEvent, type AuthEvent, type ClientLite, type RuleLite, type VlanLite } from '../../api/events'
 import type { DecisionStep } from '../../api/types'
 import { ago, fmtDateTime, fmtSerial } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
@@ -59,6 +59,14 @@ function fixAction(e: AuthEvent, tid: string, can: (p: string) => boolean): { to
     case 'network_not_enabled':
     case 'mab_unsupported':
       return can('radius:read') ? { to: paths.radius(tid), label: 'Review controllers and switches' } : null
+    case 'mab_not_enabled':
+      return can('radius:read') ? { to: e.nas_client_id ? paths.radius(tid, { client: e.nas_client_id }) : paths.radius(tid), label: 'Open the switch' } : null
+    case 'mac_unknown':
+      return can('mac:write') && e.mac ? { to: paths.mac(tid, { allow: e.mac }), label: 'Allow this device' } : can('mac:read') ? { to: paths.mac(tid, { tab: 'seen' }), label: 'Open Seen, not allowed' } : null
+    case 'mac_disabled':
+    case 'mac_expired':
+    case 'mac_group_disabled':
+      return can('mac:read') ? { to: e.mac_device_id ? paths.mac(tid, { device: e.mac_device_id }) : paths.mac(tid), label: 'Open the MAC allow list entry' } : null
     default:
       return null
   }
@@ -83,11 +91,16 @@ export function EventSheet({ tid, eventId, seed, open, onOpenChange, returnFocus
   const fix = e && e.result === 'reject' ? fixAction(e, tid, can) : null
   const certId = q.data?.certificate_id
   const wired = e?.network === 'wired'
+  const mab = !!e && isMab(e)
+  const macEntry = q.data?.mac_device
 
   let body: ReactNode
   if (!e) body = q.error ? <ErrorState error={q.error} onRetry={() => q.refetch()} title="This attempt couldn’t be loaded" /> : <LoadingBlock rows={6} label="Loading attempt" />
   else {
-    const ruleText = rule
+    const ruleText = mab
+      ? (macEntry ? <span>MAC allow list: {can('mac:read') ? <Link to={paths.mac(tid, { device: macEntry.id })} className={linkCls}>{macEntry.name}</Link> : macEntry.name}<span className="ee-ink-3"> · {macEntry.group_name}</span></span>
+        : e.result === 'accept' ? 'MAC allow list (an entry since removed)' : 'None, MAC authentication')
+      : rule
       ? (can('policy:read') ? <Link to={paths.policy(tid)} className={linkCls}>{rule.name}</Link> : rule.name)
       : e.rule_id ? 'A rule that has since been deleted'
       : e.result === 'accept' ? 'No rule recorded (tenant default)' : 'None, rejected before access rules were checked'
@@ -117,11 +130,11 @@ export function EventSheet({ tid, eventId, seed, open, onOpenChange, returnFocus
           <Callout tone="valid" title={e.monitor ? 'Accepted (monitor mode)' : 'Accepted'}>
             {e.monitor ? (
               <>
-                RADIUS accepted this device{rule ? <> under the rule “{rule.name}”</> : ''}. The switch is in monitor mode, so EasyEAP decided but sent no VLAN: the device stayed on its port’s own VLAN.
+                RADIUS accepted this device{mab ? ' by its MAC address' : rule ? <> under the rule “{rule.name}”</> : ''}. The switch is in monitor mode, so EasyEAP decided but sent no VLAN: the device stayed on its port’s own VLAN.
                 {e.vlan_id !== null ? <> Once the switch enforces, it gets VLAN {e.vlan_id}{vlan ? ` (${vlan.name})` : ''}.</> : ' Once the switch enforces, it keeps its port’s VLAN.'}
               </>
             ) : (
-              <>RADIUS accepted this device{rule ? <> under the rule “{rule.name}”</> : ''}{e.vlan_id !== null ? <> and placed it on VLAN {e.vlan_id}{vlan ? ` (${vlan.name})` : ''}</> : wired ? ' on its port’s own VLAN' : ''}.</>
+              <>RADIUS accepted this device{mab ? ' by its MAC address' : rule ? <> under the rule “{rule.name}”</> : ''}{e.vlan_id !== null ? <> and placed it on VLAN {e.vlan_id}{vlan ? ` (${vlan.name})` : ''}</> : wired ? ' on its port’s own VLAN' : ''}.</>
             )}
           </Callout>
         )}
@@ -134,12 +147,13 @@ export function EventSheet({ tid, eventId, seed, open, onOpenChange, returnFocus
                 ? <Link to={paths.user(tid, e.identity_id)} className={cn('font-medium', linkCls)}>{e.username ?? 'Open user'}</Link>
                 : <span className={cn(!e.username && 'ee-ink-3')}>{e.username ?? 'Unknown user'}{e.username && !e.identity_id && <span className="ee-ink-3"> · not matched to a user</span>}</span>],
               ['Device MAC', e.calling_station_id ? <span className="ee-mono text-[12.5px]">{e.calling_station_id}</span> : <span className="ee-ink-3">Not reported</span>],
-              ['Certificate serial', <span className="flex flex-col gap-1">
+              ['Method', mab ? (e.method === 'mab-eap' ? 'MAC address (UniFi MAC-Based)' : 'MAC address (MAB)') : e.cert_serial ? 'Certificate (EAP-TLS)' : <span className="ee-ink-3">Not recorded</span>],
+              ...(mab ? [] : [['Certificate serial', <span className="flex flex-col gap-1">
                 {certId && can('certificates:read') ? <Link to={paths.certificate(tid, certId)} className={linkCls}>{serial}</Link> : serial}
                 {e.cert_serial && q.data && !certId && <span className="ee-small ee-ink-3">Not issued by this tenant’s EasyEAP CA</span>}
               </span>, 'wide'],
-              ['Certificate issuer', e.cert_issuer ? <span className="ee-mono text-[12.5px] break-all">{e.cert_issuer}</span> : <span className="ee-ink-3">—</span>, 'wide'],
-              ['Deciding rule', ruleText],
+              ['Certificate issuer', e.cert_issuer ? <span className="ee-mono text-[12.5px] break-all">{e.cert_issuer}</span> : <span className="ee-ink-3">—</span>, 'wide']] as Array<[ReactNode, ReactNode, 'wide']>),
+              [mab ? 'Decided by' : 'Deciding rule', ruleText],
               ['VLAN', e.vlan_id !== null
                 ? <span className="flex flex-col gap-1">
                   <VlanTag vlanId={e.vlan_id} name={vlan?.name} color={vlan?.color} />

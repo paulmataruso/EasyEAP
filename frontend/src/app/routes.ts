@@ -13,6 +13,12 @@
 //   events?reason=<code>         filter rejects by reason code
 //   events?event=<eventId>       open that attempt's detail sheet
 //   events?network=wired         filter to wired (or wireless) attempts
+//   mac?device=<id>              open that allow-list entry
+//   mac?tab=seen                 show “Seen, not allowed”
+//   mac?allow=<MAC>              open “Allow a device” with that MAC
+//   device-admin?tab=accounts|directory|log|settings   show that tab
+//   device-admin?account=<id>    open that local account
+//   device-admin?device=<id>     open that device's configuration
 import type { ActionTarget } from './api/types'
 
 const t = (tid: string) => `/t/${tid}`
@@ -36,6 +42,10 @@ export const paths = {
   radius: (tid: string, q?: { rotate?: string; add?: boolean | 'switch'; client?: string }) =>
     `${t(tid)}/radius${q?.rotate ? `?rotate=${q.rotate}` : q?.add ? `?add=${q.add === 'switch' ? 'switch' : '1'}` : q?.client ? `?client=${encodeURIComponent(q.client)}` : ''}`,
   policy: (tid: string, q?: { test?: string }) => `${t(tid)}/policy${q?.test ? `?test=${q.test}` : ''}`,
+  mac: (tid: string, q?: { device?: string; tab?: 'seen' | 'groups'; allow?: string }) =>
+    `${t(tid)}/mac${q?.device ? `?device=${encodeURIComponent(q.device)}` : q?.allow ? `?allow=${encodeURIComponent(q.allow)}` : q?.tab ? `?tab=${q.tab}` : ''}`,
+  deviceAdmin: (tid: string, q?: { tab?: 'accounts' | 'directory' | 'log' | 'settings'; account?: string; device?: string }) =>
+    `${t(tid)}/device-admin${q?.account ? `?account=${encodeURIComponent(q.account)}` : q?.device ? `?device=${encodeURIComponent(q.device)}` : q?.tab ? `?tab=${q.tab}` : ''}`,
   directory: (tid: string) => `${t(tid)}/directory`,
   pki: (tid: string) => `${t(tid)}/pki`,
   events: (tid: string, q?: { reason?: string; result?: string; event?: string; network?: 'wired' | 'wireless' }) =>
@@ -59,6 +69,7 @@ export function targetPath(tid: string, target: ActionTarget): string {
     case 'certificates': return paths.certificates(tid, arg ? { status: arg } : undefined)
     case 'events': return paths.events(tid, arg ? { reason: arg } : undefined)
     case 'policy': return paths.policy(tid)
+    case 'mac': return paths.mac(tid, arg === 'seen' ? { tab: 'seen' } : undefined)
     case 'users': return paths.users(tid)
     default: return paths.dashboard(tid)
   }

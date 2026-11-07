@@ -33,7 +33,16 @@ export interface AuthEvent {
   monitor: boolean
   rule_id: string | null
   raw_message: string | null
+  /** The device MAC, normalised (AABBCCDDEEFF); null for events from before MAC authentication. */
+  mac?: string | null
+  /** How it authenticated: eap-tls, mab (Cisco MAC authentication) or mab-eap (UniFi MAC-Based). */
+  method?: string | null
+  /** The MAC allow-list entry that decided a MAC authentication. */
+  mac_device_id?: string | null
 }
+
+/** A MAC authentication, not a certificate. */
+export const isMab = (e: Pick<AuthEvent, 'method'>) => e.method === 'mab' || e.method === 'mab-eap'
 
 export type Network = 'wireless' | 'wired'
 export const networkLabels: Record<Network, string> = { wireless: 'Wi-Fi', wired: 'Wired' }
@@ -43,6 +52,8 @@ export interface EventDetail extends AuthEvent {
   certificate_id?: string | null
   /** The certificate's *current* policy decision (recomputed on every change), not the decision at the time of the attempt. */
   decision_steps?: DecisionStep[] | null
+  /** The MAC allow-list entry (MAC authentication), when it still exists. */
+  mac_device?: { id: string; name: string; group_id: string; group_name: string } | null
 }
 
 export interface EventsResponse {

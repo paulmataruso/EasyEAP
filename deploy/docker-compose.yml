@@ -106,6 +106,9 @@ services:
       - "${EASYEAP_RADIUS_BIND:-0.0.0.0}:1813:1813/udp"
       # Dedicated per-tenant port pairs (RADIUS settings → Advanced) must fall inside this range.
       - "${EASYEAP_RADIUS_BIND:-0.0.0.0}:1820-1839:1820-1839/udp"
+      # TACACS+ for device administration (admin logins to switches). Off the network unless EASYEAP_TACACS_BIND names
+      # the management address devices reach EasyEAP on: TACACS+ only obfuscates its packets (RFC 8907).
+      - "${EASYEAP_TACACS_BIND:-127.0.0.1}:${EASYEAP_TACACS_PORT:-49}:4949/tcp"
     networks: [radius, egress]      # egress: CoA/Disconnect to controllers
     # No dependency on the API: RADIUS starts and authenticates from its local state.
 

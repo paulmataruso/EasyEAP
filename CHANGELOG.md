@@ -34,9 +34,48 @@ versions follow [Semantic Versioning](https://semver.org/).
     profile, install script, Group Policy steps) for IT.
   - Nested registrations: a switch can be registered inside a controller's range; the longest prefix wins, as in
     FreeRADIUS. Events and CoA now match the same way.
+- **MAC authentication on switch ports** for devices without 802.1X (printers, cameras, phones): Cisco MAB (IBNS 2.0
+  and classic) and UniFi MAC-Based, opt-in per switch ([plan and critique](docs/plans/mac-auth.md)).
+  - The **MAC allow list** screen: devices in groups, and each group gives its devices a VLAN on switch ports (or the
+    port's own VLAN). Import and export as CSV, block and unblock, expiry dates, randomised addresses flagged.
+  - **Seen, not allowed**: the MACs switches asked about, by switch and port, to allow one at a time or in bulk. While
+    a switch is in monitor mode its ports stay open, so you can build the list before you enforce; Enforce warns about
+    MACs still waiting.
+  - A MAC that also signs in with a certificate needs an explicit confirmation to be listed.
+  - Decisions are logged and explained (`mac_unknown`, `mac_disabled`, `mac_expired`, `mac_group_disabled`,
+    `mab_not_enabled`, `mab_mismatch`, `mab_password`), and changes reach live sessions through CoA where it's on.
+  - Wi-Fi doesn't use the list.
+- **Device administration**: administrators log in to Cisco switches and Catalyst 9800 controllers with their AD
+  account or an EasyEAP account, over TACACS+ to the RADIUS node
+  ([docs/device-administration.md](docs/device-administration.md), [plan and critique](docs/plans/device-admin.md)).
+  - EasyEAP's own TACACS+ service (RFC 8907) in the RADIUS container: ASCII and PAP logins, enable, exec
+    authorization with the role's privilege level (only for sessions EasyEAP authenticated on that device, re-checked
+    against the current accounts and mappings), session and command accounting. FAIL only for real denials and ERROR
+    when EasyEAP can't decide (domain controllers down or slow, stale data, key mismatch, break-glass names), so
+    devices fall back to their local accounts. One tenant's slow domain controllers can't hold up other tenants'
+    logins or local accounts.
+  - **EasyEAP accounts**: a local account database with the NIST SP 800-63B password rule, optional authenticator
+    codes (typed after the password), sites, expiry, and lockout after 10 failures with Unlock.
+  - **Directory access**: ordered AD group → role mappings, checked in AD at each login (nested groups included) over
+    verified LDAPS or StartTLS, binding as the administrator. Failed binds stay under half the domain's lockout
+    threshold within its observation window (both read from the domain's password policy at each sync), counting
+    binds still in flight.
+  - Per-device TACACS+ keys, shown once, with a 24-hour grace on rotation; the generated configuration keeps the
+    console port and local accounts as fallback, with preflight checks, `reload in 15` and a rollback.
+  - The **Admin log**: logins, enables, sessions and commands, with secrets in commands masked; names that match no
+    account are logged as a keyed hash.
+  - Changing the address, type or site of a device with admin logins, or deleting it, needs a tenant administrator.
+  - TCP 49 is published only when `EASYEAP_TACACS_BIND` is set to a reachable address.
+  - Not yet verified on Cisco hardware: tested against a protocol client that follows IOS's login sequence.
+- **Windows Group Policy guide** ([docs/windows-group-policy.md](docs/windows-group-policy.md)) and a Windows Group
+  Policy dialog on the RADIUS screen with the CA certificates and the Wi-Fi and wired profiles to import. Group Policy
+  can't enroll certificates from EasyEAP automatically: [docs/plans/windows-gpo.md](docs/plans/windows-gpo.md) explains
+  why and plans a startup-task enrollment.
 - `tests/radius/run.sh`: the rendered FreeRADIUS configuration and the agent's store on real FreeRADIUS with real
-  EAP-TLS, including every version-skew combination with the 1.0.1 agent and configuration. Runs in CI.
-- `tests/e2e/run.sh` covers wired 802.1X end to end, and can drive another deployment (`E2E_DEPLOY_DIR`).
+  EAP-TLS, including every version-skew combination with the 1.0.1 agent and configuration, MAC authentication, and
+  the TACACS+ service. Runs in CI.
+- `tests/e2e/run.sh` covers wired 802.1X, MAC authentication and device administration (switch logins with AD groups
+  and EasyEAP accounts) end to end, and can drive another deployment (`E2E_DEPLOY_DIR`).
 
 ### Changed
 
@@ -44,6 +83,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   working), every VLAN is the same VLAN on switch ports, and enrollment packages stay Wi-Fi only.
 - "Wireless controllers" is now "Controllers and switches" on the RADIUS screen; Add offers a wireless controller or
   a switch.
+- On a switch with admin logins on, the wired 802.1X configuration no longer sets `aaa authentication login default
+  local` and `aaa authorization exec default local`, so re-pasting it doesn't undo TACACS+.
 
 ## [1.0.1] - 2026-11-06
 

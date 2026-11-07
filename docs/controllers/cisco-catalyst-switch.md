@@ -66,7 +66,8 @@ configures `GigabitEthernet1/0/1 - 47`. The configuration lists them in a commen
 
 - **AAA.** If the switch doesn't use AAA yet, `aaa new-model` with `aaa authentication login default local` and
   `aaa authorization exec default local`, so logins keep using the switch's local users. Make sure one exists
-  (`show running-config | include ^username`) before you paste.
+  (`show running-config | include ^username`) before you paste. With [admin logins](../device-administration.md) on
+  for the switch, those two lines are left out: the device-administration configuration sets the login lists.
 - **The RADIUS server** `EASYEAP-<TENANT>` in server group `EASYEAP`: `timeout 5`, `retransmit 2`, `deadtime 3`, and
   `radius-server dead-criteria time 5 tries 3`. The optional source interface (`ip radius source-interface`) and VRF
   (`ip vrf forwarding`) go in the group.
@@ -80,8 +81,12 @@ configures `GigabitEthernet1/0/1 - 47`. The configuration lists them in a commen
   authenticates separately), `port-control auto`, periodic re-authentication with the server's Session-Timeout,
   `dot1x pae authenticator`, `dot1x timeout tx-period 10`, `spanning-tree portfast` and `bpduguard`.
 - **Violations restrict**, not shut down: a second device on a single-host port is dropped, the port stays up.
-- **No MAB.** MAC Authentication Bypass isn't supported. A MAB request reaching EasyEAP is rejected and logged as
-  "Switch tried MAC Authentication Bypass".
+- **MAC authentication (MAB)**, when it's on for the switch: a device that doesn't answer 802.1X (two EAP requests
+  10 seconds apart, about 30 seconds after link-up) is checked against EasyEAP's **MAC allow list**, and its group's
+  VLAN is sent. A device that answers 802.1X and fails never falls back to MAB. IBNS 2.0 gets `mab` on the ports and
+  `authenticate using mab` in the policy; classic gets `authentication order dot1x mab`. Turning it on or off gives a
+  short change to paste, in monitor mode. Without it, a MAB request reaching EasyEAP is rejected as
+  "MAC authentication isn't on for this switch".
 
 ### When EasyEAP is unreachable
 
@@ -98,7 +103,12 @@ authorized stays authorized (`AAA_SVR_DOWN_AUTHD_HOST`: pause re-authentication,
 
 **Block** (default): once enforced, a port whose device never answers 802.1X stays closed. **A VLAN**: such
 devices get that VLAN (`service-template EASYEAP_NO_8021X` on IBNS 2.0, `authentication event no-response` on
-classic). Pick a restricted one. Neither applies in monitor mode.
+classic). Pick a restricted one. Neither applies in monitor mode. With MAC authentication on, this setting is where devices that
+aren't on the allow list go.
+
+Build the allow list in monitor mode: the ports stay open, and every MAC the switch asks about appears under **MAC
+allow list → Seen, not allowed**, by port. Enforce warns about MACs still waiting there. A MAC address is easy to
+copy, so give each group a VLAN that reaches only what its devices need.
 
 ## The switch already has 802.1X
 
@@ -137,4 +147,4 @@ Authentication log's **Network** filter shows wired attempts, with the switch an
 EasyEAP's tests run the generated configuration's RADIUS side against real FreeRADIUS with real EAP-TLS
 (`tests/radius/run.sh`, `tests/e2e/run.sh`), but **no configuration has been pasted onto a real Catalyst switch** by
 these tests. The commands follow Cisco's IBNS 2.0 and classic 802.1X documentation. Review the configuration on one
-switch, with one test port, before rolling it out.
+switch, with one test port, before rolling it out. The same goes for MAC authentication and for admin logins over TACACS+.

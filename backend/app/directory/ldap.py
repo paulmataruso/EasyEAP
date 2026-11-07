@@ -218,6 +218,59 @@ def token_group_sids(conn: Connection, dn: str) -> list[str]:
     return []
 
 
+def _domain_root(conn: Connection, base_dn: str) -> str:
+    """The domain's own entry, where the default password policy lives: RootDSE defaultNamingContext, else the DC=
+    components of the base DN (a sync base can be an OU)."""
+    try:
+        conn.search("", "(objectClass=*)", search_scope=BASE, attributes=["defaultNamingContext"])
+        for e in conn.response or []:
+            if e.get("type") == "searchResEntry":
+                v = (e.get("attributes") or {}).get("defaultNamingContext")
+                v = v[0] if isinstance(v, list) and v else v
+                if v:
+                    return str(v)
+    except (LDAPException, TypeError, ValueError):
+        pass
+    return ",".join(p.strip() for p in base_dn.split(",") if p.strip().upper().startswith("DC="))
+
+
+def _seconds(v) -> int | None:
+    """lockOutObservationWindow: a negative count of 100-ns intervals (ldap3 may already give a timedelta)."""
+    if v in (None, "", []):
+        return None
+    if isinstance(v, list):
+        v = v[0] if v else None
+    if hasattr(v, "total_seconds"):
+        return int(abs(v.total_seconds()))
+    try:
+        return int(abs(int(v)) // 10_000_000)
+    except (TypeError, ValueError):
+        return None
+
+
+def lockout_policy(conn: Connection, base_dn: str) -> tuple[int | None, int | None]:
+    """The domain's (lockoutThreshold, lockOutObservationWindow in seconds); threshold 0 = accounts never lock, None =
+    it couldn't be read. Fine-grained password policies (PSOs) aren't readable with a read-only account and aren't
+    considered."""
+    root = _domain_root(conn, base_dn)
+    if not root:
+        return None, None
+    try:
+        conn.search(root, "(objectClass=*)", search_scope=BASE, attributes=["lockoutThreshold", "lockOutObservationWindow"])
+        for e in conn.response or []:
+            if e.get("type") == "searchResEntry":
+                attrs = e.get("attributes") or {}
+                v = attrs.get("lockoutThreshold")
+                v = v[0] if isinstance(v, list) and v else v
+                threshold = int(v) if v not in (None, "", []) else None
+                raw = (e.get("raw_attributes") or {}).get("lockOutObservationWindow")
+                window = _seconds(raw[0].decode() if isinstance(raw, list) and raw and isinstance(raw[0], bytes) else attrs.get("lockOutObservationWindow"))
+                return threshold, window
+    except (LDAPException, TypeError, ValueError):
+        return None, None
+    return None, None
+
+
 def fetch_users(conn: Connection, p: DirectoryParams, with_groups: bool = True) -> list[DirUser]:
     users = []
     for e in _paged(conn, p.user_search_base or p.base_dn, p.user_filter, USER_ATTRS):

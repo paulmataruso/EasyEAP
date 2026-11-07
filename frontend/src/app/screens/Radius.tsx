@@ -20,6 +20,7 @@ import { Btn, Callout, Chip, Empty, ErrorState, HealthDot, LoadingBlock, PageHea
 import { AddControllerDialog, DeleteControllerDialog, EditControllerDialog, RotateSecretDialog } from './radius/Controllers'
 import { ControllerGuides } from './radius/Guide'
 import { AddSwitchDialog, ModeChip, ServesChips, SwitchPanel, WiredKitDialog } from './radius/Switches'
+import { GroupPolicyDialog } from './radius/GroupPolicy'
 import { RadiusSettingsForm, ServerCertificateCard, SettingsSummary } from './radius/Settings'
 
 export default function Radius() {
@@ -29,6 +30,7 @@ export default function Radius() {
   const [adding, setAdding] = useState(false)
   const [addingSwitch, setAddingSwitch] = useState(false)
   const [kit, setKit] = useState(false)
+  const [gpo, setGpo] = useState(false)
   const [rotating, setRotating] = useState<RadiusClient | null>(null)
   const [editing, setEditing] = useState<RadiusClient | null>(null)
   const [deleting, setDeleting] = useState<RadiusClient | null>(null)
@@ -135,6 +137,7 @@ export default function Radius() {
             meta={data.clients.length ? `${data.clients.length} registered` : undefined}
             actions={<>
               {s && data.clients.some((c) => c.networks.includes('wired')) && <Btn size="sm" variant="ghost" onClick={() => setKit(true)}><MonitorDown aria-hidden />Windows wired kit</Btn>}
+              {s && <Btn size="sm" variant="ghost" onClick={() => setGpo(true)}><MonitorDown aria-hidden />Windows Group Policy</Btn>}
               {s && can('radius:write') && data.clients.length > 0 && <AddMenu onController={() => setAdding(true)} onSwitch={() => setAddingSwitch(true)} />}
             </>} />
           {data.clients.length === 0 ? (
@@ -171,6 +174,7 @@ export default function Radius() {
       {s && <AddControllerDialog open={adding} onOpenChange={setAdding} settings={s} clients={data.clients} onAdded={(c) => { setSelectedId(c.id); setVendor(c.vendor) }} />}
       {s && <AddSwitchDialog open={addingSwitch} onOpenChange={setAddingSwitch} settings={s} clients={data.clients} onAdded={(c) => setSelectedId(c.id)} />}
       <WiredKitDialog open={kit} onOpenChange={setKit} />
+      <GroupPolicyDialog open={gpo} onOpenChange={setGpo} />
       {s && <RotateSecretDialog client={rotating} onClose={() => setRotating(null)} settings={s} returnFocus={focusTo} />}
       <EditControllerDialog client={editing} onClose={() => setEditing(null)} clients={data.clients} returnFocus={focusTo} />
       <DeleteControllerDialog client={deleting} onClose={() => { if (deleting?.id === selectedId) setSelectedId(null); setDeleting(null) }} returnFocus={focusTo} />

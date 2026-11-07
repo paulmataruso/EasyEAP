@@ -44,9 +44,23 @@ to the ports' current VLAN, with EasyEAP sending no VLAN: rejected and 802.1X-le
 To **enforce**, set the Fallback VLAN to a restricted network (internet only, or nothing), because rejected devices
 land there too, and reconnect devices so they re-authenticate. Back to monitor mode: set it back.
 
+### MAC authentication (MAC-Based) on UniFi
+
+For devices without 802.1X (printers, cameras), turn on **MAC authentication** for the switch on EasyEAP's RADIUS
+page, then set **802.1X Control** to **MAC-Based** on the ports those devices use. The switch asks EasyEAP about the
+device's MAC address (EAP-MD5, or PAP), EasyEAP checks its **MAC allow list** and sends the group's VLAN. Ports in
+MAC-Based mode don't do certificate 802.1X, so use it only on ports for devices that can't. MACs the switch asks
+about that aren't listed appear under **MAC allow list → Seen, not allowed**.
+
+### Admin logins
+
+UniFi switches and gateways have no TACACS+, RADIUS or LDAP login for administrators; they're managed from UniFi
+Network, so EasyEAP's [device administration](../device-administration.md) doesn't apply.
+
 ### Not verified on UniFi hardware
 
 EasyEAP's tests haven't run against a UniFi switch. Unverified: whether UniFi switches accept CoA (leave CoA off),
 how often they re-authenticate, and which `NAS-Port-Type` they send. If a UniFi switch sends no port type, EasyEAP
-counts a request with no SSID as wired. Check the first requests' **Network** column says Wired.
+counts a request with no SSID as wired. Check the first requests' **Network** column says Wired. MAC-Based mode is
+unverified too: EasyEAP doesn't check the `Calling-Station-Id` UniFi reports.
 

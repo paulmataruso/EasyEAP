@@ -35,6 +35,7 @@ def sync_tenant(session: Session, tenant_id: uuid.UUID, *, force: bool = False) 
         try:
             groups = ldap.fetch_groups(conn, params(cfg))
             users = ldap.fetch_users(conn, params(cfg))
+            threshold, window = ldap.lockout_policy(conn, cfg.base_dn)
         finally:
             conn.unbind()
     except Exception as exc:  # noqa: BLE001 — recorded, never silently ignored
@@ -93,6 +94,14 @@ def sync_tenant(session: Session, tenant_id: uuid.UUID, *, force: bool = False) 
         row.account_state = "deleted"
         row.groups = []
     session.flush()
+
+    # Device administration: who a group mapping admits may have changed, and the AD bind cap follows the lockout
+    # threshold (docs/plans/device-admin.md §4).
+    if threshold is not None:
+        cfg.lockout_threshold, cfg.lockout_window = threshold, window
+    if session.scalar(select(m.AdminGroupMap.id).where(m.AdminGroupMap.tenant_id == tenant_id).limit(1)) is not None:
+        from app.admin.service import bump as admin_bump
+        admin_bump(session, tenant_id)
 
     from app.policy.service import recompute_tenant  # local import avoids a cycle
     decisions = recompute_tenant(session, tenant_id)

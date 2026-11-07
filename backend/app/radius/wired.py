@@ -10,6 +10,7 @@ with the secret shown once at creation.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Literal
@@ -144,8 +145,17 @@ class WiredProfile(BaseModel):
     source_interface: str = Field(default="", max_length=40)
     vrf: str = Field(default="", max_length=32)
     fallback_vlan: int | None = Field(default=None, ge=1, le=4094)  # UniFi: where rejected or 802.1X-less devices go
+    # MAC authentication (docs/plans/mac-auth.md): devices without 802.1X are checked against the MAC allow list.
+    # Changed only in monitor mode, through its own change (POST …/mab), never with a port plan edit.
+    mab: bool = False
     mode_set_at: str | None = None
     mode_set_by: str | None = None
+    # IBNS 2.0: the control policy EasyEAP's latest change attaches to the ports, the one it replaced, and which change
+    # that was. Policy names carry a hash of their content (§6.1 of the MAC plan), so a change is always "define the new
+    # policy, swap it in, remove the old one" and never an edit of an attached policy, which IOS would merge.
+    policy: str | None = Field(default=None, max_length=64)
+    policy_prev: str | None = Field(default=None, max_length=64)
+    last_change: Literal["created", "mab", "enforce", "monitor"] | None = None
 
     @field_validator("source_interface")
     @classmethod
@@ -175,6 +185,8 @@ class WiredProfile(BaseModel):
 def validate_profile(vendor: str, data: dict) -> dict:
     """Validate and normalise a port plan for a switch of this vendor. Raises WiredConfigError or pydantic's error."""
     p = WiredProfile.model_validate(data)
+    if vendor not in ("cisco-switch", "unifi"):
+        p.mab = False  # MAC authentication is generated for Cisco Catalyst and UniFi switches only
     if vendor == "cisco-switch":
         ranges = parse_ports(p.interfaces, "interfaces")
         if not ranges:
@@ -198,12 +210,14 @@ class Ctx:
     acct: int
     p: WiredProfile
     switch: str
+    admin: bool = False  # admin logins over TACACS+ are on (app/admin/cisco.py owns the login and exec lists)
 
 
 def _ctx(client: m.RadiusClient | None, profile: dict, settings: m.RadiusSettings, radius_ip: str, tenant: m.Tenant) -> Ctx:
     auth, acct = (settings.auth_port, settings.acct_port) if settings.dedicated_ports else (1812, 1813)
     return Ctx(name=f"EASYEAP-{tenant.slug.upper()}"[:31], server=radius_ip or "<easyeap-radius-ip>", auth=auth, acct=acct,
-               p=WiredProfile.model_validate(profile), switch=(client.name if client else "this switch"))
+               p=WiredProfile.model_validate(profile), switch=(client.name if client else "this switch"),
+               admin=bool(getattr(client, "admin_enabled", False)))
 
 
 def preflight(c: Ctx, vendor: str) -> list[dict]:
@@ -227,7 +241,12 @@ def preflight(c: Ctx, vendor: str) -> list[dict]:
 def _aaa_block(c: Ctx, accounting: str) -> list[str]:
     p = c.p
     out = []
-    if not p.has_aaa:
+    if c.admin:
+        # Regenerating this configuration must never put `login default local` back over the TACACS+ lists.
+        out += ["! Admin logins come from EasyEAP device administration: its login and exec lists are left as they are.",
+                "aaa new-model",
+                "!"]
+    elif not p.has_aaa:
         out += ["! This switch doesn't use AAA yet. aaa new-model changes how logins work, so keep logging in with the",
                 "! switch's local users (make sure one exists: show running-config | include ^username).",
                 "aaa new-model",
@@ -278,7 +297,8 @@ def _port_common(p: WiredProfile) -> list[str]:
 
 
 def _ibns2_failure_classes(p: WiredProfile, enforce: bool) -> list[str]:
-    """`event authentication-failure` entries. Connected devices always keep working while EasyEAP is unreachable."""
+    """`event authentication-failure` entries. Connected devices always keep working while EasyEAP is unreachable.
+    With MAC authentication, a device that doesn't answer 802.1X gets MAB; one that answers and fails never does."""
     out = [" event authentication-failure match-first",
            "  5 class AAA_SVR_DOWN_AUTHD_HOST do-until-failure",
            "   10 pause reauthentication",
@@ -289,6 +309,20 @@ def _ibns2_failure_classes(p: WiredProfile, enforce: bool) -> list[str]:
                 f"   10 activate service-template {tpl}",
                 "   20 authorize",
                 "   30 pause reauthentication"]
+    if p.mab:
+        out += ["  20 class DOT1X_NO_RESP do-until-failure",
+                "   10 terminate dot1x",
+                "   20 authenticate using mab priority 20",
+                "  30 class MAB_FAILED do-until-failure",
+                "   10 terminate mab"]
+        # Not on the allow list: the unknown-device VLAN, or nothing until the next try.
+        out += (["   20 activate service-template EASYEAP_NO_8021X", "   30 authorize"] if enforce and p.no_supplicant == "vlan"
+                else ["   20 authentication-restart 300"])
+        out += ["  40 class always do-until-failure",
+                "   10 terminate dot1x",
+                "   20 terminate mab",
+                "   30 authentication-restart 300"]
+        return out
     if enforce and p.no_supplicant == "vlan":
         out += ["  20 class DOT1X_NO_RESP do-until-failure",
                 "   10 terminate dot1x",
@@ -300,15 +334,17 @@ def _ibns2_failure_classes(p: WiredProfile, enforce: bool) -> list[str]:
     return out
 
 
-def _ibns2_policy(name: str, p: WiredProfile, enforce: bool) -> list[str]:
-    return [f"policy-map type control subscriber {name}",
-            " event session-started match-all",
+def _ibns2_body(p: WiredProfile, enforce: bool) -> list[str]:
+    """The policy's content, without its name."""
+    agent_found = (["   10 terminate mab", "   20 authenticate using dot1x priority 10"] if p.mab
+                   else ["   10 authenticate using dot1x priority 10"])
+    return [" event session-started match-all",
             "  10 class always do-until-failure",
             "   10 authenticate using dot1x priority 10",
             *_ibns2_failure_classes(p, enforce),
             " event agent-found match-all",
             "  10 class always do-until-failure",
-            "   10 authenticate using dot1x priority 10",
+            *agent_found,
             " event aaa-available match-all",
             "  10 class IN_CRITICAL_AUTH do-until-failure",
             "   10 clear-session",
@@ -319,8 +355,26 @@ def _ibns2_policy(name: str, p: WiredProfile, enforce: bool) -> list[str]:
             "   10 clear-session",
             " event violation match-all",
             "  10 class always do-until-failure",
-            "   10 restrict",
-            "!"]
+            "   10 restrict"]
+
+
+def _named(prefix: str, body: list[str]) -> str:
+    digest = hashlib.sha256("\n".join(body).encode()).hexdigest()[:8].upper()
+    return f"{prefix}_{digest}"
+
+
+def monitor_policy(p: WiredProfile) -> str:
+    """Name of the monitor-mode control policy for this plan: EASYEAP_MONITOR_<hash of its content>."""
+    return _named("EASYEAP_MONITOR", _ibns2_body(p, enforce=False))
+
+
+def closed_policy(p: WiredProfile) -> str:
+    return _named("EASYEAP_CLOSED", _ibns2_body(p, enforce=True))
+
+
+def _ibns2_policy(p: WiredProfile, enforce: bool) -> list[str]:
+    name = closed_policy(p) if enforce else monitor_policy(p)
+    return [f"policy-map type control subscriber {name}", *_ibns2_body(p, enforce), "!"]
 
 
 IBNS2_CLASSES = [
@@ -345,6 +399,19 @@ IBNS2_CLASSES = [
 ]
 
 
+# Defined only once MAC authentication is on (re-pasting a class-map with the same match lines changes nothing).
+MAB_CLASSES = [
+    "class-map type control subscriber match-all MAB_FAILED",
+    " match method mab",
+    " match result-type method mab authoritative",
+    "!",
+]
+
+
+def _classes(p: WiredProfile) -> list[str]:
+    return IBNS2_CLASSES + (MAB_CLASSES if p.mab else [])
+
+
 def _service_templates(p: WiredProfile) -> list[str]:
     out = []
     if p.server_down == "vlan" and p.server_down_vlan:
@@ -365,6 +432,27 @@ SAFE_PASTE = [
 ]
 
 
+def _ibns2_ports(p: WiredProfile) -> list[str]:
+    out = [" access-session host-mode " + p.host_mode,
+           " access-session port-control auto",
+           " authentication periodic",
+           " authentication timer reauthenticate server",
+           " dot1x pae authenticator",
+           " dot1x timeout tx-period 10"]
+    if p.mab:
+        out += MAB_PORT_IBNS2
+    return [*out, " spanning-tree portfast", " spanning-tree bpduguard enable"]
+
+
+# MAC authentication on a port: MAB after 802.1X gets no answer (two EAP requests 10 s apart, about 30 s after link-up).
+MAB_PORT_IBNS2 = [" mab", " dot1x max-reauth-req 2"]
+MAB_PORT_CLASSIC = [" authentication order dot1x mab", " authentication priority dot1x mab", " mab", " dot1x max-reauth-req 2",
+                    " authentication timer restart 300"]
+MAB_PORT_IBNS2_OFF = [" no mab", " no dot1x max-reauth-req"]
+MAB_PORT_CLASSIC_OFF = [" no authentication order", " no authentication priority", " no mab", " no dot1x max-reauth-req",
+                        " no authentication timer restart"]
+
+
 def cisco_initial(c: Ctx) -> str:
     """The first paste: AAA, RADIUS and the ports in monitor mode (open, no fallback actions, no VLAN from EasyEAP)."""
     p = c.p
@@ -373,17 +461,11 @@ def cisco_initial(c: Ctx) -> str:
             "! Ports stay open: devices that fail or don't speak 802.1X keep their access, and EasyEAP logs what it",
             "! would decide without changing any VLAN. Enforce later from EasyEAP (RADIUS → the switch → Enforce).",
             "!"]
+    if p.mab:
+        head[-1:] = ["! MAC authentication: devices that don't answer 802.1X are checked against EasyEAP's MAC allow list.", "!"]
     if p.platform == "ibns2":
-        body = _aaa_block(c, "identity") + IBNS2_CLASSES + _ibns2_policy("EASYEAP_MONITOR", p, enforce=False)
-        ports = [" access-session host-mode " + p.host_mode,
-                 " access-session port-control auto",
-                 " authentication periodic",
-                 " authentication timer reauthenticate server",
-                 " dot1x pae authenticator",
-                 " dot1x timeout tx-period 10",
-                 " spanning-tree portfast",
-                 " spanning-tree bpduguard enable",
-                 " service-policy type control subscriber EASYEAP_MONITOR"]
+        body = _aaa_block(c, "identity") + _classes(p) + _ibns2_policy(p, enforce=False)
+        ports = [*_ibns2_ports(p), f" service-policy type control subscriber {monitor_policy(p)}"]
     else:
         body = _aaa_block(c, "dot1x")
         ports = [" authentication host-mode " + p.host_mode,
@@ -394,6 +476,7 @@ def cisco_initial(c: Ctx) -> str:
                  " authentication violation restrict",
                  " dot1x pae authenticator",
                  " dot1x timeout tx-period 10",
+                 *(MAB_PORT_CLASSIC if p.mab else []),
                  " spanning-tree portfast",
                  " spanning-tree bpduguard enable"]
     lines = head + body
@@ -403,6 +486,24 @@ def cisco_initial(c: Ctx) -> str:
         lines += [line, *_port_common(p), *ports, "!"]
     lines.append("end")
     return "\n".join(lines)
+
+
+def attached_policy(p: WiredProfile) -> str:
+    """The control policy on the ports after EasyEAP's latest change (IBNS 2.0)."""
+    return p.policy or (closed_policy(p) if p.mode == "enforce" else monitor_policy(p))
+
+
+def _swap(ranges: list[PortRange], old: str, new: str, extra: list[str]) -> list[str]:
+    """Attach `new` in place of `old` on every port range, then remove `old`. Never an edit of an attached policy."""
+    out = []
+    for line in interface_range_lines(ranges):
+        out += [line]
+        if old != new:
+            out.append(f" no service-policy type control subscriber {old}")
+        out += [f" service-policy type control subscriber {new}", *extra, "!"]
+    if old != new:
+        out.append(f"no policy-map type control subscriber {old}")
+    return out
 
 
 def cisco_enforce(c: Ctx) -> str:
@@ -415,10 +516,9 @@ def cisco_enforce(c: Ctx) -> str:
         lines += ["! EasyEAP unreachable: authorize new devices (critical access) and let them retry once it's back.",
                   "dot1x critical eapol", "!"]
     if p.platform == "ibns2":
-        lines += _service_templates(p) + _ibns2_policy("EASYEAP_CLOSED", p, enforce=True)
-        for line in interface_range_lines(ranges):
-            lines += [line, " no service-policy type control subscriber EASYEAP_MONITOR",
-                      " service-policy type control subscriber EASYEAP_CLOSED", " access-session closed", "!"]
+        old = attached_policy(p) if p.mode == "monitor" else (p.policy_prev if p.last_change == "enforce" and p.policy_prev else monitor_policy(p))
+        lines += (MAB_CLASSES if p.mab else []) + _service_templates(p) + _ibns2_policy(p, enforce=True)
+        lines += _swap(ranges, old, closed_policy(p), [" access-session closed"])
         lines += ["end", "! Restart the sessions so devices are re-authenticated and get their VLANs:", "clear access-session"]
     else:
         for line in interface_range_lines(ranges):
@@ -437,6 +537,7 @@ def _classic_actions(p: WiredProfile, prefix: str) -> list[str]:
     if p.server_down != "wait":
         out.append(" authentication event server alive action reinitialize")
     if p.no_supplicant == "vlan":
+        # With MAC authentication, also where devices that aren't on the allow list go.
         out.append(f" authentication event no-response action authorize vlan {p.no_supplicant_vlan}")
     return [" " + prefix + x.lstrip() for x in out]
 
@@ -446,13 +547,36 @@ def cisco_monitor(c: Ctx) -> str:
     p = c.p
     ranges = access_ranges(p.interfaces, p.exclude)
     lines = [f"! EasyEAP: back to monitor mode on {c.switch}", "! Ports open again; EasyEAP stops sending VLANs to this switch.", "!"]
-    for line in interface_range_lines(ranges):
-        if p.platform == "ibns2":
-            lines += [line, " no access-session closed", " no service-policy type control subscriber EASYEAP_CLOSED",
-                      " service-policy type control subscriber EASYEAP_MONITOR", "!"]
-        else:
+    if p.platform == "ibns2":
+        old = attached_policy(p) if p.mode == "enforce" else (p.policy_prev if p.last_change == "monitor" and p.policy_prev else closed_policy(p))
+        lines += _classes(p) + _ibns2_policy(p, enforce=False)
+        lines += _swap(ranges, old, monitor_policy(p), [" no access-session closed"])
+        lines += ["end", "clear access-session"]
+    else:
+        for line in interface_range_lines(ranges):
             lines += [line, " authentication open", *_classic_actions(p, "no "), "!"]
-    lines += ["end", "clear access-session" if p.platform == "ibns2" else "clear authentication sessions"]
+        lines += ["end", "clear authentication sessions"]
+    return "\n".join(lines)
+
+
+def cisco_mab(c: Ctx) -> str:
+    """Turn MAC authentication on or off (to what the plan says now), in monitor mode: ports stay open throughout."""
+    p = c.p
+    ranges = access_ranges(p.interfaces, p.exclude)
+    word = "on" if p.mab else "off"
+    lines = [f"! EasyEAP: MAC authentication {word} for {c.switch} (monitor mode: ports stay open)",
+             "! Devices that don't answer 802.1X are checked against EasyEAP's MAC allow list; EasyEAP logs each decision." if p.mab
+             else "! Devices that don't answer 802.1X are no longer checked by MAC address.", "!"]
+    if p.platform == "ibns2":
+        flipped = p.model_copy(update={"mab": not p.mab})
+        old = p.policy_prev if p.last_change == "mab" and p.policy_prev else monitor_policy(flipped)
+        lines += _classes(p) + _ibns2_policy(p, enforce=False)
+        lines += _swap(ranges, old, monitor_policy(p), MAB_PORT_IBNS2 if p.mab else MAB_PORT_IBNS2_OFF)
+        lines += ["end", "clear access-session"]
+    else:
+        for line in interface_range_lines(ranges):
+            lines += [line, *(MAB_PORT_CLASSIC if p.mab else MAB_PORT_CLASSIC_OFF), "!"]
+        lines += ["end", "clear authentication sessions"]
     return "\n".join(lines)
 
 
@@ -473,7 +597,13 @@ def _checks(c: Ctx, vlans: list[m.Vlan], vendor: str = "cisco-switch") -> list[s
                    "or the device fails authorization. Change a VLAN's “On switch ports” in Access policy if not.")
     else:
         out.append("EasyEAP assigns no VLAN on switch ports: each device stays on its port's VLAN.")
-    out.append("IP phones, printers and other devices without 802.1X aren't supported yet. Leave their ports out.")
+    if c.p.mab:
+        out.append("Devices without 802.1X (printers, cameras, phones) are checked against the MAC allow list. In monitor mode, the ones "
+                   "that aren't on it appear under MAC allow list → Seen, not allowed; allow them there before you enforce.")
+        out.append("A MAC address is easy to copy, so MAC-authenticated devices should get a VLAN that reaches only what they need.")
+    else:
+        out.append("Printers, cameras, phones and other devices without 802.1X: turn on MAC authentication for this switch, or leave "
+                   "their ports out.")
     return out
 
 
@@ -487,7 +617,9 @@ def guide(vendor: str, *, client: m.RadiusClient | None, profile: dict, settings
         style = "IOS-XE (IBNS 2.0)" if c.p.platform == "ibns2" else "classic IOS / IOS-XE"
         return {**base, "title": f"Cisco Catalyst switch, {style}", "preflight": preflight(c, vendor), "cli": cisco_initial(c),
                 "safe_paste": SAFE_PASTE, "enforce_cli": cisco_enforce(c), "monitor_cli": cisco_monitor(c),
-                "session_command": session_command(profile),
+                # The MAC authentication change, while it's the latest change in monitor mode.
+                "mab_cli": cisco_mab(c) if c.p.mode == "monitor" and c.p.last_change == "mab" else None,
+                "mab": c.p.mab, "session_command": session_command(profile),
                 "steps": ["Run the preflight commands and check each answer.", "Paste the configuration with the safe-paste steps.",
                           "Plug a test device with an EasyEAP certificate into one of the ports and watch for its first request below."],
                 "checks": _checks(c, vlans, vendor)}
@@ -504,6 +636,10 @@ def guide(vendor: str, *, client: m.RadiusClient | None, profile: dict, settings
             "Plug a test device with an EasyEAP certificate into that port and watch for its first request below.",
             "Then set more ports to Auto. Never the uplink or ports with access points.",
         ]
+        if c.p.mab:
+            steps += ["MAC authentication: for ports with printers, cameras or other devices without 802.1X, set 802.1X Control to "
+                      "MAC-Based (“MAC Address” in some versions). UniFi then sends the device's MAC address, and EasyEAP checks it "
+                      "against the MAC allow list. Keep Auto on ports for 802.1X devices."]
         enforce = ["Settings → Networks → Global Switch Settings → 802.1X Control: set the Fallback VLAN to a restricted network "
                    "(internet only, or nothing), because rejected devices also land there.",
                    "Turn ports off and on, or reconnect devices, so they re-authenticate."]
@@ -511,8 +647,14 @@ def guide(vendor: str, *, client: m.RadiusClient | None, profile: dict, settings
         checks = [*_checks(c, vlans, vendor),
                   "Not verified on UniFi hardware by EasyEAP: Change of Authorization, re-authentication timing, and the port type UniFi "
                   "reports. Leave CoA off for UniFi and check the first requests' Network column says Wired."]
+        if c.p.mab:
+            checks.append("Not verified on UniFi hardware by EasyEAP: the attributes of MAC-Based requests. The switch panel shows "
+                          "whether MAC requests arrive and how EasyEAP answered them.")
         return {**base, "title": "UniFi switches", "preflight": [], "cli": None, "safe_paste": [], "steps": steps,
-                "enforce_steps": enforce, "monitor_steps": monitor, "checks": checks, "session_command": None}
+                "enforce_steps": enforce, "monitor_steps": monitor, "checks": checks, "session_command": None, "mab": c.p.mab,
+                "mab_steps": (["Set 802.1X Control to MAC-Based on the ports with devices that can't do 802.1X."] if c.p.mab else
+                              ["Set ports on MAC-Based back to Auto or Force Authorized: EasyEAP now refuses MAC requests from this switch."])
+                if c.p.last_change == "mab" else None}
     steps = [f"Add a RADIUS server {c.server}, authentication port {c.auth}, accounting port {c.acct}, with the shared secret.",
              "Make sure 802.1X requests carry Message-Authenticator (EAP requests always do).",
              "Turn on 802.1X (EAP) on one test port first, in a monitor or open mode if the switch has one.",

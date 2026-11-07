@@ -12,7 +12,9 @@ from app import audit as audit_mod
 from app import models as m
 from app.db import set_platform, set_tenant
 from app.deps import Principal, TenantCtx, db, platform, require
+from app.mac import try_mac
 from app.radius.explain import explain
+from app.radius.mab import MAB_METHODS
 
 router = APIRouter(prefix="/api", tags=["events"])
 
@@ -23,13 +25,16 @@ def event_out(e: m.AuthEvent) -> dict:
             "cert_serial": e.cert_serial, "cert_issuer": e.cert_issuer, "calling_station_id": e.calling_station_id, "called_station_id": e.called_station_id,
             "ssid": e.ssid, "nas_ip": e.nas_ip, "nas_client_id": str(e.nas_client_id) if e.nas_client_id else None, "vlan_id": e.vlan_id,
             "network": e.network, "nas_port_id": e.nas_port_id, "monitor": e.monitor,
-            "rule_id": str(e.rule_id) if e.rule_id else None, "raw_message": e.raw_message}
+            "rule_id": str(e.rule_id) if e.rule_id else None, "raw_message": e.raw_message,
+            # MAC authentication (docs/plans/mac-auth.md): the normalised device MAC, how it authenticated, and the
+            # allow-list entry that admitted it.
+            "mac": e.mac, "method": e.method, "mac_device_id": str(e.mac_device_id) if e.mac_device_id else None}
 
 
 @router.get("/tenants/{tenant_id}/events")
 def list_events(ctx: TenantCtx = Depends(require("events:read")), result: str = "", reason: str = "", q: str = "", hours: int = Query(24, ge=1, le=24 * 90),
                 identity_id: uuid.UUID | None = None, nas_client_id: uuid.UUID | None = None, before_id: int | None = None,
-                network: str = Query("", pattern="^(|wireless|wired)$"),
+                network: str = Query("", pattern="^(|wireless|wired)$"), method: str = Query("", pattern="^(|mac|certificate)$"),
                 page_size: int = Query(100, ge=1, le=500)) -> dict:
     s = ctx.session
     stmt = select(m.AuthEvent).where(m.AuthEvent.tenant_id == ctx.id, m.AuthEvent.at >= datetime.now(UTC) - timedelta(hours=hours))
@@ -43,10 +48,14 @@ def list_events(ctx: TenantCtx = Depends(require("events:read")), result: str = 
         stmt = stmt.where(m.AuthEvent.nas_client_id == nas_client_id)
     if network:
         stmt = stmt.where(m.AuthEvent.network == network)
+    if method in ("mac", "certificate"):
+        stmt = stmt.where(m.AuthEvent.method.in_(MAB_METHODS) if method == "mac" else or_(m.AuthEvent.method.is_(None), m.AuthEvent.method.not_in(MAB_METHODS)))
     if q:
         like = f"%{q.strip()}%"
+        # A MAC in any notation (aa:bb…, AABB.CCDD…, aa-bb…) matches the normalised column too.
+        mac = try_mac(q)
         stmt = stmt.where(or_(m.AuthEvent.username.ilike(like), m.AuthEvent.calling_station_id.ilike(like), m.AuthEvent.cert_serial.ilike(like.replace(":", "")),
-                              m.AuthEvent.nas_ip.ilike(like), m.AuthEvent.nas_port_id.ilike(like)))
+                              m.AuthEvent.nas_ip.ilike(like), m.AuthEvent.nas_port_id.ilike(like), *([m.AuthEvent.mac == mac] if mac else [])))
     if before_id:
         stmt = stmt.where(m.AuthEvent.id < before_id)
     rows = s.scalars(stmt.order_by(m.AuthEvent.id.desc()).limit(page_size)).all()
@@ -62,6 +71,10 @@ def get_event(event_id: int, ctx: TenantCtx = Depends(require("events:read"))) -
     if e is None or e.tenant_id != ctx.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Event not found.")
     out = event_out(e)
+    if e.mac_device_id:
+        d = ctx.session.get(m.MacDevice, e.mac_device_id)
+        g = ctx.session.get(m.DeviceGroup, d.group_id) if d is not None and d.tenant_id == ctx.id else None
+        out["mac_device"] = {"id": str(d.id), "name": d.name, "group_id": str(g.id), "group_name": g.name} if g else None
     if e.cert_serial:
         c = ctx.session.scalars(select(m.Certificate).where(m.Certificate.tenant_id == ctx.id, m.Certificate.serial == e.cert_serial)).first()
         out["certificate_id"] = str(c.id) if c else None

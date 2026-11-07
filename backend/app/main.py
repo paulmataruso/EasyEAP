@@ -25,12 +25,14 @@ from app.routers import (
     backup,
     certificates,
     dashboard,
+    device_admin,
     directory,
     enroll_public,
     enrollments,
     events,
     identities,
     logs,
+    mac,
     pki,
     pki_public,
     policy,
@@ -51,7 +53,7 @@ app = FastAPI(
 )
 
 for r in (setup, auth, tenants, admins, dashboard, identities, directory, pki, certificates, enrollments, enroll_public, policy, radius,
-          events, system, backup, logs, agent, pki_public):
+          events, system, backup, logs, agent, pki_public, mac, device_admin):
     app.include_router(r.router)
 app.include_router(backup.setup_router)
 

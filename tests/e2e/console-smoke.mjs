@@ -49,6 +49,7 @@ const screens = [
   ['tenants', '/tenants'], ['system', '/system'], ['account', '/account'], ['platform audit', '/audit'], ['administrators', '/admins'],
   ['dashboard', `/t/${tenant.id}/dashboard`], ['users', `/t/${tenant.id}/users`], ['certificates', `/t/${tenant.id}/certificates`],
   ['authentication log', `/t/${tenant.id}/events`], ['access policy', `/t/${tenant.id}/policy`], ['RADIUS', `/t/${tenant.id}/radius`],
+  ['MAC allow list', `/t/${tenant.id}/mac`], ['device administration', `/t/${tenant.id}/device-admin`],
   ['directory', `/t/${tenant.id}/directory`], ['certificate authority', `/t/${tenant.id}/pki`], ['tenant audit', `/t/${tenant.id}/audit`],
   ['tenant settings', `/t/${tenant.id}/settings`],
 ]
@@ -149,6 +150,147 @@ if (ids.items?.[0]) {
     await page.getByText('Wired in packages').first().waitFor({ timeout: 10000 })
   })
   if (problems.length > before) bad(`wired walkthrough: ${problems.slice(before).join('; ').slice(0, 400)}`)
+}
+
+// MAC authentication through the real UI (after run.sh: lab-access-1 has it on, the Printers group exists): the switch
+// panel, the allow list, allowing a device, its sheet, Seen not allowed, and the command palette finding it.
+{
+  const before = problems.length
+  const shot = (n) => (shots ? page.screenshot({ path: join(shots, `${n}.png`), fullPage: true }) : null)
+  const step = async (name, fn) => {
+    try { (await fn()) === false ? bad(name) : ok(name) } catch (e) { bad(`${name}: ${String(e.message ?? e).split('\n')[0].slice(0, 200)}`) }
+  }
+  const dlg = page.getByRole('dialog')
+  const n = Math.floor(Math.random() * 200) + 16
+  const mac = `02:00:00:00:${n.toString(16).padStart(2, '0')}:${(n + 1).toString(16).padStart(2, '0')}`
+  const radius = await page.evaluate((tid) => fetch(`/api/tenants/${tid}/radius`).then((r) => r.json()), tenant.id)
+  const sw = radius.clients?.find((c) => c.wired_profile?.mab)
+  if (sw) {
+    await step('switch panel: MAC authentication on, with a link to the allow list', async () => {
+      await page.goto(`${base}/#/t/${tenant.id}/radius?client=${sw.id}`)
+      await page.getByText('MAC authentication', { exact: true }).first().waitFor({ timeout: 10000 })
+      await shot('mab-1-panel')
+      return (await page.getByRole('link', { name: 'MAC allow list' }).count()) > 0
+    })
+  }
+  await step('MAC allow list: devices, Seen not allowed and groups tabs', async () => {
+    await page.goto(`${base}/#/t/${tenant.id}/mac`)
+    await page.getByRole('heading', { name: 'MAC allow list' }).waitFor({ timeout: 10000 })
+    await page.waitForLoadState('networkidle').catch(() => {})
+    await shot('mab-2-devices')
+    await page.locator('.ee-seg-item', { hasText: 'Seen, not allowed' }).click()
+    await page.waitForLoadState('networkidle').catch(() => {})
+    await shot('mab-3-seen')
+    await page.locator('.ee-seg-item', { hasText: 'Groups' }).click()
+    await page.getByText('Printers').first().waitFor({ timeout: 5000 })
+    await shot('mab-4-groups')
+    await page.locator('.ee-seg-item', { hasText: 'Devices' }).click()
+  })
+  await step('Allow a device: a bad MAC is explained, then the device is listed', async () => {
+    await page.getByRole('button', { name: 'Allow a device' }).click()
+    await dlg.getByLabel('MAC address').fill('01:00:5e:00:00:01')
+    await dlg.getByLabel('Name', { exact: true }).fill(`Smoke printer ${n}`)
+    await dlg.getByRole('button', { name: 'Allow device' }).click()
+    await dlg.getByText(/multicast or broadcast/).waitFor({ timeout: 5000 })
+    await dlg.getByLabel('MAC address').fill(mac)
+    await dlg.getByRole('combobox', { name: 'Group' }).click()
+    await page.getByRole('option', { name: /Printers/ }).click()
+    await shot('mab-5-allow')
+    await dlg.getByRole('button', { name: 'Allow device' }).click()
+    await dlg.waitFor({ state: 'hidden', timeout: 10000 })
+    await page.getByRole('button', { name: `Smoke printer ${n}` }).waitFor({ timeout: 10000 })
+  })
+  await step('device sheet: details, recent attempts, block and unblock', async () => {
+    await page.getByRole('button', { name: `Smoke printer ${n}` }).click()
+    await dlg.getByRole('heading', { name: 'Recent attempts' }).waitFor({ timeout: 10000 })
+    await shot('mab-6-sheet')
+    await dlg.getByRole('button', { name: 'Block' }).click()
+    await dlg.getByText('Blocked', { exact: true }).first().waitFor({ timeout: 10000 })
+    await dlg.getByRole('button', { name: 'Unblock' }).click()
+    await dlg.getByText('Allowed', { exact: true }).first().waitFor({ timeout: 10000 })
+    await page.keyboard.press('Escape')
+  })
+  await step('command palette finds the device by MAC', async () => {
+    await page.keyboard.press('Control+k')
+    await page.keyboard.type(mac.replace(/:/g, '').slice(-6))
+    await page.getByRole('option', { name: new RegExp(`Smoke printer ${n}`) }).waitFor({ timeout: 10000 })
+    await page.keyboard.press('Escape')
+  })
+  if (problems.length > before) bad(`MAC walkthrough: ${problems.slice(before).join('; ').slice(0, 400)}`)
+}
+
+// Device administration through the real UI (after run.sh: ops-local exists, IT Dept and Staff are mapped,
+// lab-access-1 has admin logins off again): the tabs, a new account with a password, turning admin logins on (the key
+// shown once, filled into the configuration), and the command palette finding the account.
+{
+  const before = problems.length
+  const shot = (n) => (shots ? page.screenshot({ path: join(shots, `${n}.png`), fullPage: true }) : null)
+  const step = async (name, fn) => {
+    try { (await fn()) === false ? bad(name) : ok(name) } catch (e) { bad(`${name}: ${String(e.message ?? e).split('\n')[0].slice(0, 200)}`) }
+  }
+  const dlg = page.getByRole('dialog')
+  const n = Math.floor(Math.random() * 9000) + 1000
+  const da = await page.evaluate((tid) => fetch(`/api/tenants/${tid}/device-admin`).then((r) => r.json()), tenant.id).catch(() => null)
+  const sw = da?.devices?.find((d) => d.supported && !d.admin_enabled)
+  await step('Device administration: devices, accounts, directory access, admin log and settings', async () => {
+    await page.goto(`${base}/#/t/${tenant.id}/device-admin`)
+    await page.getByRole('heading', { name: 'Device administration' }).waitFor({ timeout: 10000 })
+    await page.waitForLoadState('networkidle').catch(() => {})
+    await shot('admin-1-devices')
+    await page.locator('.ee-seg-item', { hasText: 'EasyEAP accounts' }).click()
+    await page.getByRole('button', { name: 'ops-local' }).waitFor({ timeout: 5000 })
+    await shot('admin-2-accounts')
+    await page.locator('.ee-seg-item', { hasText: 'Directory access' }).click()
+    await page.getByText('IT Dept').first().waitFor({ timeout: 5000 })
+    await shot('admin-3-directory')
+    await page.locator('.ee-seg-item', { hasText: 'Admin log' }).click()
+    await page.getByText('ops-local').first().waitFor({ timeout: 10000 })
+    await shot('admin-4-log')
+    await page.locator('.ee-seg-item', { hasText: 'Settings' }).click()
+    await page.getByText('Network administrator').first().waitFor({ timeout: 5000 })
+    await shot('admin-5-settings')
+  })
+  await step('new EasyEAP account: a short password is explained, then it is created and opens', async () => {
+    await page.locator('.ee-seg-item', { hasText: 'EasyEAP accounts' }).click()
+    await page.getByRole('button', { name: 'New account' }).first().click()
+    await dlg.getByLabel('Username').fill(`smoke-${n}`)
+    await dlg.getByLabel('Password (optional)').fill('too-short')
+    await dlg.getByLabel('Confirm').fill('too-short')
+    await dlg.getByRole('button', { name: 'Create account' }).click()
+    await dlg.getByText(/at least 15 characters/).first().waitFor({ timeout: 5000 })
+    await dlg.getByLabel('Password (optional)').fill(`Smoke-Harbor-Violet-${n}`)
+    await dlg.getByLabel('Confirm').fill(`Smoke-Harbor-Violet-${n}`)
+    await shot('admin-6-new')
+    await dlg.getByRole('button', { name: 'Create account' }).click()
+    await dlg.getByRole('heading', { name: 'Authenticator code' }).waitFor({ timeout: 10000 })
+    await shot('admin-7-account')
+    await dlg.getByRole('button', { name: 'Close' }).last().click()
+    await page.getByRole('button', { name: `smoke-${n}` }).waitFor({ timeout: 10000 })
+  })
+  if (sw) {
+    await step(`admin logins on for ${sw.name}: the key is shown once and filled into the configuration`, async () => {
+      await page.locator('.ee-seg-item', { hasText: 'Devices' }).click()
+      await page.getByRole('switch', { name: `Admin logins on ${sw.name}` }).click()
+      await dlg.getByText('TACACS+ key for').waitFor({ timeout: 10000 })
+      const key = (await dlg.getByLabel('TACACS+ key', { exact: true }).innerText()).trim()
+      await dlg.getByLabel('Admin login configuration', { exact: true }).waitFor({ timeout: 10000 })
+      const cfg = await dlg.getByLabel('Admin login configuration', { exact: true }).innerText()
+      await shot('admin-8-config')
+      if (key.length !== 40 || !cfg.includes(`key 0 ${key}`)) return false
+      await dlg.getByLabel(/I’ve saved the TACACS\+ key/).check()
+      await dlg.getByRole('button', { name: 'Done' }).click()
+      await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+      await page.getByRole('switch', { name: `Admin logins on ${sw.name}` }).click()
+      await page.getByRole('switch', { name: `Admin logins on ${sw.name}`, checked: false }).waitFor({ timeout: 10000 })
+    })
+  }
+  await step('command palette finds the EasyEAP account', async () => {
+    await page.keyboard.press('Control+k')
+    await page.keyboard.type(`smoke-${n}`)
+    await page.getByRole('option', { name: new RegExp(`smoke-${n}`) }).waitFor({ timeout: 10000 })
+    await page.keyboard.press('Escape')
+  })
+  if (problems.length > before) bad(`device admin walkthrough: ${problems.slice(before).join('; ').slice(0, 400)}`)
 }
 
 // Command palette opens and finds a user.

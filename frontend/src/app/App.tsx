@@ -28,6 +28,8 @@ const Directory = lazy(() => import('./screens/Directory'))
 const Audit = lazy(() => import('./screens/Audit'))
 const Admins = lazy(() => import('./screens/Admins'))
 const Radius = lazy(() => import('./screens/Radius'))
+const MacAllowList = lazy(() => import('./screens/MacAllowList'))
+const DeviceAdmin = lazy(() => import('./screens/DeviceAdmin'))
 const Pki = lazy(() => import('./screens/Pki'))
 const TenantSetup = lazy(() => import('./screens/TenantSetup'))
 const TenantSettings = lazy(() => import('./screens/TenantSettings'))
@@ -135,6 +137,8 @@ export function App() {
                   <Route path="events" element={<Events />} />
                   <Route path="policy" element={<Policy />} />
                   <Route path="radius" element={<Radius />} />
+                  <Route path="mac" element={<MacAllowList />} />
+                  <Route path="device-admin" element={<DeviceAdmin />} />
                   <Route path="directory" element={<Directory />} />
                   <Route path="pki" element={<Pki />} />
                   <Route path="audit" element={<Audit scope="tenant" />} />

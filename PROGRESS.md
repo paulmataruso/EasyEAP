@@ -46,6 +46,11 @@ Status as of 2026-11-06 (release 1.0.1).
 - [x] Wired 802.1X for Cisco Catalyst (IBNS 2.0 and classic) and UniFi switches: Add switch wizard, monitor mode,
       readiness, Enforce, VLANs on switch ports, wired/Wi-Fi detection and refusal, MAB named, wrong-secret and
       unregistered-address diagnosis, wired enrollment (macOS, Linux) and the Windows wired kit
+- [x] MAC authentication on switch ports (Cisco MAB, UniFi MAC-Based): the MAC allow list with groups and switch VLANs,
+      Seen not allowed, bulk allow, CSV import and export, the Enforce gate, CoA on changes
+- [x] Device administration over TACACS+ (Cisco IOS, IOS XE, Catalyst 9800): EasyEAP accounts with optional authenticator
+      codes, AD group → role mappings checked in AD at login, per-device keys with rotation grace, break-glass names,
+      the Admin log with masked commands
 
 ### Enrollment
 - [x] One-time, device-bound links (72-hour default)
@@ -63,7 +68,8 @@ Status as of 2026-11-06 (release 1.0.1).
 ### Tests
 - [x] Backend unit tests; RLS and policy-draft integration tests; RADIUS renderer tests
 - [x] Shared policy fixtures for the backend and frontend engines
-- [x] End-to-end EAP-TLS through FreeRADIUS against a real domain controller (`tests/e2e/run.sh`), including wired 802.1X
+- [x] End-to-end EAP-TLS through FreeRADIUS against a real domain controller (`tests/e2e/run.sh`), including wired 802.1X,
+      MAC authentication and TACACS+ logins with AD and EasyEAP accounts
 - [x] RADIUS integration test on real FreeRADIUS without the API (`tests/radius/run.sh`), with 1.0.1 version skew; in CI
 - [x] Upgrade from 1.0.1 to wired 802.1X on the lab stack: migration, existing controllers, VLANs and decisions kept
 - [x] Frontend unit tests (formatting, routes, decision ledger)
@@ -84,9 +90,17 @@ Status as of 2026-11-06 (release 1.0.1).
   with real EAP-TLS, with the attributes Catalyst and UniFi switches document. Unverified on UniFi: CoA,
   re-authentication timing and the port type it reports. Also unverified on real devices: the Windows wired kit
   (`netsh lan`), and the macOS Ethernet payload.
-- **Wired 802.1X gaps.** No MAC Authentication Bypass (printers, phones and other devices without 802.1X stay on
-  ports that aren't configured), no machine certificates (Windows wired connects after sign-in), no IP-phone voice
-  domain, no merge with an existing 802.1X configuration on a switch.
+- **MAC authentication is not verified on switch hardware** (Cisco MAB with IBNS 2.0 or classic, UniFi MAC-Based):
+  tested on real FreeRADIUS with the attributes the switches document.
+- **Device administration is not verified on Cisco hardware.** EasyEAP's TACACS+ service is tested against a protocol
+  client that follows IOS's login sequence and against a Samba domain controller, not a real switch or 9800. No TACACS+
+  over TLS (RFC 9887), no command authorization, no authenticator codes for AD accounts, and only Cisco devices.
+  Known trade-offs (docs/device-administration.md): the AD bind limit and authenticator-code reuse are tracked per
+  RADIUS node; fine-grained password policies aren't read; anyone who can reach a device's SSH can lock a named
+  EasyEAP account for 15 minutes; FreeRADIUS and the TACACS+ service share the container user that can read the
+  admin data.
+- **Wired 802.1X gaps.** No machine certificates (Windows wired connects after sign-in), no IP-phone voice domain, no
+  merge with an existing 802.1X configuration on a switch, no profiling or automatic approval for MAC authentication.
 - **Directory sources** other than Active Directory over LDAPS (Entra ID, Google Workspace) are not supported.
 - **Real-device installs** are confirmed on an iPhone: it enrolled through the portal with its key made on the
   device, and authenticated through a live Cisco Catalyst 9800 onto its VLAN. Windows, macOS and Android packages are
@@ -109,6 +123,11 @@ Status as of 2026-11-06 (release 1.0.1).
 ## Planned
 
 - SCEP for MDM-managed devices
+- Switch audit: SNMP and syslog from switches to check that ports enforce 802.1X as configured
+  ([docs/plans/switch-audit.md](docs/plans/switch-audit.md))
+- Machine certificates for domain-joined Windows PCs through a Group Policy startup task
+  ([docs/plans/windows-gpo.md](docs/plans/windows-gpo.md))
+- Device administration phase 2: TACACS+ over TLS, command authorization, other vendors
 - RadSec
 - Additional RADIUS nodes with health in System
 - Email notifications for expiring certificates and failing directory syncs

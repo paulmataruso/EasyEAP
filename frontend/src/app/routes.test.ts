@@ -13,6 +13,7 @@ describe('targetPath', () => {
     expect(targetPath(tid, 'certificates:expiring')).toBe('/t/t-1/certificates?status=expiring')
     expect(targetPath(tid, 'events:unknown_ca')).toBe('/t/t-1/events?reason=unknown_ca')
     expect(targetPath(tid, 'radius:client:c-9')).toBe('/t/t-1/radius?client=c-9')
+    expect(targetPath(tid, 'mac:seen')).toBe('/t/t-1/mac?tab=seen')
   })
   it('falls back to the dashboard for unknown targets', () => {
     expect(targetPath(tid, 'something-new')).toBe('/t/t-1/dashboard')
@@ -25,5 +26,10 @@ describe('targetPath', () => {
     expect(paths.radius(tid, { add: 'switch' })).toBe('/t/t-1/radius?add=switch')
     expect(paths.events(tid, { network: 'wired' })).toBe('/t/t-1/events?network=wired')
     expect(paths.policy(tid, { test: 'u1' })).toBe('/t/t-1/policy?test=u1')
+    expect(paths.mac(tid, { device: 'd1' })).toBe('/t/t-1/mac?device=d1')
+    expect(paths.deviceAdmin(tid)).toBe('/t/t-1/device-admin')
+    expect(paths.deviceAdmin(tid, { tab: 'log' })).toBe('/t/t-1/device-admin?tab=log')
+    expect(paths.deviceAdmin(tid, { account: 'a1' })).toBe('/t/t-1/device-admin?account=a1')
+    expect(paths.mac(tid, { allow: 'AA:BB:CC:DD:EE:FF' })).toBe('/t/t-1/mac?allow=AA%3ABB%3ACC%3ADD%3AEE%3AFF')
   })
 })

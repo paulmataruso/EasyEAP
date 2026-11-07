@@ -5,7 +5,7 @@
 | Path | What |
 |---|---|
 | `backend/` | FastAPI API and worker (`app/`), Alembic migrations, pytest suite (`tests/`) |
-| `services/radius/` | FreeRADIUS image and the radius-agent (`agent/easyeap_agent.py`, config renderer `agent/render.py`) |
+| `services/radius/` | FreeRADIUS image and the radius-agent (`agent/easyeap_agent.py`, config renderer `agent/render.py`, the TACACS+ service `agent/tacacs.py`) |
 | `services/lab-client/` | `eapol_test` image used by the lab and the end-to-end test |
 | `frontend/` | React console (`src/app/`), enrollment portal (`src/enroll/`), shared domain code (`src/domain/`), design prototypes (`src/concepts/`, `src/prototype/`, `src/compare/`) |
 | `deploy/` | Compose files, installer, backup and restore, proxy, OpenBao and lab configuration |
@@ -43,7 +43,7 @@ and test users are described in `deploy/lab/README.md`. Read the domain's CA cer
 | RADIUS config renderer | `docker run --rm -v "$PWD":/src -w /src/backend python:3.13-slim sh -c "pip -q install pytest && python -m pytest tests/test_radius_render.py"` (from the repo root) | — |
 | Frontend unit tests | `cd frontend && pnpm test` | — |
 | Type check and lint | `cd frontend && pnpm typecheck && pnpm lint`; `docker compose exec easyeap-api ruff check --no-cache app tests` | — |
-| RADIUS integration (wired and Wi-Fi detection, monitor mode, version skew) | `tests/radius/run.sh` | Docker; the `v1.0.1` tag |
+| RADIUS integration (wired and Wi-Fi detection, monitor mode, MAC authentication, TACACS+, version skew) | `tests/radius/run.sh` | Docker; the `v1.0.1` tag |
 | End-to-end EAP-TLS | `tests/e2e/run.sh` | lab profile |
 | Console smoke test (browser) | `node tests/e2e/console-smoke.mjs https://127.0.0.1` | running stack, Playwright Chromium |
 
@@ -73,13 +73,23 @@ Then it authenticates with real EAP-TLS through FreeRADIUS. It checks:
 - wired 802.1X, through two more lab-client containers registered as switches inside the controller's subnet:
   monitor mode (accepted, no VLAN sent; the would-be VLAN logged), readiness and the pasted session list, the
   generated configuration (no shared secret in it), Enforce (confirmation required, then the mapped VLAN on ports,
-  Wi-Fi unchanged), "keep the port's VLAN", wrong-network and MAB refusals, the wrong-secret diagnosis, wired
+  Wi-Fi unchanged), "keep the port's VLAN", wrong-network refusals, the wrong-secret diagnosis, wired
   enrollment packages and the Windows wired kit;
+- MAC authentication: the allow list, "Seen, not allowed", the Enforce gate, group VLANs, block, Cisco MAB and UniFi
+  MAC-Based;
+- device administration: TACACS+ logins from a lab container acting as a switch, with an EasyEAP account and with AD
+  users through nested group mappings (privilege 15 and 1), refusals with their reasons, the Admin log with a masked
+  command, key rotation with grace, a break-glass name, and admin logins turned off;
 - the audit chain.
 
-`E2E_WIRED=0` skips the wired steps (for a build from before wired 802.1X). `E2E_DEPLOY_DIR`, `COMPOSE_PROJECT_NAME`
+`E2E_WIRED=0` skips the wired steps (for a build from before wired 802.1X), and `E2E_ADMIN=0` the device-administration
+steps. `E2E_DEPLOY_DIR`, `COMPOSE_PROJECT_NAME`
 and `COMPOSE_FILE` point it at another deployment, for example one installed from a previous release to test an
 upgrade.
+
+Two pieces of code exist twice and are tested to stay identical: the command masking in `backend/app/admin/mask.py`
+and `services/radius/agent/tacmask.py` (the agent has no access to the backend's code), and the reason codes the TACACS+
+service logs and their labels in `frontend/src/app/api/deviceAdmin.ts`.
 
 The policy engine is implemented twice: `backend/app/policy/engine.py` is authoritative, and
 `frontend/src/domain/policy.ts` serves previews in the prototypes. Both are tested against the same fixtures in

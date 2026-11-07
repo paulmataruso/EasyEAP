@@ -3,13 +3,14 @@
 // Like Add controller, the shared secret is returned once, kept only in this component's state while the dialog is
 // open, filled into the configuration in the browser, and dropped when the dialog closes.
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react'
-import { ArrowLeft, ArrowRight, Check, Download, Eye, Lock, Pencil, ShieldCheck, Undo2 } from 'lucide-react'
+import { Link } from 'react-router'
+import { ArrowLeft, ArrowRight, Cable, Check, Download, Eye, Lock, Pencil, ShieldCheck, Undo2 } from 'lucide-react'
 import { cn } from '@/ui/lib'
 import { errorField, saveBlob } from '../../api/client'
 import {
-  ADDRESS_PLACEHOLDER, SECRET_PLACEHOLDER, SWITCH_VENDORS, defaultCoaPort, defaultWiredProfile, fillText, remainingPlaceholders, switchVendorLabels,
-  useActivity, useCheckSessions, useConfigApplied, useCreateClient, useReadiness, useSetWiredMode, useUpdateClient, useWiredGuide, useWiredKit,
-  type RadiusClient, type RadiusSettings, type WiredGuide, type WiredProfile,
+  ADDRESS_PLACEHOLDER, MAB_VENDORS, SECRET_PLACEHOLDER, SWITCH_VENDORS, defaultCoaPort, defaultWiredProfile, fillText, remainingPlaceholders, supportsMab, switchVendorLabels,
+  useActivity, useCheckSessions, useConfigApplied, useCreateClient, useRadius, useReadiness, useSetMab, useSetWiredMode, useUpdateClient, useWiredGuide, useWiredKit,
+  type MabHealth, type RadiusClient, type RadiusSettings, type WiredGuide, type WiredProfile,
 } from '../../api/radius'
 import { useTenant } from '../../api/tenant'
 import { failureExplanations } from '@/domain/explain'
@@ -17,6 +18,7 @@ import type { FailureCode } from '@/domain/types'
 import { ago, fmtDate, fmtDateTime } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
 import { Btn, Callout, Chip, CopyButton, EDialog, ESelect, ESwitch, ErrorState, Field, LoadingBlock, OneTimeSecret, Seg, errorMessage, toast } from '../../ui'
+import { paths } from '../../routes'
 import { addressProblem } from './Controllers'
 import { Marked } from './Guide'
 
@@ -56,7 +58,7 @@ const hostModes: Record<WiredProfile['host_mode'], string> = {
 function describeDefaults(p: WiredProfile): string[] {
   return [
     hostModes[p.host_mode].split(':')[0],
-    p.no_supplicant === 'vlan' ? `Devices without 802.1X: VLAN ${p.no_supplicant_vlan ?? '?'} once enforced` : 'Devices without 802.1X: blocked once enforced',
+    `${p.mab ? 'Devices not on the MAC allow list' : 'Devices without 802.1X'}: ${p.no_supplicant === 'vlan' ? `VLAN ${p.no_supplicant_vlan ?? '?'} once enforced` : 'blocked once enforced'}`,
     p.server_down === 'open' ? 'EasyEAP unreachable: new devices allowed on the port’s VLAN' : p.server_down === 'vlan' ? `EasyEAP unreachable: new devices on VLAN ${p.server_down_vlan ?? '?'}` : 'EasyEAP unreachable: new devices wait, connected ones keep working',
     p.access_vlan ? `Access VLAN ${p.access_vlan}` : 'Each port keeps its VLAN',
     p.source_interface ? `RADIUS from ${p.source_interface}` : 'RADIUS from the switch’s default address',
@@ -64,7 +66,33 @@ function describeDefaults(p: WiredProfile): string[] {
   ]
 }
 
-export function PortPlanForm({ vendor, value, onChange, touched, serverError }: { vendor: string; value: WiredProfile; onChange: (p: WiredProfile) => void; touched: boolean; serverError?: { field: string; message: string } | null }) {
+/** MAC authentication in the port plan: chosen when the switch is added; afterwards its own change on the switch's panel. */
+function MabChoice({ vendor, value, onChange, mode, supported }: { vendor: string; value: WiredProfile; onChange: (v: boolean) => void; mode: 'create' | 'edit'; supported: boolean }) {
+  if (!MAB_VENDORS.includes(vendor)) return <Callout tone="neutral">IP phones, printers and other devices without 802.1X can’t be admitted by MAC address on this platform: list their ports under “leave alone”.</Callout>
+  if (mode === 'edit') {
+    return <Callout tone="neutral">MAC authentication is {value.mab ? 'on' : 'off'} for this switch. Turn it {value.mab ? 'off' : 'on'} from the switch’s panel: it’s a change of its own on the switch.</Callout>
+  }
+  const on = !!value.mab && supported
+  return (
+    <div className="flex items-start justify-between gap-6">
+      <div className="min-w-0 max-w-[62ch]">
+        <p className="text-[13px] font-semibold">Admit devices without 802.1X by MAC address</p>
+        <p className="ee-small ee-ink-3 mt-0.5">{!supported
+          ? 'RADIUS needs updating first (System health shows its version). You can turn it on later from the switch’s panel.'
+          : on ? (vendor === 'unifi'
+            ? 'Ports you set to MAC-Based check their devices against the MAC allow list.'
+            : 'Printers, cameras and phones that don’t answer 802.1X are checked against the MAC allow list after about 30 seconds. Devices that answer 802.1X never fall back to their MAC.')
+            : 'Off: devices without 802.1X are refused once enforced, or put on the VLAN for them below. You can turn it on later.'}</p>
+      </div>
+      <ESwitch checked={on} onChange={onChange} disabled={!supported} label="Admit devices without 802.1X by MAC address" />
+    </div>
+  )
+}
+
+export function PortPlanForm({ vendor, value, onChange, touched, serverError, mab = 'create' }: { vendor: string; value: WiredProfile; onChange: (p: WiredProfile) => void; touched: boolean; serverError?: { field: string; message: string } | null; mab?: 'create' | 'edit' }) {
+  const { tid } = useTenant()
+  const radius = useRadius(tid)
+  const mabSupported = supportsMab(radius.data?.agent)
   const id = useId()
   const [more, setMore] = useState(false)
   const set = <K extends keyof WiredProfile>(k: K, v: WiredProfile[K]) => onChange({ ...value, [k]: v })
@@ -80,7 +108,8 @@ export function PortPlanForm({ vendor, value, onChange, touched, serverError }: 
           hint="UniFi puts devices that fail 802.1X, or don’t try it, on this VLAN. While you test, use the VLAN the ports use today: that’s UniFi’s monitor mode. Choose a restricted VLAN when you enforce.">
           <VlanInput id={`${id}-fb`} label="Fallback VLAN" value={value.fallback_vlan} onChange={(v) => set('fallback_vlan', v)} invalid={!!err('fallback_vlan')} />
         </Field>
-        <Callout tone="neutral">IP phones, printers and other devices without 802.1X aren’t supported yet. Leave their ports on Force Authorized.</Callout>
+        <MabChoice vendor={vendor} value={value} onChange={(v) => set('mab', v)} mode={mab} supported={mabSupported} />
+        {!value.mab && <p className="ee-small ee-ink-3">Without it, leave the ports of IP phones, printers and other devices without 802.1X on Force Authorized.</p>}
       </div>
     )
   }
@@ -109,7 +138,7 @@ export function PortPlanForm({ vendor, value, onChange, touched, serverError }: 
         </div>
         <ESwitch checked={value.has_aaa} onChange={(v) => set('has_aaa', v)} label="The switch already uses AAA" />
       </div>
-      <Callout tone="neutral">IP phones, printers and other devices without 802.1X aren’t supported yet: list their ports under “leave alone”.</Callout>
+      <MabChoice vendor={vendor} value={value} onChange={(v) => set('mab', v)} mode={mab} supported={mabSupported} />
 
       <div className="rounded-[10px] border border-[var(--ee-line)] p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -125,7 +154,7 @@ export function PortPlanForm({ vendor, value, onChange, touched, serverError }: 
               <ESelect id={`${id}-hm`} label="Devices per port" value={value.host_mode} onChange={(v) => set('host_mode', v as WiredProfile['host_mode'])} className="w-full"
                 options={Object.entries(hostModes).map(([v, l]) => ({ value: v, label: l }))} />
             </Field>
-            <Field label="Devices without 802.1X, once enforced" htmlFor={`${id}-ns`} error={err('no_supplicant_vlan')}
+            <Field label={value.mab ? 'Devices not on the MAC allow list, once enforced' : 'Devices without 802.1X, once enforced'} htmlFor={`${id}-ns`} error={err('no_supplicant_vlan')}
               hint="In monitor mode they keep their access either way.">
               <div className="flex flex-wrap items-center gap-3">
                 <Seg label="Devices without 802.1X" value={value.no_supplicant} onChange={(v) => set('no_supplicant', v)}
@@ -167,13 +196,13 @@ export function PortPlanForm({ vendor, value, onChange, touched, serverError }: 
 
 /** A wired guide: preflight, the configuration (filled with the one-time secret when given), safe-paste, steps. */
 export function WiredGuideBody({ guide, settings, secret, onCopied, which = 'initial', secretOf }: {
-  guide: WiredGuide; settings: RadiusSettings; secret?: string | null; onCopied?: () => void; which?: 'initial' | 'enforce' | 'monitor'; secretOf?: string
+  guide: WiredGuide; settings: RadiusSettings; secret?: string | null; onCopied?: () => void; which?: 'initial' | 'enforce' | 'monitor' | 'mab'; secretOf?: string
 }) {
   const id = useId()
   const [address, setAddress] = useState('')
   const fill = { secret, address: settings.radius_address ? null : address.trim() || null }
-  const rawCli = which === 'enforce' ? guide.enforce_cli : which === 'monitor' ? guide.monitor_cli : guide.cli
-  const rawSteps = which === 'enforce' ? guide.enforce_steps : which === 'monitor' ? guide.monitor_steps : guide.steps
+  const rawCli = which === 'enforce' ? guide.enforce_cli : which === 'monitor' ? guide.monitor_cli : which === 'mab' ? guide.mab_cli : guide.cli
+  const rawSteps = which === 'enforce' ? guide.enforce_steps : which === 'monitor' ? guide.monitor_steps : which === 'mab' ? guide.mab_steps : guide.steps
   const cli = rawCli ? fillText(rawCli, fill) : null
   const steps = (rawSteps ?? []).map((s) => fillText(s, fill))
   const left = remainingPlaceholders([cli ?? '', ...steps].join('\n'))
@@ -201,7 +230,7 @@ export function WiredGuideBody({ guide, settings, secret, onCopied, which = 'ini
       {cli && (
         <section aria-label="Configuration">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[13px] font-semibold">{which === 'initial' && guide.preflight.length ? '2. ' : ''}{which === 'enforce' ? 'The change that enforces' : which === 'monitor' ? 'The change back to monitor mode' : 'Configuration'}</p>
+            <p className="text-[13px] font-semibold">{which === 'initial' && guide.preflight.length ? '2. ' : ''}{which === 'enforce' ? 'The change that enforces' : which === 'monitor' ? 'The change back to monitor mode' : which === 'mab' ? `The change that turns MAC authentication ${guide.mab ? 'on' : 'off'}` : 'Configuration'}</p>
             <CopyButton text={cli} what={`${guide.title} configuration`} label="Copy configuration" onCopied={onCopied} />
           </div>
           <pre className="ee-code max-h-[420px] overflow-auto" tabIndex={0} aria-label={`${guide.title} configuration`}><Marked text={cli} /></pre>
@@ -490,6 +519,7 @@ export function SwitchPanel({ client, settings }: { client: RadiusClient; settin
   const [enforce, setEnforce] = useState(false)
   const [monitor, setMonitor] = useState(false)
   const [edit, setEdit] = useState(false)
+  const [mabChange, setMabChange] = useState(false)
   const now = useNow(60_000)
   const p = client.wired_profile
   const guide = useWiredGuide(tid, client.id, view && !!p)
@@ -533,16 +563,102 @@ export function SwitchPanel({ client, settings }: { client: RadiusClient; settin
           <dt className="ee-label">Style</dt><dd>{p.platform === 'classic' ? 'Classic IOS / IOS-XE' : 'IOS-XE (IBNS 2.0)'} · {describeDefaults(p).join(' · ')}</dd>
         </dl>
       )}
+      {MAB_VENDORS.includes(client.vendor) && <MabRow client={client} onChange={() => setMabChange(true)} />}
       {view && (guide.isLoading ? <LoadingBlock rows={5} label="Loading the configuration" />
         : guide.error ? <ErrorState error={guide.error} onRetry={() => guide.refetch()} />
           : guide.data ? <WiredGuideBody guide={guide.data} settings={settings} secretOf={client.name} /> : null)}
       {view && client.wired_mode === 'enforce' && guide.data?.enforce_cli && (
         <WiredGuideBody guide={guide.data} settings={settings} which="enforce" secretOf={client.name} />
       )}
+      {view && client.wired_mode === 'monitor' && (guide.data?.mab_cli || guide.data?.mab_steps) && (
+        <WiredGuideBody guide={guide.data} settings={settings} which="mab" secretOf={client.name} />
+      )}
+      <MabDialog client={mabChange ? client : null} onClose={() => setMabChange(false)} settings={settings} />
       <EnforceDialog client={enforce ? client : null} onClose={() => setEnforce(false)} settings={settings} />
       <MonitorDialog client={monitor ? client : null} onClose={() => setMonitor(false)} settings={settings} />
       <EditPortPlanDialog client={edit ? client : null} onClose={() => setEdit(false)} />
     </div>
+  )
+}
+
+// ── MAC authentication ──────────────────────────────────────────────────────
+
+function MabRow({ client, onChange }: { client: RadiusClient; onChange: () => void }) {
+  const { tid, can } = useTenant()
+  const radius = useRadius(tid)
+  const on = !!client.wired_profile?.mab
+  const supported = supportsMab(radius.data?.agent)
+  const monitor = client.wired_mode === 'monitor'
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3 rounded-[10px] border border-[var(--ee-line)] px-4 py-3">
+      <div className="min-w-0 max-w-[70ch]">
+        <p className="flex flex-wrap items-center gap-2 text-[13px] font-semibold"><Cable className="size-4 ee-ink-3" aria-hidden /><span>MAC authentication</span><Chip tone={on ? 'valid' : 'neutral'}>{on ? 'On' : 'Off'}</Chip></p>
+        <p className="ee-small ee-ink-3 mt-0.5">
+          {on ? <>Devices that don’t answer 802.1X are checked against the {can('mac:read') ? <Link className="underline decoration-[var(--ee-line-3)] underline-offset-2" to={paths.mac(tid)}>MAC allow list</Link> : 'MAC allow list'}.</>
+            : 'Devices without 802.1X (printers, cameras, phones) aren’t admitted by MAC address.'}
+          {!monitor && ' Move the switch back to monitor mode to change it.'}
+          {monitor && !on && !supported && ' RADIUS needs updating before it can be turned on (System health shows its version).'}
+        </p>
+      </div>
+      {can('radius:write') && monitor && (on || supported) && <Btn size="sm" onClick={onChange}>{on ? 'Turn off…' : 'Turn on…'}</Btn>}
+    </div>
+  )
+}
+
+function MabHealthView({ health, hours }: { health: MabHealth; hours: number }) {
+  const { tid, can } = useTenant()
+  const seen = can('mac:read') ? <Link className="underline decoration-[var(--ee-line-3)] underline-offset-2" to={paths.mac(tid, { tab: 'seen' })}>Seen, not allowed</Link> : '“Seen, not allowed”'
+  if (health.answered === 0) {
+    return (
+      <Callout tone="warn" title={`No MAC authentication requests in the last ${hours} hours`}>
+        Enforce waits for one: plug in a device without 802.1X and check the Authentication log. If none arrives, the switch may send MAC requests without Message-Authenticator, which EasyEAP requires (check with <span className="ee-mono">debug radius</span> on the switch).
+      </Callout>
+    )
+  }
+  return (
+    <p className="ee-small ee-ink-2">
+      MAC authentication: {health.answered.toLocaleString('en-GB')} request{health.answered === 1 ? '' : 's'} answered, {health.accepted.toLocaleString('en-GB')} accepted.
+      {health.unknown > 0 && <> {health.unknown} device{health.unknown === 1 ? ' isn’t' : 's aren’t'} on the MAC allow list ({seen}): once enforced, {health.unknown === 1 ? 'it’s' : 'they’re'} {health.unknown_action === 'vlan' ? `put on VLAN ${health.unknown_vlan}` : 'refused'}.</>}
+    </p>
+  )
+}
+
+export function MabDialog({ client, onClose, settings }: { client: RadiusClient | null; onClose: () => void; settings: RadiusSettings }) {
+  const { tid } = useTenant()
+  const set = useSetMab(tid)
+  const [done, setDone] = useState<WiredGuide | null>(null)
+  const [shown, setShown] = useState<RadiusClient | null>(client)
+  useEffect(() => {
+    if (client) { setShown(client); return }
+    const t = setTimeout(() => setDone(null), 200)
+    return () => clearTimeout(t)
+  }, [client])
+  const c = client ?? shown
+  const on = !!c?.wired_profile?.mab
+  const unifi = c?.vendor === 'unifi'
+  return (
+    <EDialog open={!!client} onOpenChange={(o) => !o && onClose()} wide={!!done} risk="gold"
+      title={done ? `${unifi ? 'Change' : 'Paste the change on'} ${c?.name}` : `Turn ${on ? 'off' : 'on'} MAC authentication for ${c?.name}?`}
+      description={done ? 'The ports stay open while you make the change: the switch is in monitor mode.' : on
+        ? 'Devices without 802.1X are no longer checked by MAC address. In monitor mode they keep their access; once enforced they’re refused or put on the VLAN for them.'
+        : 'Devices that don’t answer 802.1X are checked against the MAC allow list. In monitor mode their ports stay open, and EasyEAP logs what it would decide.'}
+      footer={done ? <Btn variant="primary" onClick={onClose}>Done</Btn> : (
+        <>
+          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" busy={set.isPending} onClick={() => c && set.mutate({ id: c.id, enabled: !on }, {
+            onSuccess: (r) => setDone(r.guide),
+            onError: (e) => toast('MAC authentication wasn’t changed', errorMessage(e), 'crit'),
+          })}><Cable aria-hidden />Turn {on ? 'off' : 'on'} and show the change</Btn>
+        </>
+      )}>
+      {done && c ? <WiredGuideBody guide={done} settings={settings} which="mab" secretOf={c.name} /> : !on ? (
+        <ul className="list-disc space-y-1.5 pl-5 text-[13px] ee-ink-2 marker:text-[var(--ee-ink-3)]">
+          <li className="pl-1">A device gets about 30 seconds to answer 802.1X before the switch asks for its MAC address. Devices that answer and fail never fall back.</li>
+          <li className="pl-1">A MAC address is easy to copy. Put these devices in groups whose VLAN reaches only what they need.</li>
+          <li className="pl-1">Before you enforce, allow the devices this switch sees from the MAC allow list → Seen, not allowed.</li>
+        </ul>
+      ) : <p className="text-[13.5px] ee-ink-2">Their entries stay on the MAC allow list for other switches.</p>}
+    </EDialog>
   )
 }
 
@@ -555,7 +671,7 @@ function ReadinessView({ client }: { client: RadiusClient }) {
   if (q.error || !q.data) return <ErrorState error={q.error} onRetry={() => q.refetch()} />
   const r = q.data
   if (r.ports.length === 0) {
-    return <Callout tone="crit" title="No wired requests from this switch in the last 24 hours">Enforcing now would cut off every device on its ports. Check that devices are plugged in and that the switch’s requests reach EasyEAP (Authentication log, filter: Wired).</Callout>
+    return <Callout tone="crit" title={`No wired requests from this switch in the last ${r.hours} hours`}>Enforcing now would cut off every device on its ports. Check that devices are plugged in and that the switch’s requests reach EasyEAP (Authentication log, filter: Wired).</Callout>
   }
   return (
     <div className="space-y-2">
@@ -568,13 +684,14 @@ function ReadinessView({ client }: { client: RadiusClient }) {
             {r.ports.flatMap((p) => p.devices.map((d) => (
               <tr key={`${p.port}-${d.mac}`}>
                 <td className="ee-mono whitespace-nowrap text-[12.5px]">{p.port}</td>
-                <td className="ee-mono text-[12.5px]">{d.username ?? d.mac ?? '—'}</td>
+                <td className="text-[12.5px]"><span className="ee-mono">{d.username ?? d.mac ?? '—'}</span>{d.method === 'mac' && <span className="ml-1.5"><Chip tone="neutral">MAC</Chip></span>}</td>
                 <td>{d.result === 'accept' ? <Chip tone="valid">Accepted{d.vlan_id ? ` · VLAN ${d.vlan_id}` : ''}</Chip> : <Chip tone="crit">{reasonTitle(d.reason_code) ?? 'Rejected'}</Chip>}</td>
               </tr>
             )))}
           </tbody>
         </table>
       </div>
+      {r.mab && <MabHealthView health={r.mab} hours={r.hours} />}
       {r.would_assign_vlans.length > 0 && <p className="ee-small ee-ink-2">Once enforced, EasyEAP assigns VLAN {r.would_assign_vlans.join(', ')} on this switch. Each must exist on it (<span className="ee-mono">show vlan brief</span>), or those devices fail.</p>}
     </div>
   )
@@ -616,11 +733,12 @@ export function EnforceDialog({ client, onClose, settings }: { client: RadiusCli
   const [done, setDone] = useState<WiredGuide | null>(null)
   const [doneAt, setDoneAt] = useState<number | null>(null)
   const [early, setEarly] = useState(false)
+  const [blocked, setBlocked] = useState<string | null>(null)
   const applied = useConfigApplied(tid, doneAt)
   const [shown, setShown] = useState<RadiusClient | null>(client)
   useEffect(() => {
     if (client) { setShown(client); return }
-    const t = setTimeout(() => { setConfirmed(false); setDone(null); setDoneAt(null); setEarly(false) }, 200)
+    const t = setTimeout(() => { setConfirmed(false); setDone(null); setDoneAt(null); setEarly(false); setBlocked(null) }, 200)
     return () => clearTimeout(t)
   }, [client])
   // Re-render while waiting so the 20 s fallback for an older agent and the 90 s "slow" notice take effect.
@@ -644,7 +762,7 @@ export function EnforceDialog({ client, onClose, settings }: { client: RadiusCli
           <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
           <Btn variant="primary" disabled={!confirmed} busy={setMode.isPending} onClick={() => c && setMode.mutate({ id: c.id, mode: 'enforce', confirmed: true }, {
             onSuccess: (r) => { setDone(r.guide); setDoneAt(Date.now()) },
-            onError: (e) => toast('The switch wasn’t switched to enforce', errorMessage(e), 'crit'),
+            onError: (e) => (errorField(e) === 'mab' ? setBlocked(errorMessage(e)) : toast('The switch wasn’t switched to enforce', errorMessage(e), 'crit')),
           })}><ShieldCheck aria-hidden />Enforce and show the change</Btn>
         </>
       )}>
@@ -669,6 +787,7 @@ export function EnforceDialog({ client, onClose, settings }: { client: RadiusCli
           <section aria-label="What EasyEAP saw"><h3 className="ee-h3 mb-2">What EasyEAP saw from {c.name}</h3><ReadinessView client={c} /></section>
           {cisco && <section aria-label="What the switch sees" className="border-t border-[var(--ee-line)] pt-4"><h3 className="ee-h3 mb-2">What the switch sees</h3><SessionsCheckView client={c} /></section>}
           {!cisco && <Callout tone="neutral">UniFi and other switches don’t list sessions the same way: check the switch’s client list for devices on 802.1X ports that EasyEAP hasn’t accepted.</Callout>}
+          {blocked && <Callout tone="crit" title="MAC authentication hasn’t proved itself yet">{blocked}</Callout>}
           <label className="flex items-start gap-2.5 text-[13px]">
             <input type="checkbox" className="ee-check mt-0.5" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
             <span>I’ve checked which devices would lose access, and enforcing {c.name} is what I want.</span>
@@ -736,7 +855,7 @@ export function EditPortPlanDialog({ client, onClose }: { client: RadiusClient |
         <Btn variant="primary" type="submit" form={`${id}-f`} busy={update.isPending}>Save port plan</Btn>
       </>}>
       <form id={`${id}-f`} noValidate onSubmit={(e) => { e.preventDefault(); submit() }} className="space-y-4">
-        {client && <PortPlanForm vendor={client.vendor} value={plan} onChange={setPlan} touched={touched} serverError={error} />}
+        {client && <PortPlanForm vendor={client.vendor} value={plan} onChange={setPlan} touched={touched} serverError={error} mab="edit" />}
         {error && !PLAN_FIELDS.has(error.field.replace(/^wired_profile\./, '')) && <Callout tone="crit" title="The port plan wasn’t saved">{error.message}</Callout>}
       </form>
     </EDialog>

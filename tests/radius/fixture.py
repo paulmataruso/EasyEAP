@@ -13,6 +13,8 @@ git) are at /work/v101 for the version-skew checks.
     python3 fixture.py upgrade            # a store written by the 1.0.1 agent, opened by this one
     python3 fixture.py events             # shipped-event records (the agent's transform) as JSON lines
     python3 fixture.py classify < log     # the FreeRADIUS lines the agent keeps for the system log, as "level: message"
+    python3 fixture.py admin              # device-admin data (admin.json) through the agent's own merge and writer
+    python3 fixture.py admin-events       # the TACACS+ service's spooled events, as the agent ships them
 """
 from __future__ import annotations
 
@@ -46,10 +48,10 @@ def serial(name: str) -> str:
     return out.strip().split("=", 1)[1].upper().lstrip("0") or "0"
 
 
-def client(n: str, name: str, vendor: str, networks: list[str], monitor: bool = False) -> dict:
+def client(n: str, name: str, vendor: str, networks: list[str], monitor: bool = False, mab: str = "no") -> dict:
     host = n.split("/")[0].split(".")[-1]
     return {"id": f"c0000000-0000-4000-8000-0000000000{int(host):02d}", "name": name, "vendor": vendor, "address": f"{NET}.{n}",
-            "secret": SECRET, "coa": False, "coa_port": 3799, "networks": networks, "monitor": monitor}
+            "secret": SECRET, "coa": False, "coa_port": 3799, "networks": networks, "monitor": monitor, "mab": mab}
 
 
 def desired() -> dict:
@@ -60,10 +62,12 @@ def desired() -> dict:
         "crl_pem": pem("issuing.crl"),
         "clients": [
             client("10", "HQ WLC", "cisco-9800", ["wireless"]),
-            client("11", "HQ Access 1", "cisco-switch", ["wired"]),
+            # MAC authentication on: Cisco PAP (HQ Access 1, Lab Access) and UniFi EAP-MD5 (HQ UniFi); HQ Access 2 without.
+            client("11", "HQ Access 1", "cisco-switch", ["wired"], mab="pap"),
+            client("12", "HQ Access 2", "cisco-switch", ["wired"]),
             # A UniFi gateway range with a Catalyst switch registered inside it: FreeRADIUS takes the longest prefix.
-            client("16/28", "HQ UniFi", "unifi", ["wireless", "wired"]),
-            client("20", "Lab Access", "cisco-switch", ["wired"], monitor=True),
+            client("16/28", "HQ UniFi", "unifi", ["wireless", "wired"], mab="eap"),
+            client("20", "Lab Access", "cisco-switch", ["wired"], monitor=True, mab="pap"),
         ],
     }]}
 
@@ -85,6 +89,24 @@ def snapshot(version: int, wired: bool = True) -> dict:
     return {"tenant_id": TENANT_ID, "version": version, "built_at": now, "valid_until": now + 3600, "entries": entries, "digest": f"test-{version}"}
 
 
+def mac_entries() -> list[dict]:
+    """The MAC allow list (docs/plans/mac-auth.md §4): printers in VLAN 120, cameras on the port's own VLAN."""
+    now = int(time.time())
+    g_print, g_cam, g_off = "9a000000-0000-4000-8000-000000000001", "9a000000-0000-4000-8000-000000000002", "9a000000-0000-4000-8000-000000000003"
+    d = "9d000000-0000-4000-8000-0000000000"
+    return [
+        {"mac": "020000000A01", "outcome": "allow", "reason": None, "vlan": 120, "device_id": d + "01", "group_id": g_print, "expires_at": None},
+        {"mac": "020000000A02", "outcome": "deny", "reason": "mac_disabled", "vlan": None, "device_id": d + "02", "group_id": g_print, "expires_at": None},
+        # Expired a minute ago, in the same version: RADIUS checks the time itself.
+        {"mac": "020000000A03", "outcome": "allow", "reason": None, "vlan": 120, "device_id": d + "03", "group_id": g_print, "expires_at": now - 60},
+        {"mac": "020000000A04", "outcome": "deny", "reason": "mac_group_disabled", "vlan": None, "device_id": d + "04", "group_id": g_off, "expires_at": None},
+        {"mac": "020000000A05", "outcome": "allow", "reason": None, "vlan": None, "device_id": d + "05", "group_id": g_cam, "expires_at": None},
+        {"mac": "020000000A06", "outcome": "allow", "reason": None, "vlan": 130, "device_id": d + "06", "group_id": g_print, "expires_at": now + 86400},
+        # Malformed rows are never written.
+        {"mac": "02000000A07' OR '1'='1", "outcome": "allow", "reason": None, "vlan": 140, "device_id": d + "07", "group_id": g_print, "expires_at": None},
+    ]
+
+
 def v101():
     """The 1.0.1 agent module (and its renderer), loaded from /work/v101 under other names."""
     sys.path.insert(0, str(WORK / "v101"))
@@ -97,9 +119,12 @@ def v101():
 
 
 def counts(conn: sqlite3.Connection) -> dict:
-    return {"authz": conn.execute("SELECT COUNT(*) FROM authz").fetchone()[0],
-            "authz_wired": conn.execute("SELECT COUNT(*) FROM authz_wired").fetchone()[0],
-            "version": conn.execute("SELECT version FROM meta").fetchone()[0]}
+    out = {"authz": conn.execute("SELECT COUNT(*) FROM authz").fetchone()[0],
+           "authz_wired": conn.execute("SELECT COUNT(*) FROM authz_wired").fetchone()[0],
+           "version": conn.execute("SELECT version FROM meta").fetchone()[0]}
+    if conn.execute("SELECT name FROM sqlite_master WHERE name = 'authz_mac'").fetchone():
+        out["authz_mac"] = conn.execute("SELECT COUNT(*) FROM authz_mac").fetchone()[0]
+    return out
 
 
 def build() -> None:
@@ -107,7 +132,7 @@ def build() -> None:
         d.mkdir(parents=True, exist_ok=True)
     render(desired(), STATE / "raddb" / "live", str(STATE))
     conn = agent.db(STATE / "authz.db")
-    agent.apply_snapshot(conn, snapshot(1))
+    agent.apply_snapshot(conn, {**snapshot(1), "mac_version": 5, "mac_entries": mac_entries()})
     print(json.dumps({"secret": SECRET, **counts(conn)}))
 
 
@@ -151,6 +176,45 @@ def events() -> None:
             print(json.dumps(agent.transform("events", json.loads(line))))
 
 
+TACACS_KEY = "radius-test-tacacs-key-0123456789abcdef"  # noqa: S105 — throwaway test key
+ADMIN_PASSWORD = "a long admin passphrase"  # noqa: S105
+OTHER_TENANT = "7e57e57e-0000-4000-8000-000000000002"
+
+
+def _scrypt(password: str) -> str:
+    import base64
+    import hashlib
+    salt = os.urandom(16)
+    dk = hashlib.scrypt(password.encode(), salt=salt, n=2 ** 15, r=8, p=1, maxmem=64 * 1024 * 1024, dklen=32)
+    return f"scrypt$15$8$1${base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}"
+
+
+def admin() -> None:
+    """The switch (.11) has admin logins on in a tenant with fresh data; the plain client (.12) in a tenant whose data
+    has expired. The UniFi range (.16/29) has none."""
+    now = int(time.time())
+    h = _scrypt(ADMIN_PASSWORD)
+    user = {"hash": h, "totp": None, "sites": [], "enabled": True, "expires_at": None, "unlocked_at": None}
+    state = {"tenants": {}}
+    part = {"clients": [{"id": "switch", "name": "lab-switch", "address": f"{NET}.11", "site": "", "vendor": "cisco-switch",
+                         "keys": [TACACS_KEY], "prev_until": None}],
+            "users": [{**user, "id": "u-ops", "username": "ops", "priv": 15, "role": "Network administrator"},
+                      {**user, "id": "u-ro", "username": "viewer", "priv": 1, "role": "Read-only"}],
+            "maps": [], "candidates": [], "directory": None, "local_only": ["breakglass"], "role_cache_hours": 12}
+    agent.apply_admin(state, {"tenant_id": TENANT_ID, "admin_version": 1, "admin_valid_until": now + 3600, "admin": part})
+    stale = {**part, "clients": [{**part["clients"][0], "id": "plain", "name": "lab-plain", "address": f"{NET}.12"}]}
+    agent.apply_admin(state, {"tenant_id": OTHER_TENANT, "admin_version": 1, "admin_valid_until": now - 60, "admin": stale})
+    agent.write_admin(state, STATE / "admin.json")
+    print(json.dumps({"key": TACACS_KEY, "password": ADMIN_PASSWORD, "devices": agent.admin_devices(state),
+                      "mode": oct((STATE / "admin.json").stat().st_mode & 0o777)}))
+
+
+def admin_events() -> None:
+    for f in sorted((STATE / "spool").glob("admin-*.jsonl")):
+        for line in f.read_text().splitlines():
+            print(json.dumps(agent.transform("admin-events", json.loads(line))))
+
+
 def classify() -> None:
     for line in sys.stdin:
         hit = agent.classify_freeradius(line)
@@ -163,4 +227,5 @@ if __name__ == "__main__":
     if cmd == "apply":
         apply(sys.argv[2])
     else:
-        {"build": build, "render-v101": render_v101, "upgrade": upgrade, "events": events, "classify": classify}[cmd]()
+        {"build": build, "render-v101": render_v101, "upgrade": upgrade, "events": events, "classify": classify, "admin": admin,
+         "admin-events": admin_events}[cmd]()

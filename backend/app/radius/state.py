@@ -76,6 +76,14 @@ def ensure_server_certificate(session: Session, bao: OpenBao, tenant: m.Tenant, 
     return cert
 
 
+def mab_mode(c: m.RadiusClient) -> str:
+    """"pap" for a Cisco switch with MAC authentication on (Cisco sends PAP with Service-Type Call-Check), "eap" for
+    UniFi (its MAC-Based mode uses EAP-MD5), otherwise "no"."""
+    if "wired" not in (c.networks or []) or not (c.wired_profile or {}).get("mab"):
+        return "no"
+    return {"cisco-switch": "pap", "unifi": "eap"}.get(c.vendor, "no")
+
+
 def bump(session: Session, tenant_id: uuid.UUID) -> None:
     rs = session.get(m.RadiusSettings, tenant_id)
     if rs:
@@ -103,6 +111,8 @@ def desired_state(session: Session, bao: OpenBao) -> dict:
             "networks": [n for n in ("wireless", "wired") if n in (c.networks or [])] or ["wireless"],
             # Monitor mode: wired requests are decided and logged, but no VLAN or attribute is sent (§5.3).
             "monitor": "wired" in (c.networks or []) and (c.wired_profile or {}).get("mode") == "monitor",
+            # MAC authentication (docs/plans/mac-auth.md §5.1): how this switch asks, or "no".
+            "mab": mab_mode(c),
         } for c in session.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == t.id))]
         tenants.append({
             "id": str(t.id), "slug": t.slug, "name": t.name,

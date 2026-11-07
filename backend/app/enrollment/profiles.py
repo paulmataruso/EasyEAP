@@ -125,6 +125,94 @@ try {{
 """
 
 
+def _cn(pem: str) -> str:
+    cert = x509.load_pem_x509_certificate(pem.encode())
+    names = cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
+    return str(names[0].value) if names else cert.subject.rfc4514_string()
+
+
+def group_policy_guide(*, server_name: str, ssid: str, wpa3: bool, root_pem: str, issuing_pem: str, slug: str) -> dict:
+    """Group Policy for domain PCs (docs/windows-group-policy.md, which mirrors this): trust, services, Wi-Fi and wired
+    802.1X policies, filled with the tenant's values. Windows can't enroll from EasyEAP by itself (no Group Policy setting
+    talks to a non-Microsoft CA), so users enroll through the portal; Group Policy sets up everything around it."""
+    root_cn, issuing_cn, thumb = _cn(root_pem), _cn(issuing_pem), _thumbprint(root_pem).upper()
+    eap = [
+        "Network authentication method: Microsoft: Smart Card or other certificate → Properties.",
+        "When connecting: Use a certificate on this computer, with Use simple certificate selection on. Advanced: Certificate "
+        f"Issuer → tick {root_cn} (it lists roots installed on the PC you run Group Policy Management on, so import "
+        f"{slug}-root.cer there first) and Extended Key Usage → Client Authentication.",
+        f"Verify the server's identity by validating the certificate: on. Connect to these servers: {server_name}.",
+        f"Trusted Root Certification Authorities: tick {root_cn} only.",
+        "Don't prompt user to authorize new servers or trusted CAs: on (newer Group Policy Management: Notifications before "
+        "connecting → Don't ask user). Without it, a user can accept an impostor's certificate.",
+    ]
+    return {
+        "server_name": server_name, "ssid": ssid, "wpa3": wpa3, "root_cn": root_cn, "issuing_cn": issuing_cn, "root_thumbprint": thumb,
+        "files": [
+            {"name": f"{slug}-root.cer", "type": "application/x-x509-ca-cert", "content": root_pem},
+            {"name": f"{slug}-issuing.cer", "type": "application/x-x509-ca-cert", "content": issuing_pem},
+            {"name": f"{slug}-wifi.xml", "type": "application/xml", "content": windows_wlan_xml(ssid, server_name, root_pem, wpa3)},
+            {"name": f"{slug}-wired.xml", "type": "application/xml", "content": windows_lan_xml(server_name, root_pem)},
+        ],
+        "sections": [
+            {"title": "Before you start", "steps": [
+                "Windows can't enroll certificates from EasyEAP through Group Policy: autoenrollment only talks to a Microsoft "
+                "Enterprise CA. Users enroll each device from the EasyEAP portal (its helper keeps the key in the TPM); Group "
+                "Policy sets up trust and the network policies around it.",
+                "Create one GPO for the network (for example “EasyEAP 802.1X”) and link it to the OUs that hold the computers. "
+                "Everything below is under Computer Configuration → Policies → Windows Settings → Security Settings.",
+                "Download the files on this page. None of them is secret.",
+            ]},
+            {"title": "1. Trust the EasyEAP CA", "steps": [
+                f"Public Key Policies → Trusted Root Certification Authorities → Import → {slug}-root.cer ({root_cn}, SHA-1 thumbprint "
+                f"{thumb}). Every computer in the GPO's scope then trusts certificates from this CA.",
+                f"Public Key Policies → Intermediate Certification Authorities → Import → {slug}-issuing.cer ({issuing_cn}).",
+                "Don't add either to NTAuth (Enterprise NTAuth store): that would let this CA's certificates sign in to the domain "
+                "with smart-card logon.",
+            ]},
+            {"title": "2. Start the 802.1X services", "steps": [
+                "System Services → WLAN AutoConfig → Define this policy setting → Automatic (Wi-Fi).",
+                "System Services → Wired AutoConfig → Define this policy setting → Automatic (it's off by default; wired 802.1X "
+                "never starts without it).",
+            ]},
+            {"title": "3. Wi-Fi policy", "steps": [
+                "Wireless Network (IEEE 802.11) Policies → Create A New Wireless Network Policy for Windows Vista and Later Releases.",
+                f"General → Import… → {slug}-wifi.xml. That adds the {ssid} network with every setting below already made "
+                + ("(and WPA3-Enterprise, which the Group Policy editor can't select)." if wpa3 else "(skip the next steps if you import it)."),
+                f"Or Add → Infrastructure: Network name {ssid}; Security: {'WPA3-Enterprise' if wpa3 else 'WPA2-Enterprise'}, AES.",
+                *eap,
+                "Advanced → Specify authentication mode: User authentication (see “Sign-in and machine certificates”).",
+            ]},
+            {"title": "4. Wired policy", "steps": [
+                "Wired Network (IEEE 802.3) Policies → Create A New Wired Network Policy for Windows Vista and Later Releases.",
+                "Security: Enable use of IEEE 802.1X authentication for network access.",
+                *eap,
+                "Advanced → Specify authentication mode: User authentication. Cache user information for subsequent connections: on. "
+                "Enforce use of IEEE 802.1X authentication: off, so the PC still works on ports without 802.1X.",
+                f"Or deploy {slug}-wired.xml with the Windows wired kit's script instead of this policy, but never both on the same PCs.",
+            ]},
+            {"title": "Sign-in and machine certificates", "steps": [
+                "EasyEAP certificates belong to users, so the network starts after a user signs in. On an enforcing switch port the "
+                "sign-in screen has no network: a user who never signed in on that PC can't, and computer policy doesn't refresh "
+                "before sign-in. Domain users need cached credentials on wired-only PCs, or a first sign-in on Wi-Fi or a port in "
+                "monitor mode.",
+                "Machine certificates (User or computer authentication) are planned and will fix this. Until then, keep User "
+                "authentication: User or computer mode without a machine certificate falls back to nothing at the sign-in screen.",
+            ]},
+            {"title": "Check it", "steps": [
+                "On a PC: gpupdate /force, then netsh wlan show profiles (the network is listed with “Group policy profiles”) and "
+                "netsh lan show profiles.",
+                f"certlm.msc → Trusted Root Certification Authorities shows {root_cn}.",
+                "The user enrolls from the EasyEAP portal, then connects. EasyEAP's Authentication log shows the result and, if it "
+                "fails, why.",
+                "A Group Policy profile wins over a profile with the same name installed by the EasyEAP helper; remove one of "
+                "them so users see one network.",
+                "Several client certificates on one PC: the issuer filter in step 3 makes Windows pick the EasyEAP one.",
+            ]},
+        ],
+    }
+
+
 WINDOWS_GPO_STEPS = [
     "Group Policy Management → a GPO linked to the computers → Computer Configuration → Policies → Windows Settings → "
     "Security Settings → System Services → Wired AutoConfig: Automatic.",

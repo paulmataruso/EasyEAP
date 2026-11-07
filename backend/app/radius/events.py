@@ -11,7 +11,9 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app import models as m
+from app.mac import try_mac
 from app.pki.crypto import normalize_serial
+from app.radius import mab
 from app.radius.explain import classify
 
 
@@ -53,14 +55,29 @@ def ingest_auth(session: Session, events: list[dict[str, Any]]) -> int:
         vlan = _clean(e.get("vlan"), 8)
         rule = _clean(e.get("rule"), 36)
         at = _ts(e.get("ts"))
+        uid = str(e["uid"])[:64]
+        mac = mab.event_mac(e)
+        method = mab.method_of(e)
+        mac_device = _clean(e.get("mac_device"), 36)
+        if method:
+            # MAC authentication: last seen, sightings, and coalescing of an unknown device's retries (§5.2). A resent
+            # event (already stored) is skipped first so it isn't counted twice.
+            if session.scalar(select(m.AuthEvent.id).where(m.AuthEvent.event_uid == uid)) is not None:
+                continue
+            port = _clean(e.get("port_id"), 64)
+            if not mab.note_mab(session, tenant_id, mac=mac, client_id=nas.id if nas else None, port=port, result=result,
+                                reason=reason, at=at, device_id=mac_device):
+                continue
         stmt = insert(m.AuthEvent).values(
-            tenant_id=tenant_id, event_uid=str(e["uid"])[:64], at=at, result=result, reason_code=reason if result == "reject" else None,
+            tenant_id=tenant_id, event_uid=uid, at=at, result=result, reason_code=reason if result == "reject" else None,
             username=_clean(e.get("user"), 256), identity_id=cert.identity_id if cert else None, device_id=cert.device_id if cert else None,
             cert_serial=serial, cert_issuer=_clean(e.get("issuer"), 300), calling_station_id=_clean(e.get("mac"), 64),
             called_station_id=_clean(e.get("called"), 128), nas_ip=nas_ip, nas_client_id=nas.id if nas else None,
             ssid=_ssid(_clean(e.get("called"), 128)), vlan_id=int(vlan) if vlan and vlan.isdigit() else None,
             network=_network(e.get("network")), nas_port_id=_clean(e.get("port_id"), 64), monitor=e.get("monitor") == "yes",
             rule_id=uuid.UUID(rule) if rule and _is_uuid(rule) else None, raw_message=message,
+            mac=mac, method=method or ("eap-tls" if serial else None),
+            mac_device_id=uuid.UUID(mac_device) if mac_device and _is_uuid(mac_device) else None,
         ).on_conflict_do_nothing(index_elements=["event_uid"])
         if session.execute(stmt).rowcount:
             stored += 1
@@ -99,6 +116,7 @@ def ingest_accounting(session: Session, records: list[dict[str, Any]]) -> int:
             nas.last_request_at = max(nas.last_request_at or at, at)
         row.username = _clean(r.get("user"), 256) or row.username
         row.calling_station_id = _clean(r.get("mac"), 64) or row.calling_station_id
+        row.mac = try_mac(row.calling_station_id) or row.mac
         row.called_station_id = _clean(r.get("called"), 128) or row.called_station_id
         row.framed_ip = _clean(r.get("framed_ip"), 64) or row.framed_ip
         row.network = _network(r.get("network")) or row.network

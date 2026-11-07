@@ -16,6 +16,10 @@ export const qk = {
   policy: (tid: string) => ['t', tid, 'policy'] as const,
   /** GET /api/tenants/:tid/radius (raw) */
   radius: (tid: string) => ['t', tid, 'radius'] as const,
+  /** GET /api/tenants/:tid/mac (raw): the MAC allow list */
+  mac: (tid: string) => ['t', tid, 'mac'] as const,
+  /** GET /api/tenants/:tid/device-admin (raw), plus its config and events under the same prefix */
+  deviceAdmin: (tid: string) => ['t', tid, 'device-admin'] as const,
   directory: (tid: string) => ['t', tid, 'directory'] as const,
   directoryGroups: (tid: string) => ['t', tid, 'directory', 'groups'] as const,
   pki: (tid: string) => ['t', tid, 'pki'] as const,

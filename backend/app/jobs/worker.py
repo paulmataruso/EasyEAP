@@ -6,7 +6,8 @@ Schedule (per tenant unless noted):
   directory has been failing longer than the limit, the refresh stops and RADIUS fails closed);
 * CRL rotation daily (OpenBao CRLs are issued with a 72h lifetime);
 * expiry of enrollment links, purge of undelivered server-generated keys (and revocation of their certificates);
-* OpenBao token renewal, job pruning, event and system log retention (platform).
+* OpenBao token renewal, job pruning, event and system log retention (platform);
+* MAC allow list: devices whose entry expired are disconnected (CoA) every 10 minutes; sightings kept 90 days.
 
 A second thread forwards the audit trail, authentication events and the system log to remote syslog (app.logs.syslog).
 """
@@ -61,7 +62,21 @@ def _handle(job: m.Job) -> None:
             s.execute(text("DELETE FROM auth_events WHERE at < now() - make_interval(days => :d)"), {"d": EVENT_RETENTION_DAYS})
             s.execute(text("DELETE FROM accounting_sessions WHERE updated_at < now() - make_interval(days => :d)"), {"d": EVENT_RETENTION_DAYS})
             s.execute(text("DELETE FROM system_logs WHERE at < now() - make_interval(days => :d)"), {"d": SYSTEM_LOG_RETENTION_DAYS})
+            # Device-administration log: each tenant's own retention (180 days unless set; 30 to 730).
+            s.execute(text("DELETE FROM admin_events e WHERE e.at < now() - make_interval(days => coalesce("
+                           "(SELECT a.retention_days FROM admin_settings a WHERE a.tenant_id = e.tenant_id), 180))"))
+            from app.radius.mab import prune_sightings
+            prune_sightings(s)
             queue.prune(s)
+        elif job.kind == "mac.sweep":
+            # RADIUS refuses an expired entry by itself; this ends the sessions it admitted before the expiry.
+            from app.radius.mab import sweep_expired
+            mark = s.get(m.PlatformSetting, "mac_sweep") or m.PlatformSetting(key="mac_sweep", value={})
+            now = datetime.now(UTC)
+            since = datetime.fromisoformat(mark.value["at"]) if (mark.value or {}).get("at") else now - timedelta(minutes=15)
+            sweep_expired(s, since, now)
+            mark.value = {"at": now.isoformat()}
+            s.add(mark)
         elif job.kind == "openbao.renew":
             from app.pki.openbao import renew_token
             renew_token()
@@ -119,6 +134,8 @@ def schedule() -> None:
             queue.enqueue(s, "events.retention", dedupe_key="events.retention")
         if due("platform:renew", timedelta(hours=12)):
             queue.enqueue(s, "openbao.renew", dedupe_key="openbao.renew")
+        if due("platform:mac-sweep", timedelta(minutes=10)):
+            queue.enqueue(s, "mac.sweep", dedupe_key="mac.sweep")
         queue.recover_stuck(s)
         for t in s.scalars(select(m.Tenant).where(m.Tenant.status.in_(("active", "setup")))):
             dc = s.get(m.DirectoryConfig, t.id)

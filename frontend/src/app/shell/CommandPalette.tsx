@@ -6,7 +6,7 @@ import { Dialog } from 'radix-ui'
 import { useNavigate } from 'react-router'
 import {
   ArrowLeft, Building, CornerDownLeft, EthernetPort, FilePlus, FileX, FlaskConical, KeyRound, LayoutDashboard, ListOrdered, LogOut, RefreshCw, Router,
-  ScrollText, Search, ServerCog, ShieldCheck, Users,
+  ScrollText, Search, ServerCog, ShieldCheck, SquareTerminal, Users,
 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/ui/lib'
@@ -69,6 +69,7 @@ export function CommandPalette({ open, onOpenChange, start }: { open: boolean; o
         { id: 'go-events', label: 'Authentication log', hint: 'Go to', icon: <ScrollText aria-hidden />, keywords: 'radius events rejects', run: () => go(paths.events(tid)) },
         { id: 'go-policy', label: 'Access policy', hint: 'Go to', icon: <ListOrdered aria-hidden />, keywords: 'vlan rules', run: () => go(paths.policy(tid)) },
         { id: 'go-radius', label: 'RADIUS, controllers and switches', hint: 'Go to', icon: <Router aria-hidden />, keywords: 'nas wired', run: () => go(paths.radius(tid)) },
+        { id: 'go-device-admin', label: 'Device administration', hint: 'Go to', icon: <SquareTerminal aria-hidden />, keywords: 'tacacs aaa switch login admin accounts', perm: 'admin:read', run: () => go(paths.deviceAdmin(tid)) },
         { id: 'go-directory', label: 'Directory', hint: 'Go to', icon: <Building aria-hidden />, keywords: 'active directory ldaps', run: () => go(paths.directory(tid)) },
         { id: 'go-pki', label: 'Certificate authority', hint: 'Go to', icon: <KeyRound aria-hidden />, keywords: 'pki ca crl', run: () => go(paths.pki(tid)) },
       )
@@ -91,7 +92,7 @@ export function CommandPalette({ open, onOpenChange, start }: { open: boolean; o
   }, [open, start, commands])
 
   const pickMode = mode.kind === 'pick' ? mode : null
-  const search = useEntitySearch(tid, mode.kind === 'root' || pickMode ? query : '', pickMode ? pickMode.kinds : ['user', 'certificate', 'controller'])
+  const search = useEntitySearch(tid, mode.kind === 'root' || pickMode ? query : '', pickMode ? pickMode.kinds : ['user', 'certificate', 'controller', 'mac', 'admin'], { mac: tctx?.can('mac:read') ?? false, admin: tctx?.can('admin:read') ?? false })
 
   type Row = { key: string; label: string; sub?: string; icon?: ReactNode; group: string; run: () => void }
   const rows: Row[] = useMemo(() => {
@@ -107,7 +108,7 @@ export function CommandPalette({ open, onOpenChange, start }: { open: boolean; o
       .map((c) => ({ key: c.id, label: c.label, sub: c.hint, icon: c.icon, group: c.hint ? 'Go to' : 'Actions', run: c.run }))
     const ents = tid ? search.hits.map((h) => ({
       key: h.key, label: h.label, sub: h.sub, group: h.group,
-      run: () => go(h.kind === 'user' ? paths.user(tid, h.id) : h.kind === 'certificate' ? paths.certificate(tid, h.id) : h.kind === 'controller' ? paths.radius(tid, { client: h.id }) : paths.policy(tid)),
+      run: () => go(h.kind === 'user' ? paths.user(tid, h.id) : h.kind === 'certificate' ? paths.certificate(tid, h.id) : h.kind === 'controller' ? paths.radius(tid, { client: h.id }) : h.kind === 'mac' ? paths.mac(tid, { device: h.id }) : h.kind === 'admin' ? paths.deviceAdmin(tid, { account: h.id }) : paths.policy(tid)),
     })) : []
     const actions = cmds.filter((c) => c.group === 'Actions'), gotos = cmds.filter((c) => c.group === 'Go to')
     return [...actions, ...ents, ...gotos]

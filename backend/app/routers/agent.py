@@ -12,11 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models as m
+from app.admin import service as admin_svc
 from app.db import set_platform
 from app.deps import agent_auth, db
 from app.pki.openbao import OpenBao
 from app.policy.service import snapshot
 from app.radius import events as ev
+from app.radius import mab
 from app.radius.state import desired_state
 
 router = APIRouter(prefix="/api/agent", tags=["agent"], dependencies=[Depends(agent_auth)])
@@ -28,16 +30,27 @@ def config(s: Session = Depends(db)) -> dict:
     return desired_state(s, OpenBao())
 
 
-@router.get("/snapshots")
-def snapshots(have: str = "", s: Session = Depends(db)) -> dict:
-    """`have` = comma-separated tenant:version pairs the agent already applied; only changed snapshots are returned."""
-    set_platform(s)
-    known: dict[str, int] = {}
-    for part in have.split(","):
+def _pairs(text: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for part in text.split(","):
         if ":" in part:
             t, v = part.split(":", 1)
             if v.isdigit():
-                known[t] = int(v)
+                out[t] = int(v)
+    return out
+
+
+@router.get("/snapshots")
+def snapshots(have: str = "", have_mac: str | None = None, have_admin: str | None = None, s: Session = Depends(db)) -> dict:
+    """`have` = comma-separated tenant:version pairs the agent already applied; only changed snapshots are returned.
+    `have_mac`, from agents that know the MAC allow list, is the same for its part: each snapshot then carries
+    `mac_version`, and `mac_entries` when the agent's version differs (docs/plans/mac-auth.md §4). Older agents don't
+    send it and get no MAC part. `have_admin` does the same for device administration (docs/plans/device-admin.md §4):
+    `admin_version` and `admin_valid_until` always, `admin` when the agent's copy is another version."""
+    set_platform(s)
+    known = _pairs(have)
+    known_mac = _pairs(have_mac) if have_mac is not None else None
+    known_admin = _pairs(have_admin) if have_admin is not None else None
     out = []
     versions = {}
     for rs in s.scalars(select(m.RadiusSettings).join(m.Tenant, m.Tenant.id == m.RadiusSettings.tenant_id).where(m.Tenant.status == "active")):
@@ -50,6 +63,11 @@ def snapshots(have: str = "", s: Session = Depends(db)) -> dict:
             out.append({"tenant_id": str(rs.tenant_id), "version": rs.snapshot_version, "unchanged": True,
                         "built_at": int(rs.snapshot_built_at.timestamp()),
                         "valid_until": int(rs.snapshot_built_at.timestamp()) + (ps.max_snapshot_age_seconds if ps else 86_400)})
+        if known_mac is not None:
+            out[-1].update(mab.snapshot_part(s, rs.tenant_id, known_mac.get(str(rs.tenant_id))))
+        if known_admin is not None:
+            ps = s.get(m.PolicySettings, rs.tenant_id)
+            out[-1].update(admin_svc.snapshot_part(s, rs.tenant_id, known_admin.get(str(rs.tenant_id)), ps.max_snapshot_age_seconds if ps else 86_400))
     return {"snapshots": out, "tenants": list(versions)}
 
 
@@ -65,6 +83,13 @@ def push_events(body: Batch, s: Session = Depends(db)) -> dict:
 
 class LogBatch(BaseModel):
     items: list[dict[str, Any]] = Field(max_length=1000)
+
+
+@router.post("/admin-events")
+def push_admin_events(body: Batch, s: Session = Depends(db)) -> dict:
+    """Device-administration logins, enables, authorizations, sessions and commands from the TACACS+ service."""
+    set_platform(s)
+    return {"stored": admin_svc.ingest(s, body.items)}
 
 
 @router.post("/logs")

@@ -252,6 +252,13 @@ export type FailureCode =
   | 'network_not_enabled'
   | 'network_unknown'
   | 'mab_unsupported'
+  | 'mab_not_enabled'
+  | 'mab_mismatch'
+  | 'mab_password'
+  | 'mac_unknown'
+  | 'mac_disabled'
+  | 'mac_expired'
+  | 'mac_group_disabled'
 
 export interface AuthEvent {
   id: string

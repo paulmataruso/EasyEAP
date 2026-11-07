@@ -11,6 +11,8 @@ from sqlalchemy import func, or_, select
 
 from app import audit
 from app import models as m
+from app.admin import cisco as admin_cisco
+from app.admin import service as admin_service
 from app.config import get_settings
 from app.db import set_platform, set_tenant
 from app.deps import TenantCtx, require
@@ -90,6 +92,17 @@ def radius_state(s, a: m.AgentStatus, now: datetime) -> str:
     return "stopped"
 
 
+def agent_features(s) -> set[str]:
+    """What the RADIUS agents that reported in the last 10 minutes support (an older agent reports none)."""
+    since = datetime.now(UTC) - timedelta(minutes=10)
+    out: set[str] = set()
+    for a in s.scalars(select(m.AgentStatus).where(m.AgentStatus.last_seen_at >= since)):
+        feats = (a.detail or {}).get("features")
+        if isinstance(feats, list):
+            out |= {str(f) for f in feats}
+    return out
+
+
 def agent_out(s) -> dict | None:
     a = s.scalars(select(m.AgentStatus).order_by(m.AgentStatus.last_seen_at.desc())).first()
     out = None
@@ -99,7 +112,8 @@ def agent_out(s) -> dict | None:
                "radius_running": a.radius_running, "state": radius_state(s, a, now), "serving": (a.detail or {}).get("tenants"),
                "serving_ids": (a.detail or {}).get("tenant_ids"),
                "snapshot_versions": a.snapshot_versions, "config_version": a.config_version,
-               "online": (now - a.last_seen_at).total_seconds() < 90, "detail": a.detail}
+               "online": (now - a.last_seen_at).total_seconds() < 90, "detail": a.detail,
+               "features": sorted(agent_features(s))}
     return out
 
 
@@ -115,6 +129,9 @@ def get_radius(ctx: TenantCtx = Depends(require("radius:read"))) -> dict:
         out["agent"]["tenant_snapshot_applied"] = applied
         out["agent"]["tenant_in_sync"] = applied == rs.snapshot_version
         out["agent"].update(config_sync(out["agent"], ctx.id, rs))
+        # The MAC allow list has its own version; an agent from before MAC authentication doesn't report it (None).
+        macs = (out["agent"].get("detail") or {}).get("mac_versions")
+        out["agent"]["tenant_mac_in_sync"] = (macs.get(str(ctx.id)) == rs.mac_version) if isinstance(macs, dict) else None
     return out
 
 
@@ -234,20 +251,29 @@ def _networks(vendor: str, networks: list[str] | None) -> list[str]:
     return out
 
 
+# Port-plan fields only EasyEAP sets: the rollout mode and its history, MAC authentication (changed through its own
+# change, POST …/mab) and which control policy EasyEAP's latest change attached.
+MANAGED = ("mode", "mode_set_at", "mode_set_by", "mab", "policy", "policy_prev", "last_change")
+
+
 def _profile(vendor: str, networks: list[str], data: dict | None, current: dict | None, actor: str) -> dict:
-    """A validated port plan. Keeps the rollout mode and its history; a new plan starts in monitor mode."""
+    """A validated port plan. Keeps the rollout mode, MAC authentication and their history; a new plan starts in
+    monitor mode (with MAC authentication as asked)."""
     if "wired" not in networks:
         return current or {}
     if data is None:
         return current or {}
     cur = current or {}
+    new = not cur
     data = {**data}
-    data.pop("mode_set_at", None)
-    data.pop("mode_set_by", None)
-    if cur.get("mode") == "enforce" and any(data.get(k) != cur.get(k) for k in data if k != "mode"):
+    mab_asked = bool(data.get("mab"))
+    for k in MANAGED:
+        data.pop(k, None)
+    if cur.get("mode") == "enforce" and any(data.get(k) != cur.get(k) for k in data):
         raise _bad("wired_profile", "This switch is enforcing. Move it back to monitor mode before changing its port plan, "
                    "so the configuration on the switch and in EasyEAP stay the same.")
     data["mode"] = cur.get("mode") or "monitor"
+    data["mab"] = mab_asked if new else bool(cur.get("mab"))
     try:
         out = wired.validate_profile(vendor, data)
     except wired.WiredConfigError as exc:
@@ -257,6 +283,13 @@ def _profile(vendor: str, networks: list[str], data: dict | None, current: dict 
         raise _bad(".".join(str(x) for x in err.get("loc", ())) or "wired_profile", str(err.get("msg", "Invalid port plan")).removeprefix("Value error, ")) from exc
     out["mode_set_at"] = cur.get("mode_set_at") or datetime.now(UTC).isoformat()
     out["mode_set_by"] = cur.get("mode_set_by") or actor
+    if new:
+        cisco_ibns2 = vendor == "cisco-switch" and out.get("platform", "ibns2") == "ibns2"
+        out["policy"] = wired.monitor_policy(wired.WiredProfile.model_validate(out)) if cisco_ibns2 else None
+        out["last_change"] = "created"
+    else:
+        for k in ("policy", "policy_prev", "last_change"):
+            out[k] = cur.get(k)
     return out
 
 
@@ -272,8 +305,27 @@ def _check_address(s, tenant_id: uuid.UUID, address: str, exclude_id: uuid.UUID 
     return net
 
 
+def _check_admin_address(s, tenant_id: uuid.UUID, address: str, exclude_id: uuid.UUID | None) -> None:
+    """Admin logins share TCP 49 across tenants: the address must not overlap another tenant's admin-enabled device."""
+    set_platform(s)
+    try:
+        clash = admin_service.overlapping_admin_client(s, tenant_id, address, exclude_id)
+    finally:
+        set_tenant(s, tenant_id)
+    if clash is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This address overlaps a device of another tenant that has admin logins on. "
+                                                      "Each device needs a unique management address for TACACS+.")
+
+
 def _norm(net) -> str:
     return str(net) if net.num_addresses > 1 else str(net.network_address)
+
+
+def _same_address(typed: str, stored: str) -> bool:
+    try:
+        return _norm(ipaddress.ip_network(typed.strip(), strict=False)) == stored
+    except ValueError:
+        return False
 
 
 @router.post("/clients", status_code=201)
@@ -298,6 +350,10 @@ def create_client(body: ClientIn, ctx: TenantCtx = Depends(require("radius:write
     return {"client": client_out(c), "shared_secret": secret}
 
 
+_ADMIN_DEVICE = ("Administrators log in to this device through EasyEAP (Device administration). Changing its address, type or site, or "
+                 "deleting it, needs a tenant administrator.")
+
+
 @router.put("/clients/{client_id}")
 def update_client(client_id: uuid.UUID, body: ClientUpdate, ctx: TenantCtx = Depends(require("radius:write"))) -> dict:
     s = ctx.session
@@ -308,18 +364,30 @@ def update_client(client_id: uuid.UUID, body: ClientUpdate, ctx: TenantCtx = Dep
     vendor = given.get("vendor") or c.vendor
     if vendor not in VENDORS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose a controller or switch type.")
+    if c.admin_enabled and "admin:write" not in ctx.perms and (
+            (given.get("address") and not _same_address(given["address"], c.address)) or vendor != c.vendor
+            or ("site" in given and given["site"] is not None and given["site"] != c.site)):
+        # The address decides which connections get TACACS+ answers and the site which administrators may log in.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, _ADMIN_DEVICE)
     networks = _networks(vendor, body.networks) if "networks" in given else list(c.networks or ["wireless"])
     if "wired" in networks and vendor in ("cisco-switch", "unifi", "other"):
         plan = body.wired_profile if "wired_profile" in given else (None if c.wired_profile else {})
         profile = _profile(vendor, networks, plan, c.wired_profile, ctx.actor.label)
     else:
         profile = c.wired_profile or {}
+    was_admin = c.admin_enabled
     if "address" in given and body.address:
         c.address = _norm(_check_address(s, ctx.id, body.address, exclude_id=c.id))
+        if c.admin_enabled:
+            _check_admin_address(s, ctx.id, c.address, c.id)
     for k in ("name", "site", "coa_enabled", "coa_port"):
         if k in given and given[k] is not None:
             setattr(c, k, given[k])
     c.vendor, c.networks, c.wired_profile = vendor, networks, profile
+    if c.admin_enabled and vendor not in admin_cisco.SUPPORTED:
+        c.admin_enabled = False  # admin logins are generated for Cisco IOS and IOS-XE only
+    if was_admin:
+        admin_service.bump(s, ctx.id)
     bump(s, ctx.id)
     audit.record(s, ctx.actor, "radius.client_updated", tenant_id=ctx.id, target_type="radius_client", target_id=c.id, target_label=c.name,
                  detail={k: v for k, v in given.items()})
@@ -344,10 +412,73 @@ def set_wired_mode(client_id: uuid.UUID, body: WiredModeIn, ctx: TenantCtx = Dep
     if body.mode == "enforce" and not body.confirmed:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Confirm you've checked which devices would lose access.")
     before = (c.wired_profile or {}).get("mode") or "enforce"
-    c.wired_profile = {**(c.wired_profile or {}), "mode": body.mode, "mode_set_at": datetime.now(UTC).isoformat(), "mode_set_by": ctx.actor.label}
+    profile = dict(c.wired_profile or {})
+    if body.mode == "enforce" and before == "monitor" and profile.get("mab"):
+        _check_mab_answered(s, ctx.id, c)
+    if c.vendor == "cisco-switch" and profile.get("interfaces"):
+        try:
+            p = wired.WiredProfile.model_validate(profile)
+        except ValidationError:
+            p = None
+        if p is not None and p.platform == "ibns2" and before != body.mode:
+            old = wired.attached_policy(p)
+            p.mode = body.mode
+            profile.update({"policy": wired.closed_policy(p) if body.mode == "enforce" else wired.monitor_policy(p), "policy_prev": old,
+                            "last_change": body.mode})
+    c.wired_profile = {**profile, "mode": body.mode, "mode_set_at": datetime.now(UTC).isoformat(), "mode_set_by": ctx.actor.label}
     bump(s, ctx.id)
     audit.record(s, ctx.actor, "radius.wired_mode_changed", tenant_id=ctx.id, target_type="radius_client", target_id=c.id, target_label=c.name,
                  detail={"from": before, "to": body.mode})
+    return {"client": client_out(c), "guide": _wired_guide(ctx, c)}
+
+
+def _check_mab_answered(s, tenant_id: uuid.UUID, c: m.RadiusClient) -> None:
+    """Enforcing a switch with MAC authentication needs proof that EasyEAP answers its MAC requests: a switch whose
+    MAB requests lack Message-Authenticator gets no answer at all (FreeRADIUS drops them without a trace) and would
+    mark EasyEAP dead for every device on it (docs/plans/mac-auth.md §6.5)."""
+    answered = s.scalar(select(func.count()).select_from(m.AuthEvent).where(
+        m.AuthEvent.tenant_id == tenant_id, m.AuthEvent.nas_client_id == c.id, m.AuthEvent.method.in_(("mab", "mab-eap")),
+        or_(m.AuthEvent.reason_code.is_(None), m.AuthEvent.reason_code != "mab_not_enabled"), m.AuthEvent.at >= _since(24 * 14)))
+    if not answered:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"field": "mab", "message": (
+            "EasyEAP hasn't answered a MAC authentication request from this switch yet, so enforcing could cut off its devices without "
+            "802.1X. Plug in a device without 802.1X (a printer, say) and wait for its request in the Authentication log. If none "
+            "arrives, the switch may send MAC requests without Message-Authenticator, which EasyEAP requires: check with "
+            "debug radius on the switch.")})
+
+
+class MabIn(BaseModel):
+    enabled: bool
+
+
+@router.post("/clients/{client_id}/mab")
+def set_mab(client_id: uuid.UUID, body: MabIn, ctx: TenantCtx = Depends(require("radius:write"))) -> dict:
+    """Turn MAC authentication on or off for a switch (docs/plans/mac-auth.md §6.5). Monitor mode only: the change
+    swaps the ports' control policy, which is safe only while they're open. Returns the change to paste."""
+    s = ctx.session
+    c = s.get(m.RadiusClient, client_id)
+    if c is None or c.tenant_id != ctx.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Switch not found.")
+    if "wired" not in (c.networks or []) or c.vendor not in ("cisco-switch", "unifi") or not c.wired_profile:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "MAC authentication is available for Cisco Catalyst and UniFi switches with a port plan.")
+    profile = dict(c.wired_profile)
+    if profile.get("mode") != "monitor":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Move this switch back to monitor mode first: MAC authentication is turned on or off "
+                            "while its ports are open, and proves itself there before you enforce again.")
+    if body.enabled and "mab" not in agent_features(s):
+        raise HTTPException(status.HTTP_409_CONFLICT, "RADIUS doesn't support MAC authentication yet. Update the EasyEAP RADIUS container "
+                            "(System health shows its version), then try again.")
+    if bool(profile.get("mab")) == body.enabled:
+        return {"client": client_out(c), "guide": _wired_guide(ctx, c)}
+    p = wired.WiredProfile.model_validate(profile)
+    ibns2 = c.vendor == "cisco-switch" and p.platform == "ibns2"
+    old = wired.attached_policy(p) if ibns2 else None
+    p.mab = body.enabled
+    profile.update({"mab": body.enabled, "last_change": "mab", "policy_prev": old, "policy": wired.monitor_policy(p) if ibns2 else None})
+    c.wired_profile = profile
+    bump(s, ctx.id)
+    audit.record(s, ctx.actor, "radius.mab_changed", tenant_id=ctx.id, target_type="radius_client", target_id=c.id, target_label=c.name,
+                 detail={"enabled": body.enabled})
     return {"client": client_out(c), "guide": _wired_guide(ctx, c)}
 
 
@@ -372,6 +503,11 @@ def wired_guide(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius:r
     return _wired_guide(ctx, c)
 
 
+def wired_mac(mac: str) -> str:
+    from app.mac import format_mac
+    return format_mac(mac)
+
+
 def _since(hours: int) -> datetime:
     return datetime.now(UTC) - timedelta(hours=hours)
 
@@ -390,16 +526,25 @@ def readiness(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius:rea
                      .order_by(m.AuthEvent.at.desc()).limit(5000)).all()
     ports: dict[str, dict] = {}
     for e in rows:  # newest first: the first event per port and device is its latest result
-        key = (e.nas_port_id or "(port not reported)", e.calling_station_id or "")
+        key = (e.nas_port_id or "(port not reported)", e.mac or e.calling_station_id or "")
         p = ports.setdefault(key[0], {"port": key[0], "devices": {}, "accepted": 0, "rejected": 0})
         if key[1] not in p["devices"]:
-            p["devices"][key[1]] = {"mac": key[1] or None, "username": e.username, "result": e.result, "reason_code": e.reason_code,
-                                    "vlan_id": e.vlan_id, "monitor": e.monitor, "at": e.at.isoformat()}
+            p["devices"][key[1]] = {"mac": e.calling_station_id or (wired_mac(e.mac) if e.mac else None), "username": e.username,
+                                    "result": e.result, "reason_code": e.reason_code, "vlan_id": e.vlan_id, "monitor": e.monitor,
+                                    "at": e.at.isoformat(), "method": "mac" if e.method in ("mab", "mab-eap") else "certificate"}
             p["accepted" if e.result == "accept" else "rejected"] += 1
     out = [{**p, "devices": list(p["devices"].values())} for p in sorted(ports.values(), key=lambda p: p["port"])]
     vlans = sorted({d["vlan_id"] for p in out for d in p["devices"] if d["vlan_id"] and d["result"] == "accept"})
+    profile = c.wired_profile or {}
+    mab_rows = [e for e in rows if e.method in ("mab", "mab-eap") and e.reason_code != "mab_not_enabled"]
     return {"hours": hours, "ports": out, "events": len(rows), "would_assign_vlans": vlans,
-            "rejected_devices": sum(p["rejected"] for p in out), "session_command": wired.session_command(c.wired_profile)}
+            "rejected_devices": sum(p["rejected"] for p in out), "session_command": wired.session_command(c.wired_profile),
+            # MAC authentication health: requests answered in the window (unknown devices are logged once an hour each).
+            "mab": {"enabled": bool(profile.get("mab")), "answered": len(mab_rows), "accepted": sum(e.result == "accept" for e in mab_rows),
+                    "unknown": len({e.mac for e in mab_rows if e.reason_code == "mac_unknown"}),
+                    "last_at": max((e.at for e in mab_rows), default=None),
+                    "unknown_action": "vlan" if profile.get("no_supplicant") == "vlan" else "block",
+                    "unknown_vlan": profile.get("no_supplicant_vlan")} if profile.get("mab") else None}
 
 
 class SessionsIn(BaseModel):
@@ -501,6 +646,10 @@ def delete_client(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius
     if c is None or c.tenant_id != ctx.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Controller not found.")
     label = f"{c.name} ({c.address})"
+    if c.admin_enabled:
+        if "admin:write" not in ctx.perms:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, _ADMIN_DEVICE)
+        admin_service.bump(ctx.session, ctx.id)
     ctx.session.delete(c)
     bump(ctx.session, ctx.id)
     audit.record(ctx.session, ctx.actor, "radius.client_deleted", tenant_id=ctx.id, target_type="radius_client", target_id=client_id, target_label=label)
@@ -540,7 +689,21 @@ def wired_kit(ctx: TenantCtx = Depends(require("radius:read"))) -> dict:
             "notes": ["Run the script as administrator or SYSTEM: Intune (Scripts), an RMM, or a computer startup script.",
                       "It uses the EasyEAP certificate each user already has, so enroll users for Wi-Fi first.",
                       "With user certificates, wired 802.1X starts after sign-in: the sign-in screen has no network on an enforced port, "
-                      "so domain-joined PCs need cached credentials. Machine certificates are planned."]}
+                      "so domain-joined PCs need cached credentials. Machine certificates are planned.",
+                      "For domain PCs, Windows Group Policy (next to this kit) has the full steps: trust, services, Wi-Fi and wired policies."]}
+
+
+@router.get("/group-policy")
+def group_policy(ctx: TenantCtx = Depends(require("radius:read"))) -> dict:
+    """Group Policy for domain PCs (docs/windows-group-policy.md) with the tenant's values and files. No secrets."""
+    rs = ctx.session.get(m.RadiusSettings, ctx.id)
+    if rs is None or not rs.server_hostname:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Save RADIUS settings first.")
+    from app.enrollment import profiles
+    from app.pki import service as pki
+    issuing, root = pki.chain_pem(ctx.session, ctx.id)
+    return profiles.group_policy_guide(server_name=rs.server_hostname, ssid=rs.ssid or "EasyEAP", wpa3=bool(rs.wpa3),
+                                       root_pem=root or issuing, issuing_pem=issuing, slug=ctx.tenant.slug)
 
 
 @router.get("/coa")

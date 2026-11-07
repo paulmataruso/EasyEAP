@@ -318,4 +318,11 @@ const RAW: Record<FailureCode, string> = {
   network_not_enabled: 'easyeap: wired request from a client registered for wireless only',
   mab_unsupported: 'easyeap: MAC authentication bypass request (Service-Type = Call-Check)',
   network_unknown: 'easyeap: neither wired nor wireless could be determined from the request',
+  mab_not_enabled: 'easyeap: MAC authentication request from a switch without MAC authentication on',
+  mab_mismatch: 'easyeap: MAB User-Name differs from Calling-Station-Id',
+  mab_password: 'easyeap: MAB User-Password is not the MAC address',
+  mac_unknown: 'easyeap: MAC not on the allow list',
+  mac_disabled: 'easyeap: MAC blocked on the allow list',
+  mac_expired: 'easyeap: MAC allow-list entry expired',
+  mac_group_disabled: 'easyeap: MAC allow-list group turned off',
 }

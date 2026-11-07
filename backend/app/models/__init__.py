@@ -218,6 +218,10 @@ class DirectoryConfig(Base):
     bind_dn: Mapped[str] = mapped_column(String(500))
     bind_password_ct: Mapped[str] = mapped_column(Text)
     sync_interval_minutes: Mapped[int] = mapped_column(Integer, default=15)
+    # The domain's lockoutThreshold (0 = no lockout), read at sync: device-admin logins cap AD binds below it.
+    lockout_threshold: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The domain's lockOutObservationWindow in seconds (read with the threshold at each sync).
+    lockout_window: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_sync_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     last_sync_status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # ok | failed
     last_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -362,6 +366,11 @@ class RadiusSettings(Base):
     snapshot_version: Mapped[int] = mapped_column(BigInteger, default=0)
     snapshot_built_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     config_version: Mapped[int] = mapped_column(BigInteger, default=0)
+    # The MAC allow list's own snapshot version (docs/plans/mac-auth.md §4): bumped by admin edits to MAC devices and
+    # device groups only, so certificate recomputes never resend MAC entries and last-seen updates never re-version.
+    mac_version: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Device administration (docs/plans/device-admin.md): its own snapshot part, bumped by admin-login changes only.
+    admin_version: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
 class RadiusClient(Base):
@@ -380,6 +389,12 @@ class RadiusClient(Base):
     coa_port: Mapped[int] = mapped_column(Integer, default=3799)
     last_request_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+    # Device administration: TACACS+ logins from this device, with its own key (and the previous one during rotation).
+    admin_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    tacacs_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tacacs_key_set_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    tacacs_prev_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tacacs_prev_until: Mapped[datetime | None] = mapped_column(TS, nullable=True)
 
 
 class AuthEvent(Base):
@@ -407,6 +422,10 @@ class AuthEvent(Base):
     vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rule_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     raw_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The device's MAC, normalised (12 uppercase hex digits; app/mac.py), from Calling-Station-Id or a MAB User-Name.
+    mac: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    method: Mapped[str | None] = mapped_column(String(8), nullable=True)  # eap-tls | mab | mab-eap; NULL = certificate (older rows)
+    mac_device_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
 
 class AccountingSession(Base):
@@ -432,6 +451,7 @@ class AccountingSession(Base):
     input_octets: Mapped[int] = mapped_column(BigInteger, default=0)
     output_octets: Mapped[int] = mapped_column(BigInteger, default=0)
     terminate_cause: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    mac: Mapped[str | None] = mapped_column(String(12), nullable=True)  # normalised Calling-Station-Id, for CoA by device
 
 
 class CoaRequest(Base):
@@ -446,6 +466,142 @@ class CoaRequest(Base):
     result_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+
+
+class DeviceGroup(Base):
+    """A group on the MAC allow list: devices in it get its switch VLAN (docs/plans/mac-auth.md §3)."""
+    __tablename__ = "device_groups"
+    __table_args__ = (UniqueConstraint("tenant_id", "name"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    name: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str] = mapped_column(String(300), default="")
+    # A VLAN from Access policy (mapped for switch ports like any VLAN), or explicitly the port's own VLAN.
+    vlan_ref: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("vlans.id", ondelete="RESTRICT"), nullable=True)
+    port_vlan: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+
+
+class MacDevice(Base):
+    """A device on the MAC allow list. `enabled = False` is blocked. The last-seen columns are filled at ingest and are
+    not part of the snapshot."""
+    __tablename__ = "mac_devices"
+    __table_args__ = (UniqueConstraint("tenant_id", "mac"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    mac: Mapped[str] = mapped_column(String(12))  # normalised: 12 uppercase hex digits
+    name: Mapped[str] = mapped_column(String(120))
+    notes: Mapped[str] = mapped_column(String(500), default="")
+    group_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("device_groups.id", ondelete="RESTRICT"), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    source: Mapped[str] = mapped_column(String(8), default="manual")  # manual | import | learned
+    created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+    created_by: Mapped[str] = mapped_column(String(254), default="")
+    last_seen_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    last_seen_client_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    last_seen_port: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class MacSighting(Base):
+    """A MAC that tried MAC authentication and was refused, per switch and port: what "Seen, not allowed" lists."""
+    __tablename__ = "mac_sightings"
+    __table_args__ = (UniqueConstraint("tenant_id", "mac", "client_id", "port"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    mac: Mapped[str] = mapped_column(String(12))
+    client_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    port: Mapped[str] = mapped_column(String(64), default="")
+    first_seen: Mapped[datetime] = mapped_column(TS)
+    last_seen: Mapped[datetime] = mapped_column(TS, index=True)
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    last_reason: Mapped[str] = mapped_column(String(32))
+    last_event_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)  # last attempt stored as an auth event
+
+
+# ── Device administration (TACACS+) ─────────────────────────────────────────
+
+
+class AdminRole(Base):
+    """What an administrator gets on a device: an IOS privilege level. Two built-ins per tenant."""
+    __tablename__ = "admin_roles"
+    __table_args__ = (UniqueConstraint("tenant_id", "name"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    name: Mapped[str] = mapped_column(String(60))
+    priv_lvl: Mapped[int] = mapped_column(Integer)
+    description: Mapped[str] = mapped_column(String(300), default="")
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+
+
+class AdminUser(Base):
+    """A local device-administration account (not an EasyEAP console administrator)."""
+    __tablename__ = "admin_users"
+    __table_args__ = (UniqueConstraint("tenant_id", "username"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    username: Mapped[str] = mapped_column(String(64))  # case-folded
+    display_name: Mapped[str] = mapped_column(String(120), default="")
+    email: Mapped[str] = mapped_column(String(254), default="")
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)  # scrypt$… (app/admin/passwords.py); None = no password yet
+    password_set_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    totp_secret_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("admin_roles.id", ondelete="RESTRICT"))
+    sites: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)  # empty = every site
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    unlocked_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)  # clears a lockout on the RADIUS nodes
+    last_login_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(254), default="")
+    created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+
+
+class AdminGroupMap(Base):
+    """Members of this directory group may log in to devices with this role (ordered: first match wins)."""
+    __tablename__ = "admin_group_maps"
+    __table_args__ = (UniqueConstraint("tenant_id", "group_id"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    group_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("directory_groups.id", ondelete="CASCADE"))
+    role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("admin_roles.id", ondelete="RESTRICT"))
+    sites: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+
+
+class AdminSettings(Base):
+    __tablename__ = "admin_settings"
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    # Break-glass names: EasyEAP answers ERROR, so the device falls back to its own local account even while EasyEAP is up.
+    local_only_usernames: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    retention_days: Mapped[int] = mapped_column(Integer, default=180)
+
+
+class AdminEvent(Base):
+    """A device-administration login, enable, authorization, exec session or command (TACACS+), from the agent."""
+    __tablename__ = "admin_events"
+    __table_args__ = (Index("ix_admin_events_tenant_at", "tenant_id", "at"), Index("ix_admin_events_tenant_user", "tenant_id", "user_id"))
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    event_uid: Mapped[str] = mapped_column(String(64), unique=True)
+    at: Mapped[datetime] = mapped_column(TS)
+    client_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    nas_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    username: Mapped[str | None] = mapped_column(String(256), nullable=True)  # verbatim for known accounts, a keyed hash otherwise
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)  # admin_users.id or identities.id
+    source: Mapped[str | None] = mapped_column(String(10), nullable=True)  # local | directory
+    kind: Mapped[str] = mapped_column(String(12))  # login | enable | authz | session | command
+    result: Mapped[str] = mapped_column(String(8))  # pass | fail | error | start | stop | update
+    reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    priv_lvl: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    command: Mapped[str | None] = mapped_column(Text, nullable=True)  # masked (app/admin/mask.py)
+    rem_addr: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    port: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    message: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class AgentStatus(Base):
@@ -512,5 +668,6 @@ TENANT_TABLES = [
     "certificate_authorities", "certificate_templates", "certificates", "directory_configs", "directory_groups",
     "identities", "identity_groups", "devices", "vlans", "access_rules", "access_rule_groups", "policy_settings",
     "decisions", "radius_settings", "radius_clients", "auth_events", "accounting_sessions", "coa_requests",
-    "enrollments", "key_escrow",
+    "enrollments", "key_escrow", "device_groups", "mac_devices", "mac_sightings",
+    "admin_roles", "admin_users", "admin_group_maps", "admin_settings", "admin_events",
 ]

@@ -70,13 +70,20 @@ export interface WiredProfile {
   source_interface: string
   vrf: string
   fallback_vlan: number | null
+  /** MAC authentication for devices without 802.1X (Cisco Catalyst and UniFi). Set when the switch is added, then
+   * changed only with its own change (POST …/mab) in monitor mode. */
+  mab?: boolean
   mode_set_at?: string | null
   mode_set_by?: string | null
+  /** IBNS 2.0: the control policy EasyEAP's latest change attached, and the one it replaced. */
+  policy?: string | null
+  policy_prev?: string | null
+  last_change?: 'created' | 'mab' | 'enforce' | 'monitor' | null
 }
 
 export const defaultWiredProfile: WiredProfile = {
   platform: 'ibns2', mode: 'monitor', interfaces: '', exclude: '', has_aaa: false, host_mode: 'multi-auth', no_supplicant: 'block',
-  no_supplicant_vlan: null, server_down: 'wait', server_down_vlan: null, access_vlan: null, source_interface: '', vrf: '', fallback_vlan: null,
+  no_supplicant_vlan: null, server_down: 'wait', server_down_vlan: null, access_vlan: null, source_interface: '', vrf: '', fallback_vlan: null, mab: false,
 }
 
 export interface RadiusClient {
@@ -106,7 +113,16 @@ export interface RadiusAgent extends AgentStatus {
   tenant_in_sync?: boolean
   /** FreeRADIUS runs this tenant's latest configuration change. null: the agent is older and doesn't say. */
   tenant_config_in_sync?: boolean | null
+  /** RADIUS runs the latest MAC allow list. null: the agent is older and doesn't say. */
+  tenant_mac_in_sync?: boolean | null
+  /** What the RADIUS agents in the last 10 minutes support, e.g. "mab". Older agents report none. */
+  features?: string[]
 }
+
+/** RADIUS answers MAC authentication (an agent from before it refuses every MAC request). */
+export const supportsMab = (a: RadiusAgent | null | undefined) => !!a?.features?.includes('mab')
+/** Switches that can admit devices by MAC address. */
+export const MAB_VENDORS = ['cisco-switch', 'unifi']
 
 /** Recent requests that couldn't be tied to a registered controller (their source and NAS address are in no range). */
 export interface Unattributed { count: number; last_at: string; nas_addresses: string[]; days: number }
@@ -146,11 +162,20 @@ export interface WiredGuide extends Guide {
   monitor_steps?: string[]
   session_command: string | null
   radius_address: string | null
+  mab?: boolean
+  /** Cisco: the change that turns MAC authentication on or off, shown after that change (monitor mode). */
+  mab_cli?: string | null
+  /** UniFi: the steps for the same. */
+  mab_steps?: string[] | null
 }
 
-export interface ReadinessDevice { mac: string | null; username: string | null; result: 'accept' | 'reject'; reason_code: string | null; vlan_id: number | null; monitor: boolean; at: string }
+export interface ReadinessDevice { mac: string | null; username: string | null; result: 'accept' | 'reject'; reason_code: string | null; vlan_id: number | null; monitor: boolean; at: string
+  /** How it authenticated: a certificate (802.1X) or its MAC address. */
+  method?: 'mac' | 'certificate' }
+/** MAC authentication on this switch in the readiness window. Unknown devices are logged once an hour each. */
+export interface MabHealth { enabled: boolean; answered: number; accepted: number; unknown: number; last_at: string | null; unknown_action: 'block' | 'vlan'; unknown_vlan: number | null }
 export interface ReadinessPort { port: string; devices: ReadinessDevice[]; accepted: number; rejected: number }
-export interface Readiness { hours: number; ports: ReadinessPort[]; events: number; would_assign_vlans: number[]; rejected_devices: number; session_command: string }
+export interface Readiness { hours: number; ports: ReadinessPort[]; events: number; would_assign_vlans: number[]; rejected_devices: number; session_command: string; mab?: MabHealth | null }
 export interface SwitchSession { interface: string; mac: string; method: string; domain: string; status: string; authorized: boolean }
 export interface SessionsCheck { sessions: number; authorized: number; would_lose_access: SwitchSession[]; parsed: boolean }
 
@@ -249,6 +274,16 @@ export function useSetWiredMode(tid: string) {
     mutationFn: ({ id, mode, confirmed }: { id: string; mode: 'monitor' | 'enforce'; confirmed?: boolean }) =>
       api.post<{ client: RadiusClient; guide: WiredGuide }>(`${base(tid)}/clients/${id}/wired-mode`, { mode, confirmed: !!confirmed }),
     onSuccess: inv,
+  })
+}
+
+/** Turn MAC authentication on or off (monitor mode only). Returns the guide with the change to paste. */
+export function useSetMab(tid: string) {
+  const inv = useInvalidateRadius(tid)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.post<{ client: RadiusClient; guide: WiredGuide }>(`${base(tid)}/clients/${id}/mab`, { enabled }),
+    onSuccess: () => Promise.all([inv(), qc.invalidateQueries({ queryKey: qk.mac(tid) })]),
   })
 }
 

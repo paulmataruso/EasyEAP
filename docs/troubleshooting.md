@@ -19,7 +19,14 @@ once for `snapshot_stale`). This page lists every reason code and what to do abo
 | `client_timeout` | The device stopped answering midway. This often means it silently rejected the server certificate. | Same as `tls_handshake`. Also check the device's clock. |
 | `network_not_enabled` | The request came from a network (Wi-Fi or wired) the controller or switch isn't registered for. | Edit it on the RADIUS screen and turn that network on, or fix the switch or controller sending it. |
 | `network_unknown` | EasyEAP couldn't tell whether the request was wired or Wi-Fi: no port type, no SSID, and the client serves both. | Send `NAS-Port-Type` from the switch or controller, or register it for one network. |
-| `mab_unsupported` | A switch tried MAC Authentication Bypass. EasyEAP only accepts certificates. | Remove `mab` from the port, or leave devices without 802.1X on ports that aren't configured for it. |
+| `mab_not_enabled` | A switch or controller asked EasyEAP to admit a device by its MAC address, but MAC authentication isn't on for it (or the request didn't come from a switch port). | To admit devices without 802.1X on this switch, open it on the RADIUS page and turn on MAC authentication. Wi-Fi MAC filtering isn't supported. |
+| `mab_mismatch` | The MAC address the switch asked about differs from the device address it reported (`Calling-Station-Id`), so EasyEAP refused it rather than guess. | Make the switch send the device's MAC in both: `radius-server attribute 31 mac format ietf upper-case` and the default MAB user name. |
+| `mab_password` | In a MAC authentication request the password must be the device's MAC address, and this one wasn't. | Remove any `mab request format` or custom MAB password settings from the switch. |
+| `mac_unknown` | The device's MAC address isn't on the MAC allow list. | If it belongs on the network, allow it from **MAC allow list → Seen, not allowed**. Otherwise it stays out (or in the unknown-device VLAN). |
+| `mac_disabled` | The device is on the MAC allow list but blocked. | Unblock it on the MAC allow list if it should have access again. |
+| `mac_expired` | The device's allow-list entry had an expiry date that has passed. | Extend or remove the expiry. |
+| `mac_group_disabled` | The device's group is turned off, so every device in it is refused. | Turn the group back on, or move the device to another group. |
+| `mab_unsupported` | Older events, from before MAC authentication: a switch tried MAC Authentication Bypass. | Turn on MAC authentication for the switch, or remove `mab` from the port. |
 
 On a switch in **monitor mode**, a reject is logged but the port stays open: the device keeps its access until the
 switch enforces. Accepts in monitor mode show the VLAN EasyEAP would assign ("Not sent: monitor mode").
@@ -91,3 +98,8 @@ docker compose ps                                    # every service healthy?
 docker compose logs --since 10m easyeap-radius       # agent and FreeRADIUS output (secrets are redacted)
 docker compose exec easyeap-api easyeap verify-audit # audit chain intact?
 ```
+
+## Device administration (switch logins)
+
+Admin logins over TACACS+ have their own log (**Device administration → Admin log**) and reasons. See
+[docs/device-administration.md](device-administration.md#troubleshooting).

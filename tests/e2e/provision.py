@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 
 import httpx
 from cryptography import x509
@@ -137,18 +138,39 @@ def provision(api, subnet):
     print(json.dumps(out))
 
 
-def wait(api):
+def wait(api, fresh=False):
+    """Until the agent reports the tenant's latest snapshot and configuration applied. fresh: only a report made after
+    this call started counts (after an upgrade, the last report in the database is the old agent's)."""
     T = api.tenant()
-    deadline = time.time() + 120
+    started = time.time()
+    deadline = started + 120
     while time.time() < deadline:
         r = api("GET", f"/api/tenants/{T}/radius")
         a = r.get("agent") or {}
+        seen = a.get("last_seen_at")
+        recent = not fresh or (seen and datetime.fromisoformat(seen).timestamp() > started)
         # tenant_config_in_sync: configuration-only changes (a switch's monitor/enforce) don't change the snapshot.
-        if a.get("tenant_in_sync") and a.get("tenant_config_in_sync") is not False and a.get("config_ok") and a.get("radius_running"):
+        if (recent and a.get("tenant_in_sync") and a.get("tenant_config_in_sync") is not False and a.get("tenant_mac_in_sync") is not False
+                and a.get("config_ok") and a.get("radius_running")):
             print(json.dumps({"in_sync": True, "snapshot": a.get("tenant_snapshot_applied")}))
             return
         time.sleep(2)
     fail(f"RADIUS agent did not apply the latest snapshot: {json.dumps(r.get('agent'))[:400]}")
+
+
+def wait_admin(api):
+    """Until the agent has the tenant's latest device-admin data and, when a device has admin logins on, TACACS+ runs."""
+    T = api.tenant()
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        r = api("GET", f"/api/tenants/{T}/device-admin")
+        a = r["agent"]
+        on = any(d["admin_enabled"] for d in r["devices"])
+        if a["supported"] and a["online"] and a["in_sync"] and (a["running"] or not on):
+            print(json.dumps({"in_sync": True, "running": a["running"]}))
+            return
+        time.sleep(2)
+    fail(f"RADIUS agent did not apply the latest device-admin data: {json.dumps(r['agent'])}")
 
 
 def main():
@@ -156,7 +178,9 @@ def main():
     if cmd == "provision":
         provision(Api(), sys.argv[2])
     elif cmd == "wait":
-        wait(Api())
+        wait(Api(), fresh=sys.argv[2:3] == ["fresh"])
+    elif cmd == "wait-admin":
+        wait_admin(Api())
     elif cmd == "revoke":  # revoke <serial as printed by openssl, e.g. 1A2B…>
         api = Api()
         T = api.tenant()
@@ -177,7 +201,8 @@ def main():
         ev = api("GET", f"/api/tenants/{T}/events", params={"hours": 2, "page_size": 50})["items"]
         print(json.dumps([{"at": e["at"], "result": e["result"], "reason": e["reason_code"], "vlan": e["vlan_id"], "user": e.get("username"),
                            "title": (e.get("explanation") or {}).get("title"), "network": e.get("network"), "port": e.get("nas_port_id"),
-                           "monitor": e.get("monitor"), "mac": e.get("calling_station_id"), "client": e.get("nas_client_id")} for e in ev]))
+                           "monitor": e.get("monitor"), "mac": e.get("calling_station_id"), "client": e.get("nas_client_id"),
+                           "method": e.get("method"), "device_mac": e.get("mac"), "mac_device": e.get("mac_device_id")} for e in ev]))
     elif cmd == "call":
         api = Api()
         T = api.tenant()

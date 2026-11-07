@@ -63,12 +63,25 @@ def check(expr):
     raw = sys.stdin.read()
     try:
         d = json.loads(raw)
-        good = bool(eval(expr, {"__builtins__": {}, "any": any, "all": all, "len": len, "set": set, "sorted": sorted, "str": str}, {"d": d}))  # noqa: S307 — test-authored
+        good = bool(eval(expr, {"__builtins__": {}, "any": any, "all": all, "len": len, "set": set, "sorted": sorted, "str": str, "next": next}, {"d": d}))  # noqa: S307 — test-authored
     except Exception as e:  # noqa: BLE001 — report any failure as a failed check
         good, raw = False, f"{type(e).__name__}: {e} in {raw[:600]}"
     if not good:
         print(raw[:1200])
     return 0 if good else 1
+
+
+def check_script(script):
+    """Like check, for several statements: asserts over d; an AssertionError's message is printed."""
+    raw = sys.stdin.read()
+    try:
+        d = json.loads(raw)
+        exec(script, {"__builtins__": {"any": any, "all": all, "len": len, "set": set, "sorted": sorted, "str": str, "next": next,  # noqa: S102 — test-authored
+                                        "AssertionError": AssertionError}, "d": d})
+        return 0
+    except Exception as e:  # noqa: BLE001 — report any failure as a failed check
+        print(f"{type(e).__name__}: {str(e)[:600]}")
+        return 1
 
 
 if __name__ == "__main__":
@@ -81,5 +94,7 @@ if __name__ == "__main__":
         print(time.time())
     elif cmd == "has-event":
         sys.exit(has_event(sys.argv[2], sys.argv[3]))
+    elif cmd == "check-script":
+        sys.exit(check_script(sys.argv[2]))
     elif cmd == "check":
         sys.exit(check(sys.argv[2]))

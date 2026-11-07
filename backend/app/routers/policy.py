@@ -106,6 +106,9 @@ def update_vlan(vlan_ref: uuid.UUID, body: VlanIn, ctx: TenantCtx = Depends(requ
         setattr(v, k, val)
     _apply_wired(v, body)
     _changed(ctx)
+    # MAC allow-list entries carry the VLAN after its switch-port mapping.
+    from app.radius.mab import bump_mac
+    bump_mac(ctx.session, ctx.id)
     audit.record(ctx.session, ctx.actor, "vlan.updated", tenant_id=ctx.id, target_type="vlan", target_id=v.id, target_label=f"{v.vlan_id} {v.name}")
     return vlan_out(v)
 
@@ -121,6 +124,9 @@ def delete_vlan(vlan_ref: uuid.UUID, ctx: TenantCtx = Depends(require("policy:wr
     ps = policy_settings(ctx.session, ctx.id)
     if ps.default_vlan_ref == v.id:
         raise HTTPException(status.HTTP_409_CONFLICT, "This is the default VLAN. Choose another default first.")
+    group = ctx.session.scalars(select(m.DeviceGroup).where(m.DeviceGroup.tenant_id == ctx.id, m.DeviceGroup.vlan_ref == v.id)).first()
+    if group:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"The MAC allow-list group “{group.name}” uses this VLAN. Change the group first.")
     ctx.session.delete(v)
     audit.record(ctx.session, ctx.actor, "vlan.deleted", tenant_id=ctx.id, target_type="vlan", target_id=vlan_ref, target_label=f"{v.vlan_id} {v.name}")
     return {"ok": True}
