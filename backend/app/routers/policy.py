@@ -157,8 +157,8 @@ def _validate_rule(ctx: TenantCtx, body: RuleIn) -> list[m.DirectoryGroup]:
         if v is None or v.tenant_id != ctx.id:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose a VLAN from this tenant.")
     for p in body.purposes:
-        if p not in ("user", "device"):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Purposes are user and/or device.")
+        if p not in m.CLIENT_PURPOSES:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Purposes are user, device and/or computer.")
     for a in body.extra_attributes:
         if a.name not in ALLOWED_EXTRA_ATTRIBUTES:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{a.name} can't be set here. Allowed: {', '.join(sorted(ALLOWED_EXTRA_ATTRIBUTES))}.")

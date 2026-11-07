@@ -282,14 +282,14 @@ def test_new_reasons_are_explained():
 def test_windows_lan_profile():
     _, root = _self_signed()
     xml = profiles.windows_lan_xml("radius.corp.example", root)
-    tree = ET.fromstring(xml)  # noqa: S314 — our own output
+    tree = ET.fromstring(xml)
     ns = {"l": "http://www.microsoft.com/networking/LAN/profile/v1"}
     assert tree.find("l:MSM/l:security/l:OneXEnforced", ns).text == "false"
     assert tree.find("l:MSM/l:security/l:OneXEnabled", ns).text == "true"
     assert "<ServerNames>radius.corp.example</ServerNames>" in xml and "<TrustedRootCA>" in xml
     # The Wi-Fi profile is unchanged by sharing the EAP section.
     wlan = profiles.windows_wlan_xml("Corp", "radius.corp.example", root)
-    ET.fromstring(wlan)  # noqa: S314 — our own output
+    ET.fromstring(wlan)
     assert wlan.count("<EAPConfig>") == 1 and "</EAPConfig>\n    </OneX>" in wlan
 
 

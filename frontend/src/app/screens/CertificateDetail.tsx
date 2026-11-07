@@ -83,7 +83,7 @@ function CertRecord({ c }: { c: Cert }) {
     <>
       <PageHeader
         title={title}
-        lede={<>{c.purpose === 'device' ? 'Device' : c.purpose === 'radius-server' ? 'RADIUS server' : 'User'} certificate{c.identity ? <> for {c.identity.display_name}</> : null} · serial <span className="ee-mono">{fmtSerial(c.serial).slice(0, 19)}…</span></>}
+        lede={<>{c.purpose === 'device' ? 'Device' : c.purpose === 'computer' ? 'Domain computer' : c.purpose === 'radius-server' ? 'RADIUS server' : 'User'} certificate{c.identity ? <> for {c.identity.display_name}</> : null} · serial <span className="ee-mono">{fmtSerial(c.serial).slice(0, 19)}…</span></>}
         actions={
           <>
             <Btn onClick={downloadPem} busy={downloading}><Download aria-hidden />Download PEM</Btn>
@@ -127,7 +127,7 @@ function CertRecord({ c }: { c: Cert }) {
               ['Common name', <span className="break-all">{c.common_name}</span>],
               ['Holder', c.identity ? <Link to={paths.user(tid, c.identity.id)} className="underline hover:text-[var(--ee-gold)]">{c.identity.display_name}</Link> : <span className="ee-ink-3">No user linked</span>],
               ['Device', c.device ? <span className="inline-flex items-center gap-2"><PlatformIcon platform={c.device.platform} />{c.device.name}<span className="ee-ink-3">{platformLabels[c.device.platform] ?? c.device.platform}</span></span> : <span className="ee-ink-3">None recorded</span>],
-              ['Purpose', c.purpose === 'device' ? 'Device authentication' : c.purpose === 'radius-server' ? 'RADIUS server' : 'User authentication'],
+              ['Purpose', c.purpose === 'device' ? 'Device authentication' : c.purpose === 'computer' ? 'Domain computer authentication (Group Policy)' : c.purpose === 'radius-server' ? 'RADIUS server' : 'User authentication'],
               ['Subject alternative names', sanList.length === 0 ? <span className="ee-ink-3">None</span> : (
                 <ul className="space-y-0.5">{sanList.map((s) => <li key={s.label + s.value} className="break-all"><span className="ee-ink-3 mr-2 text-[12px]">{s.label}</span><span className="ee-mono text-[12.5px]">{s.value}</span></li>)}</ul>
               ), 'wide'],

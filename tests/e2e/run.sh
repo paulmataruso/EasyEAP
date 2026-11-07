@@ -463,6 +463,138 @@ case "$got" in CLOSED|CONNECT-FAILED*) ok "with admin logins off, EasyEAP doesn'
 fi
 fi
 
+if [ "${E2E_AUTOENROLL:-1}" != 0 ]; then
+step "11c. Group Policy autoenrollment: Kerberos from the lab DC, policy and certificates through the proxy, the computer on the network"
+AE_HOST="$(grep '^EASYEAP_HOSTNAME=' .env | cut -d= -f2)"
+AE_IMAGE="easyeap-api:$(grep '^EASYEAP_VERSION=' .env | cut -d= -f2)"
+AD="$DC exec -T easyeap-lab-ad"
+case "$AE_HOST" in *.*[a-z]*) ;; *) bad "EASYEAP_HOSTNAME is $AE_HOST: Kerberos needs a DNS name (the lab uses easyeap.lab.easyeap.test)";; esac
+PROXY_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$($DC ps -q easyeap-proxy)")"
+cat > "$CERTS/krb5.conf" <<CONF
+[libdefaults]
+    default_realm = LAB.EASYEAP.TEST
+    dns_lookup_kdc = false
+    dns_lookup_realm = false
+    rdns = false
+    dns_canonicalize_hostname = false
+    udp_preference_limit = 0
+[realms]
+    LAB.EASYEAP.TEST = {
+        kdc = dc1.lab.easyeap.test
+    }
+CONF
+pc() { # pc <scenario> <principal> <password> [json] → the client's JSON (a Windows PC, as far as EasyEAP can tell)
+  docker run --rm -u 0 --network "$NET" --add-host "$AE_HOST:$PROXY_IP" -e AE_HOST="$AE_HOST" -e AE_PORT=8443 -e KRB5_CONFIG=/certs/krb5.conf \
+    -e PYTHONDONTWRITEBYTECODE=1 -v "$ROOT/tests/e2e":/e2e:ro -v "$DEPLOY/secrets/tls.crt":/t/tls.crt:ro -v "$CERTS":/certs \
+    --entrypoint python3 "$AE_IMAGE" /e2e/autoenroll_client.py "$@"
+}
+checks() { # … | checks <prefix> name:"description" … — one PASS/FAIL per check the client reported
+  local out; out="$(cat)"; local prefix="$1"; shift
+  for c in "$@"; do echo "$out" | jok "$prefix: ${c#*:}" "d['checks'].get('${c%%:*}') is True" || true; done
+  echo "$out" | lab check 'all(v is True for v in d["checks"].values())' >/dev/null || echo "    notes: $(echo "$out" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["notes"])[:900])')"
+}
+
+# The service account, SPN and keytab, made by EasyEAP's own script for Samba AD.
+SA="$(drive call GET '/autoenroll/script?flavor=samba')"
+echo "$SA" | jok "the service-account script for Samba AD registers HTTP/$AE_HOST" "d['status'] == 200 and 'HTTP/$AE_HOST' in d['body']['content']"
+$AD samba-tool user delete easyeap-cep >/dev/null 2>&1 || true  # each run makes the account from scratch
+if SA_OUT="$(echo "$SA" | python3 -c 'import json,sys; sys.stdout.write(json.load(sys.stdin)["body"]["content"])' \
+  | $AD sh -c 'mkdir -p /tmp/ae && cd /tmp/ae && cat > sa.sh && sh sa.sh' 2>&1)"; then ok "the script ran on the DC"
+else bad "the service-account script failed on the DC: $(echo "$SA_OUT" | tail -n 3)"; fi
+KT="$($AD sh -c 'base64 -w0 /tmp/ae/easyeap-cep.keytab')"
+drive call PUT /autoenroll/keytab "{\"keytab_b64\": \"$KT\"}" | jok "keytab uploaded: a key for HTTP/$AE_HOST in LAB.EASYEAP.TEST, AES, no problems" \
+  "d['status'] == 200 and d['body']['config']['keytab']['principal'] == 'HTTP/$AE_HOST@LAB.EASYEAP.TEST' and not d['body']['config']['keytab']['problems'] and any('aes256' in e for e in d['body']['config']['keytab']['enctypes'])"
+drive call PUT /autoenroll/keytab '{"keytab_b64": "BQIAAAAQ"}' | jok "a damaged keytab is refused with the reason" 'd["status"] == 400'
+drive call PUT /autoenroll/keytab "{\"keytab_b64\": \"$KT\"}" >/dev/null
+drive call POST /autoenroll/keytab/test | jok "keytab test: the DC issues a ticket for the console's SPN to the bind account and the keytab opens it" \
+  'd["status"] == 200 and d["body"]["config"]["keytab_test"]["ok"]'
+FULL="$($AD sh -c 'rm -f /tmp/ae/full.kt && samba-tool domain exportkeytab /tmp/ae/full.kt >/dev/null && base64 -w0 /tmp/ae/full.kt; rm -f /tmp/ae/full.kt')"
+drive call PUT /autoenroll/keytab "{\"keytab_b64\": \"$FULL\"}" | jok "a whole-domain keytab (with krbtgt) is refused, not stored" 'd["status"] == 400 and "krbtgt" in d["body"]["detail"]'
+
+# Computers and a user in AD. --prepare-oldjoin sets a computer's password to its name in lower case.
+# A domain join sets dNSHostName; samba-tool computer create doesn't.
+for c in PC-AE01 PC-AE02; do
+  $AD samba-tool computer delete "$c" >/dev/null 2>&1; must "create computer $c" $AD samba-tool computer create "$c" --prepare-oldjoin
+  printf 'dn: CN=%s,CN=Computers,DC=lab,DC=easyeap,DC=test\nchangetype: modify\nreplace: dNSHostName\ndNSHostName: %s.lab.easyeap.test\n' "$c" "$(echo "$c" | tr 'A-Z' 'a-z')" \
+    | $AD sh -c 'ldbmodify -H /var/lib/samba/private/sam.ldb' >/dev/null || bad "set $c's dNSHostName"
+done
+$AD samba-tool user delete 'evil$' >/dev/null 2>&1; must "create user evil\$" $AD samba-tool user add 'evil$' 'Lab-Passw0rd-123!'
+$AD samba-tool group delete "Corporate PCs" >/dev/null 2>&1
+must "create group Corporate PCs" $AD samba-tool group add "Corporate PCs"
+must "PC-AE01 in Corporate PCs" $AD samba-tool group addmembers "Corporate PCs" 'PC-AE01$'
+DNS1="$($AD samba-tool computer show PC-AE01 --attributes=dNSHostName | awk '/^dNSHostName:/ {print $2}')"
+must "directory sync" drive sync
+GROUPS_JSON="$(drive call GET /directory/groups)"
+DCG="$(echo "$GROUPS_JSON" | python3 -c 'import json,sys; print(next(g["id"] for g in json.load(sys.stdin)["body"]["groups"] if g["name"] == "Domain Computers"))')"
+CPG="$(echo "$GROUPS_JSON" | python3 -c 'import json,sys; print(next(g["id"] for g in json.load(sys.stdin)["body"]["groups"] if g["name"] == "Corporate PCs"))')"
+V130="$(drive call POST /policy/vlans '{"vlan_id": 130, "name": "Domain PCs"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"]["id"])')"
+drive call POST /policy/rules "{\"name\": \"Domain PCs\", \"action\": \"allow\", \"vlan_ref\": \"$V130\", \"group_ids\": [\"$DCG\"], \"purposes\": [\"computer\"]}" \
+  | jok "a rule for Domain Computers, domain computer certificates only" 'd["status"] in (200, 201) and d["body"]["purposes"] == ["computer"]'
+
+drive call GET /autoenroll | jok "before turning it on: the readiness list asks for nothing but the policy and quota" \
+  '[i["key"] for i in d["body"]["readiness"] if i["level"] == "error"] == [] and not d["body"]["config"]["enabled"]'
+drive call PUT /autoenroll '{"enabled": true, "computers": true, "users": true, "computer_group_id": null, "require_channel_binding": true, "response_format": "unsigned"}' \
+  | jok "turned on: computer and user templates with AD CS-style OIDs, revision 100.0, ready" \
+  'd["status"] == 200 and d["body"]["ready"] and sorted(t["kind"] for t in d["body"]["templates"]) == ["computer", "user"] and all(t["oid"].startswith("1.3.6.1.4.1.311.21.8.") and t["revision"] == "100.0" for t in d["body"]["templates"])'
+ST="$(drive call GET /autoenroll)"
+echo "$ST" | jok "readiness: the MachineAccountQuota warning (Samba's default is 10, read at the last sync)" \
+  'any(i["key"] == "quota" and i["level"] == "warning" and "10" in i["message"] for i in d["body"]["readiness"])'
+USER_OID="$(echo "$ST" | python3 -c 'import json,sys; print(next(t["oid"] for t in json.load(sys.stdin)["body"]["templates"] if t["kind"] == "user"))')"
+
+pc computer 'PC-AE01$' pc-ae01 "{\"dns\": \"$DNS1\", \"save\": \"/certs/pc-ae01\"}" | checks "PC-AE01" \
+  challenge:"no ticket: 401 Negotiate" mutual_auth:"mutual authentication completes" one_template:"the policy offers the computer template only" \
+  template_flags:"machine template, autoenroll, RSA 2048, TPM provider first, subject from dNSHostName" template_ext:"the template extension matches the OID and revision" \
+  ca:"one CA: Kerberos, the enrollment URL" issued:"Issued, RelatesTo our MessageID, a RequestID" same_key:"the certificate carries the PC's key" \
+  issuer:"signed by the CA in the policy" key_usage:"key usage: digital signature only" eku:"client authentication only" not_ca:"not a CA" \
+  cert_template_ext:"the certificate names the template and revision" names:"CN and DNS SAN are the AD dNSHostName ($DNS1)" \
+  chain:"the PKCS#7 response carries the certificate and the CA" cmc_success:"CMC status success for body part 1 (a bare PKCS#10)"
+pc refusals 'PC-AE01$' pc-ae01 "{\"user_oid\": \"$USER_OID\"}" | checks "PC-AE01" \
+  unbound_refused:"a ticket without channel binding is refused (binding required)" wrong_binding_refused:"a ticket bound to another TLS connection is refused" \
+  other_template_refused:"the user template's OID: CERTSRV_E_TEMPLATE_DENIED" weak_key_refused:"an RSA 1024 key: CERTSRV_E_KEY_LENGTH, invalid request" \
+  garbage_refused:"a SOAP body that isn't a request: 400"
+pc user alice 'Lab-Passw0rd-123!' "{\"upn\": \"alice@lab.easyeap.test\", \"machine\": \"$DNS1\"}" | checks "alice on PC-AE01" \
+  one_template:"the policy offers the user template only" template_flags:"user template, subject from the directory (UPN)" \
+  issued:"Issued" names:"CN and UPN SAN are alice@lab.easyeap.test" cmc_success:"CMC status success for the CMC body part (7)" chain:"chain in the response"
+pc cep 'evil$' 'Lab-Passw0rd-123!' | jok "a user account named evil\$ isn't a computer: an empty policy, as from AD CS" \
+  'd["notes"]["status"] == 200 and d["notes"]["templates"] == []'
+
+drive call PUT /autoenroll "{\"enabled\": true, \"computers\": true, \"users\": true, \"computer_group_id\": \"$CPG\", \"require_channel_binding\": true, \"response_format\": \"unsigned\"}" \
+  | jok "limited to the Corporate PCs group: the quota warning goes" 'd["status"] == 200 and not any(i["key"] == "quota" for i in d["body"]["readiness"])'
+pc cep 'PC-AE02$' pc-ae02 | jok "PC-AE02 (not in Corporate PCs) is offered nothing" 'd["notes"]["status"] == 200 and d["notes"]["templates"] == []'
+pc cep 'PC-AE01$' pc-ae01 | jok "PC-AE01 (in Corporate PCs) still gets the policy" 'd["notes"]["status"] == 200 and d["notes"]["templates"] == ["EasyEAP-Computer"]'
+
+drive call POST /autoenroll/reenroll '{"kind": "computer"}' | jok "re-enroll every PC: computer template revision 101.0" \
+  'd["status"] == 200 and next(t for t in d["body"]["templates"] if t["kind"] == "computer")["revision"] == "101.0"'
+SECOND="$(pc computer 'PC-AE01$' pc-ae01 "{\"dns\": \"$DNS1\", \"save\": \"/certs/pc-ae01b\"}")"
+echo "$SECOND" | jok "PC-AE01 enrolls again with revision 101" 'd["checks"]["issued"] and d["notes"]["template_rev"] == [101, 0] and d["checks"]["cert_template_ext"]'
+PCID="$(drive call GET '/identities?kind=computer' | python3 -c 'import json,sys; print(next(i["id"] for i in json.load(sys.stdin)["body"]["items"] if i["username"] == "PC-AE01$"))')"
+drive call GET "/identities?kind=computer" | jok "Computers: PC-AE01\$ with its DNS name and AD groups (Domain Computers, Corporate PCs)" \
+  "any(i['username'] == 'PC-AE01\$' and i['kind'] == 'computer' and i['dns_name'] == '$DNS1' and {'Domain Computers', 'Corporate PCs'} <= {g['name'] for g in i['groups']} for i in d['body']['items'])"
+drive call GET "/identities?page_size=200" | jok "People doesn't list computers" 'all(i["kind"] == "user" for i in d["body"]["items"])'
+drive call GET "/certificates?identity_id=$PCID" | jok "two computer certificates; the first is marked renewed by the second" \
+  'len(d["body"]["items"]) == 2 and all(c["purpose"] == "computer" for c in d["body"]["items"]) and sum(1 for c in d["body"]["items"] if c["renewed_at"] and c["status"] == "superseded") == 1 and sum(1 for c in d["body"]["items"] if c["renewal_of"]) == 1'
+for i in 3 4 5; do pc computer 'PC-AE01$' pc-ae01 "{\"dns\": \"$DNS1\"}" > "$CERTS/ae-limit-$i.json"; done
+lab check 'd["checks"].get("issued") is True' < "$CERTS/ae-limit-4.json" && python3 - "$CERTS/ae-limit-5.json" <<'PY' && ok "the fifth computer certificate in a day is refused (limit)" || bad "the daily limit didn't refuse the fifth certificate"
+import json, sys
+d = json.load(open(sys.argv[1]))
+sys.exit(0 if d["notes"].get("ces_status") == 500 and "24 hours" in d["notes"]["ces_fault"]["reason"] else 1)
+PY
+
+drive call GET "/autoenroll/events?limit=200" | jok "the request log: issued, refused (binding, template, key, not a computer, not in the group, limit)" \
+  '{e["code"] for e in d["body"]["events"] if e["outcome"] == "denied"} >= {"binding", "template", "key", "not_computer", "not_in_group", "limit"} and sum(1 for e in d["body"]["events"] if e["service"] == "ces" and e["outcome"] == "ok") >= 4'
+must "wait for snapshot" drive wait
+expect pc-ae01b "accept 130" "the PC's autoenrolled certificate connects as the computer: Domain Computers → VLAN 130"
+expect alice "accept 120" "alice's own certificate still gets IT (120)"
+# Whoever creates a computer account can write its dNSHostName: a certificate only names the computer's own.
+drive call PUT /autoenroll '{"enabled": true, "computers": true, "users": true, "computer_group_id": null, "require_channel_binding": true, "response_format": "unsigned"}' >/dev/null
+printf 'dn: CN=PC-AE02,CN=Computers,DC=lab,DC=easyeap,DC=test\nchangetype: modify\nreplace: dNSHostName\ndNSHostName: dc1.lab.easyeap.test\n' \
+  | $AD sh -c 'ldbmodify -H /var/lib/samba/private/sam.ldb' >/dev/null
+pc computer 'PC-AE02$' pc-ae02 '{"dns": "dc1.lab.easyeap.test"}' | jok "PC-AE02 with the DC's DNS name is refused" \
+  'd["notes"].get("ces_status") == 500 and "match its account name" in d["notes"]["ces_fault"]["reason"]'
+drive call PUT /autoenroll '{"enabled": false, "computers": true, "users": true, "computer_group_id": null, "require_channel_binding": true, "response_format": "unsigned"}' >/dev/null
+pc cep 'PC-AE01$' pc-ae01 | jok "turned off: EasyEAP doesn't answer Group Policy" 'd["notes"]["status"] == 404'
+fi
+
 step "12. Audit"
 $DC exec -T easyeap-api easyeap verify-audit | grep -q '^OK' && ok "audit hash chain verifies" || bad "audit chain verification failed"
 

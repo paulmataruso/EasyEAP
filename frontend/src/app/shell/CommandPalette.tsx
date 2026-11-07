@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNod
 import { Dialog } from 'radix-ui'
 import { useNavigate } from 'react-router'
 import {
-  ArrowLeft, Building, CornerDownLeft, EthernetPort, FilePlus, FileX, FlaskConical, KeyRound, LayoutDashboard, ListOrdered, LogOut, RefreshCw, Router,
+  ArrowLeft, Building, CornerDownLeft, EthernetPort, FileBadge, FilePlus, FileX, FlaskConical, KeyRound, LayoutDashboard, ListOrdered, LogOut, RefreshCw, Router,
   ScrollText, Search, ServerCog, ShieldCheck, SquareTerminal, Users,
 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -71,6 +71,7 @@ export function CommandPalette({ open, onOpenChange, start }: { open: boolean; o
         { id: 'go-radius', label: 'RADIUS, controllers and switches', hint: 'Go to', icon: <Router aria-hidden />, keywords: 'nas wired', run: () => go(paths.radius(tid)) },
         { id: 'go-device-admin', label: 'Device administration', hint: 'Go to', icon: <SquareTerminal aria-hidden />, keywords: 'tacacs aaa switch login admin accounts', perm: 'admin:read', run: () => go(paths.deviceAdmin(tid)) },
         { id: 'go-directory', label: 'Directory', hint: 'Go to', icon: <Building aria-hidden />, keywords: 'active directory ldaps', run: () => go(paths.directory(tid)) },
+        { id: 'go-autoenroll', label: 'Group Policy autoenrollment', hint: 'Go to', icon: <FileBadge aria-hidden />, keywords: 'gpo cep ces kerberos keytab computer certificate windows domain', perm: 'directory:read', run: () => go(paths.autoenroll(tid)) },
         { id: 'go-pki', label: 'Certificate authority', hint: 'Go to', icon: <KeyRound aria-hidden />, keywords: 'pki ca crl', run: () => go(paths.pki(tid)) },
       )
     }

@@ -58,6 +58,10 @@ Status as of 2026-11-06 (release 1.0.1).
 - [x] Opt-in server-generated PKCS#12, one download, purged when undelivered
 - [x] Windows setup file: user and computer certificates (TPM or non-exportable software key), Wi-Fi and wired
   profiles, automatic renewal signed by the current key
+- [x] Group Policy autoenrollment (preview): MS-XCEP and MS-WSTEP with Kerberos and channel binding; computers checked
+  in AD (workstation flag, optional group, MachineAccountQuota warning) with their own identities and AD groups; one
+  user certificate per user per PC; AD CS-style template OIDs and revisions, Re-enroll everyone; service-account
+  scripts for Windows and Samba AD, keytab upload and live test; readiness and the request log
 
 ### Console and portal
 - [x] Foundation: theme, API client, session, tenant scope, search-first shell, command palette
@@ -103,7 +107,11 @@ Status as of 2026-11-06 (release 1.0.1).
   admin data.
 - **Windows setup file not run on a real Windows 11 PC.** It's tested under PowerShell 7 with Windows' commands
   replaced by recorders; certreq with the TPM, netsh, the approval prompt and the scheduled tasks are unverified.
-- **Wired 802.1X gaps.** Computer certificates come from the Windows setup file, not yet from Group Policy autoenrollment; no IP-phone voice domain, no
+- **Group Policy autoenrollment is a preview, not run on a real Windows PC.** It's tested against Samba AD and a
+  Kerberos client written from MS-XCEP and MS-WSTEP (channel binding, both request forms, refusals), through the real
+  proxy, CA and FreeRADIUS. Windows' own parsing of the policy and of the CMC response, the TPM-or-software provider
+  fallback and the sign-in-screen connection are unverified ([docs/autoenrollment.md](docs/autoenrollment.md)).
+- **Wired 802.1X gaps.** No IP-phone voice domain, no
   merge with an existing 802.1X configuration on a switch, no profiling or automatic approval for MAC authentication.
 - **Directory sources** other than Active Directory over LDAPS (Entra ID, Google Workspace) are not supported.
 - **Real-device installs** are confirmed on an iPhone: it enrolled through the portal with its key made on the
@@ -129,8 +137,7 @@ Status as of 2026-11-06 (release 1.0.1).
 - SCEP for MDM-managed devices
 - Switch audit: SNMP and syslog from switches to check that ports enforce 802.1X as configured
   ([docs/plans/switch-audit.md](docs/plans/switch-audit.md))
-- Group Policy autoenrollment for domain PCs and users (MS-XCEP and MS-WSTEP with Kerberos)
-  ([docs/plans/gpo-autoenrollment.md](docs/plans/gpo-autoenrollment.md))
+- Group Policy autoenrollment: key attestation for TPM keys, and confirming it on real Windows 11 PCs
 - Device administration phase 2: TACACS+ over TLS, command authorization, other vendors
 - RadSec
 - Additional RADIUS nodes with health in System

@@ -107,7 +107,7 @@ def test_profiles_sign_in_mode_and_issuer_filter():
     assert "<authMode>user</authMode>" in plain and "TLSExtensions" not in plain  # what the portal sends is unchanged
     for xml in (profiles.windows_wlan_xml("Corp", "r.example", ROOT, auth_mode="machineOrUser", issuers=[ROOT, issuing]),
                 profiles.windows_lan_xml("r.example", ROOT, auth_mode="machine", issuers=[ROOT, issuing])):
-        tree = ET.fromstring(xml)  # noqa: S314 — our own generated profile
+        tree = ET.fromstring(xml)
         hashes_ = [e.text for e in tree.iter() if e.tag.endswith("IssuerHash")]
         assert len(hashes_) == 2 and all(len(h.replace(" ", "")) == 40 for h in hashes_)
         assert any(e.tag.endswith("CAHashList") and e.get("Enabled") == "true" for e in tree.iter())
@@ -182,7 +182,7 @@ def world(monkeypatch):
     der = leaf.public_bytes(serialization.Encoding.DER)
     tenant = SimpleNamespace(id=uuid.uuid4(), status="active", domain="corp.example", slug="corp")
     identity = SimpleNamespace(id=uuid.uuid4(), account_state="enabled", upn="nina@corp.example", username="nina", email="", display_name="Nina")
-    tpl = SimpleNamespace(id=uuid.uuid4(), renew_before_days=45)
+    tpl = SimpleNamespace(id=uuid.uuid4(), renew_before_days=45, autoenroll_kind=None)
     device = SimpleNamespace(id=uuid.uuid4(), name="PC-NINA01")
     stored = crypto.cert_info(leaf.public_bytes(serialization.Encoding.PEM).decode()).fingerprint_sha256  # as sign_csr records it
     cert = SimpleNamespace(id=uuid.uuid4(), fingerprint_sha256=stored, status="active", renewed_at=None,

@@ -26,7 +26,8 @@ export default function Users() {
   const { tid, tenant, can } = useTenant()
   const navigate = useNavigate()
   const now = useNow()
-  const { values, page, set } = useUrlState(['q', 'state', 'group', 'enrolled'] as const)
+  const { values, page, set } = useUrlState(['q', 'state', 'group', 'enrolled', 'kind'] as const)
+  const computers = values.kind === 'computer'
   const [createOpen, setCreateOpen] = useState(false)
   const params = {
     q: values.q || undefined,
@@ -35,6 +36,7 @@ export default function Users() {
     enrolled: values.enrolled === 'yes' ? true : values.enrolled === 'no' ? false : undefined,
     page,
     page_size: PAGE_SIZE,
+    kind: computers ? 'computer' as const : undefined,
   }
   const list = useIdentities(tid, params)
   const groups = useDirectoryGroups(tid)
@@ -74,6 +76,8 @@ export default function Users() {
       )}
 
       <div className="mb-4 flex flex-wrap items-center gap-2.5" role="search" aria-label="Filter users">
+        <Seg label="Show" value={computers ? 'computer' : 'user'} onChange={(v) => set({ kind: v === 'computer' ? 'computer' : null, enrolled: null })}
+          options={[{ value: 'user', label: 'People' }, { value: 'computer', label: 'Computers' }]} />
         <SearchBox className="w-full sm:w-[280px]" value={values.q} onChange={(v) => set({ q: v.trim() || null })} label="Search users" placeholder="Name, username, email or UPN" />
         <ESelect label="Account state" className="min-w-[180px]" value={values.state || 'any'} onChange={(v) => set({ state: v === 'any' ? null : v })} options={STATES} />
         <ESelect label="Group" className="min-w-[200px] max-w-full" value={values.group || 'any'} onChange={(v) => set({ group: v === 'any' ? null : v })}
@@ -92,7 +96,12 @@ export default function Users() {
             Search matches name, username, email and UPN. Deleted directory accounts appear only under “Deleted in directory”.
           </Empty>
         ) : (
-          <Empty icon={<UsersIcon aria-hidden />} title={`No users in ${tenant.name} yet`}
+          computers ? (
+            <Empty icon={<UsersIcon aria-hidden />} title={`No computers in ${tenant.name} yet`}
+              action={<Link to={paths.autoenroll(tid)} className="ee-btn">Group Policy autoenrollment</Link>}>
+              A domain PC appears here when it first asks EasyEAP for a certificate through Group Policy autoenrollment. Its access comes from its own AD groups.
+            </Empty>
+          ) : <Empty icon={<UsersIcon aria-hidden />} title={`No users in ${tenant.name} yet`}
             action={
               <div className="flex flex-wrap gap-2">
                 {!directory.data?.config && <Link to={paths.directory(tid)} className="ee-btn ee-btn-primary">Connect Active Directory</Link>}

@@ -25,6 +25,10 @@ from app.db import Base
 
 TS = DateTime(timezone=True)
 
+# Certificates that authenticate to RADIUS: a user's, a user's device's, and a domain computer's (Group Policy
+# autoenrollment). The others (radius-server, admin) never get a policy decision.
+CLIENT_PURPOSES = ("user", "device", "computer")
+
 
 def uuid_pk() -> Mapped[uuid.UUID]:
     return mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -167,6 +171,13 @@ class CertificateTemplate(Base):
     allow_server_keygen: Mapped[bool] = mapped_column(Boolean, default=False)
     bao_role: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+    # Group Policy autoenrollment (docs/plans/gpo-autoenrollment.md §2.4): the template OID and revision Windows sees
+    # in the policy and finds in the certificate template extension; autoenroll_kind = computer | user (None: not
+    # offered to Windows).
+    template_oid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    revision_major: Mapped[int] = mapped_column(Integer, default=100, server_default="100")
+    revision_minor: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    autoenroll_kind: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
 
 class Certificate(Base):
@@ -201,6 +212,8 @@ class Certificate(Base):
     # one was replaced. A certificate renews once.
     renewal_of: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     renewed_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    # gpo: Windows enrolled it through Group Policy (no enrollment link or setup file). None otherwise.
+    enrollment_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 # ── Directory & identity ────────────────────────────────────────────────────
@@ -253,6 +266,9 @@ class Identity(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
     source: Mapped[str] = mapped_column(String(8))  # ad | local
+    # user | computer (an AD computer that enrolled through Group Policy; username NAME$, dns_name its dNSHostName)
+    kind: Mapped[str] = mapped_column(String(10), default="user", server_default="user")
+    dns_name: Mapped[str | None] = mapped_column(String(253), nullable=True)
     object_guid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     username: Mapped[str] = mapped_column(String(256))
     upn: Mapped[str | None] = mapped_column(String(256), nullable=True)
@@ -656,6 +672,50 @@ class Enrollment(Base):
     completed_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     certificate_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     renewal_of: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class AutoenrollConfig(Base):
+    """Group Policy autoenrollment for one tenant (docs/plans/gpo-autoenrollment.md)."""
+    __tablename__ = "autoenroll_configs"
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    computers: Mapped[bool] = mapped_column(Boolean, default=True)
+    users: Mapped[bool] = mapped_column(Boolean, default=False)
+    policy_id: Mapped[str] = mapped_column(String(64))  # stable: Group Policy stores it ("Validate Server")
+    oid_root: Mapped[str] = mapped_column(String(128))  # 1.3.6.1.4.1.311.21.8.<6 random arcs>
+    service_account: Mapped[str] = mapped_column(String(20), default="easyeap-cep")
+    keytab_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    keytab_info: Mapped[dict] = mapped_column(JSONB, default=dict)  # principal, realm, kvno, enctypes, problems
+    keytab_uploaded_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    keytab_test: Mapped[dict] = mapped_column(JSONB, default=dict)  # ok, message, at
+    require_channel_binding: Mapped[bool] = mapped_column(Boolean, default=True)
+    computer_group_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("directory_groups.id", ondelete="SET NULL"), nullable=True)
+    response_format: Mapped[str] = mapped_column(String(16), default="unsigned")  # unsigned | signed | pkcs7
+    machine_account_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)  # read at each directory sync
+    signer_cert_pem: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signer_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+
+
+class AutoenrollEvent(Base):
+    """One policy or enrollment request from Windows, for the console's request log. The id is the WSTEP RequestID."""
+    __tablename__ = "autoenroll_events"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    at: Mapped[datetime] = mapped_column(TS, server_default=func.now(), index=True)
+    service: Mapped[str] = mapped_column(String(8))  # cep | ces
+    caller: Mapped[str] = mapped_column(String(256), default="")
+    kind: Mapped[str | None] = mapped_column(String(10), nullable=True)  # computer | user
+    outcome: Mapped[str] = mapped_column(String(8))  # ok | denied | error
+    code: Mapped[str] = mapped_column(String(32), default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    template: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    machine: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    certificate_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class KeyEscrow(Base):

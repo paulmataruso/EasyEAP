@@ -13,6 +13,9 @@ export interface GroupRef { id: string; name: string }
 export interface Identity {
   id: string
   source: 'ad' | 'local'
+  /** computer: a domain PC that enrolled through Group Policy autoenrollment (username NAME$). */
+  kind?: 'user' | 'computer'
+  dns_name?: string | null
   username: string
   upn: string | null
   email: string | null
@@ -79,7 +82,7 @@ export interface IdentityDetail extends Identity {
   events: AuthEvent[]
 }
 
-export interface IdentityListParams { q?: string; state?: string; group_id?: string; enrolled?: boolean; page?: number; page_size?: number }
+export interface IdentityListParams { q?: string; state?: string; group_id?: string; enrolled?: boolean; page?: number; page_size?: number; kind?: 'user' | 'computer' }
 
 export function useIdentities(tid: string, params: IdentityListParams, enabled = true) {
   return useQuery({
@@ -114,7 +117,7 @@ export interface Certificate {
   common_name: string
   subject: string
   sans: string[]
-  purpose: 'user' | 'device' | 'radius-server'
+  purpose: 'user' | 'device' | 'computer' | 'radius-server'
   not_before: string
   not_after: string
   key_algorithm: string
@@ -259,7 +262,7 @@ export interface Authority {
 export interface Template {
   id: string
   name: string
-  purpose: 'user' | 'device' | 'radius-server'
+  purpose: 'user' | 'device' | 'computer' | 'radius-server'
   key_algorithm: string
   validity_days: number
   renew_before_days: number

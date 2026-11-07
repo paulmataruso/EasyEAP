@@ -39,10 +39,12 @@ export function DiffChip({ diff, enabled }: { diff: RuleDiff | undefined; enable
   return <Chip tone="warn" icon={<PencilLine aria-hidden />} title={`Changed in draft: ${fields}${diff.moved ? '; moved' : ''}`}>Changed: {fields}{diff.moved ? ' · moved' : ''}</Chip>
 }
 
+const PURPOSE_WORDS: Record<string, string> = { user: 'user', device: 'device', computer: 'domain computer' }
 export const purposeLabel = (p: string[]) => {
   const s = new Set(p)
-  if (s.size === 0 || (s.has('user') && s.has('device'))) return 'any certificate'
-  return s.has('user') ? 'user certificates only' : 'device certificates only'
+  if (s.size === 0 || ['user', 'device', 'computer'].every((x) => s.has(x))) return 'any certificate'
+  const words = ['user', 'device', 'computer'].filter((x) => s.has(x)).map((x) => PURPOSE_WORDS[x])
+  return `${words.join(' and ')} certificates only`
 }
 
 export const ledgerVlans = (vlans: Vlan[]): LedgerVlan[] => vlans.map((v) => ({ vlan_id: v.vlan_id, name: v.name, color: v.color }))

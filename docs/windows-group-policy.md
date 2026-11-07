@@ -6,16 +6,15 @@ Group Policy**. This page is the long form; where they differ, the console is cu
 
 ## Can Group Policy enroll certificates from EasyEAP automatically?
 
-Not yet, but it can be done. Windows certificate autoenrollment can use any enrollment service that speaks Microsoft's
-Certificate Enrollment Policy and Enrollment Web Service protocols (MS-XCEP and MS-WSTEP), set with the Group Policy
-setting **Certificate Services Client – Certificate Enrollment Policy**. EasyEAP is adding those, with Kerberos, so
-domain PCs and users get and renew their certificates on their own
-([docs/plans/gpo-autoenrollment.md](plans/gpo-autoenrollment.md)). SCEP on Windows is available only through an MDM
-such as Intune.
+Yes, in preview: [Group Policy autoenrollment](autoenrollment.md). EasyEAP answers Windows' certificate enrollment
+policy and enrollment web service protocols (MS-XCEP and MS-WSTEP) with Kerberos, so domain PCs and the users who sign
+in to them get and renew their certificates on their own, as from AD CS. The computer gets its own certificate, so
+the sign-in screen has network. (SCEP on Windows is available only through an MDM such as Intune.)
 
-Until then, run the [Windows setup file](windows-setup.md) on each PC: it installs the user's and the computer's
-certificates (keys in the TPM, or non-exportable software keys on PCs without one) and renews them by itself. Group
-Policy sets up everything around them: trust in the EasyEAP CA, the 802.1X services, and the Wi-Fi and wired policies.
+For PCs that aren't domain-joined, or while autoenrollment is in preview, the [Windows setup file](windows-setup.md)
+installs the user's and the computer's certificates on one PC (keys in the TPM, or non-exportable software keys on
+PCs without one) and renews them by itself. Either way, Group Policy sets up everything around the certificates: trust
+in the EasyEAP CA, the 802.1X services, and the Wi-Fi and wired policies on this page.
 
 ## Before you start
 
@@ -79,9 +78,11 @@ With only user certificates, the network starts after a user signs in: on a swit
 sign-in screen has no network, a user who has never signed in on that PC can't, and computer Group Policy doesn't
 refresh before sign-in.
 
-A computer certificate fixes that. The [Windows setup file](windows-setup.md) installs one in the computer's store
-(a device certificate of the user it was made for, so the PC gets that user's access) and sets its own profiles to
-**User or computer authentication**: the computer's certificate at the sign-in screen, the user's after sign-in.
+A computer certificate fixes that. [Group Policy autoenrollment](autoenrollment.md) gives each domain PC its own
+(access from the computer's AD groups: add an access rule for **Domain computers**). The
+[Windows setup file](windows-setup.md) installs one in the computer's store instead (a device certificate of the user
+it was made for, so the PC gets that user's access) and sets its own profiles to **User or computer authentication**:
+the computer's certificate at the sign-in screen, the user's after sign-in.
 
 - If you deploy the profiles through Group Policy instead, choose **User or computer authentication** for PCs that have
   a computer certificate, and **User authentication** for the rest: without a computer certificate, the sign-in screen
@@ -93,7 +94,8 @@ A computer certificate fixes that. The [Windows setup file](windows-setup.md) in
 1. On a PC: `gpupdate /force`, then `netsh wlan show profiles` (your SSID appears under "Group policy profiles") and
    `netsh lan show profiles`.
 2. `certlm.msc` → Trusted Root Certification Authorities shows your EasyEAP root.
-3. The user enrolls from the EasyEAP portal, or IT runs the Windows setup file, then the PC connects. EasyEAP's Authentication log shows the result and, if it
+3. Group Policy autoenrollment issues the certificates (`certutil -pulse`), or the user enrolls from the EasyEAP
+   portal, or IT runs the Windows setup file; then the PC connects. EasyEAP's Authentication log shows the result and, if it
    fails, why (for example "Secure handshake failed" when the PC doesn't trust the server).
 4. A Group Policy profile wins over a profile with the same name installed by the EasyEAP helper. Remove one of them so
    users see one network.

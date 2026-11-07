@@ -81,7 +81,7 @@ def preview(session: Session, tenant_id: uuid.UUID, draft_rules: list[DraftRuleD
     purposes: dict[uuid.UUID, set[str]] = {}
     for iid, purpose in session.execute(select(m.Certificate.identity_id, m.Certificate.purpose).where(
             m.Certificate.tenant_id == tenant_id, m.Certificate.status == "active", m.Certificate.not_after > now,
-            m.Certificate.purpose.in_(("user", "device")), m.Certificate.identity_id.is_not(None))):
+            m.Certificate.purpose.in_(m.CLIENT_PURPOSES), m.Certificate.identity_id.is_not(None))):
         purposes.setdefault(iid, set()).add(purpose)
 
     summary = {"evaluated": 0, "with_certificates": 0, "newly_allowed": 0, "newly_denied": 0, "vlan_changed": 0, "rule_only": 0, "unchanged": 0}

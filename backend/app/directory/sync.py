@@ -25,17 +25,38 @@ def params(cfg: m.DirectoryConfig, password: str | None = None) -> ldap.Director
     )
 
 
+def apply_computer(row: m.Identity, c: ldap.DirComputer, by_sid: dict[str, m.DirectoryGroup], now: datetime) -> None:
+    """Copy a computer account onto its identity. A computer that isn't a workstation trust account anymore is
+    treated as disabled; groups that couldn't be read (None) are left as they were."""
+    row.kind = "computer"
+    row.username, row.display_name, row.dns_name = c.username, c.name, c.dns_name
+    row.account_state = c.account_state if c.workstation else "disabled"
+    row.last_synced_at = now
+    if c.group_sids is not None:
+        row.groups = [by_sid[s] for s in c.group_sids if s in by_sid]
+
+
 def sync_tenant(session: Session, tenant_id: uuid.UUID, *, force: bool = False) -> dict:
     cfg = session.get(m.DirectoryConfig, tenant_id)
     if cfg is None or not cfg.enabled:
         return {"skipped": True}
     started = datetime.now(UTC)
+    # Computers that enrolled through Group Policy (docs/plans/gpo-autoenrollment.md §2.3) are refreshed in a separate
+    # search; deletion and the safety stop count users and computers separately.
+    known_computers = {i.object_guid: i for i in session.scalars(select(m.Identity).where(
+        m.Identity.tenant_id == tenant_id, m.Identity.source == "ad", m.Identity.kind == "computer"))}
+    computers: list[ldap.DirComputer] | None = None
+    quota = None
     try:
         conn = ldap.connect(params(cfg))
         try:
             groups = ldap.fetch_groups(conn, params(cfg))
             users = ldap.fetch_users(conn, params(cfg))
             threshold, window = ldap.lockout_policy(conn, cfg.base_dn)
+            if known_computers:
+                computers = ldap.fetch_computers(conn, params(cfg), {g for g in known_computers if g})
+            if session.get(m.AutoenrollConfig, tenant_id) is not None:
+                quota = ldap.machine_account_quota(conn, cfg.base_dn)
         finally:
             conn.unbind()
     except Exception as exc:  # noqa: BLE001 — recorded, never silently ignored
@@ -45,7 +66,8 @@ def sync_tenant(session: Session, tenant_id: uuid.UUID, *, force: bool = False) 
         log.warning("Directory sync failed for tenant %s: %s", tenant_id, exc)
         return {"ok": False, "error": cfg.last_sync_error}
 
-    existing_users = {i.object_guid: i for i in session.scalars(select(m.Identity).where(m.Identity.tenant_id == tenant_id, m.Identity.source == "ad"))}
+    existing_users = {i.object_guid: i for i in session.scalars(select(m.Identity).where(
+        m.Identity.tenant_id == tenant_id, m.Identity.source == "ad", m.Identity.kind == "user"))}
     seen = {u.object_guid for u in users}
     to_delete = [i for g, i in existing_users.items() if g not in seen and i.account_state != "deleted"]
     active_known = len([i for i in existing_users.values() if i.account_state != "deleted"])
@@ -54,6 +76,16 @@ def sync_tenant(session: Session, tenant_id: uuid.UUID, *, force: bool = False) 
         cfg.last_sync_error = (f"Safety stop: this sync would mark {len(to_delete)} of {active_known} users as deleted. "
                                "Check the search base and filter, then run a forced sync if the change is intended.")
         return {"ok": False, "error": cfg.last_sync_error}
+    computers_to_delete: list[m.Identity] = []
+    if computers is not None:
+        seen_computers = {c.object_guid for c in computers}
+        computers_to_delete = [i for g, i in known_computers.items() if g not in seen_computers and i.account_state != "deleted"]
+        active_computers = len([i for i in known_computers.values() if i.account_state != "deleted"])
+        if not force and active_computers >= 10 and len(computers_to_delete) > active_computers * SAFETY_DELETE_FRACTION:
+            cfg.last_sync_at, cfg.last_sync_status = started, "failed"
+            cfg.last_sync_error = (f"Safety stop: this sync would mark {len(computers_to_delete)} of {active_computers} computers as "
+                                   "deleted. Check the base DN, then run a forced sync if the change is intended.")
+            return {"ok": False, "error": cfg.last_sync_error}
 
     # Groups
     existing_groups = {g.object_guid: g for g in session.scalars(select(m.DirectoryGroup).where(m.DirectoryGroup.tenant_id == tenant_id, m.DirectoryGroup.source == "ad"))}
@@ -75,7 +107,8 @@ def sync_tenant(session: Session, tenant_id: uuid.UUID, *, force: bool = False) 
 
     # Users
     created = updated = 0
-    taken_usernames = {i.username.lower(): i for i in existing_users.values()}
+    # Users and computers share the username namespace (unique per tenant).
+    taken_usernames = {i.username.lower(): i for i in [*existing_users.values(), *known_computers.values()]}
     for u in users:
         row = existing_users.get(u.object_guid)
         if row is None:
@@ -93,6 +126,21 @@ def sync_tenant(session: Session, tenant_id: uuid.UUID, *, force: bool = False) 
     for row in to_delete:
         row.account_state = "deleted"
         row.groups = []
+
+    # Computers: only those that enrolled are kept up to date (state, DNS name, groups).
+    if computers is not None:
+        for c in computers:
+            row = known_computers.get(c.object_guid)
+            if row is None:
+                continue
+            apply_computer(row, c, by_sid, started)
+        for row in computers_to_delete:
+            row.account_state = "deleted"
+            row.groups = []
+    if quota is not None:
+        ae = session.get(m.AutoenrollConfig, tenant_id)
+        if ae is not None:
+            ae.machine_account_quota = quota
     session.flush()
 
     # Device administration: who a group mapping admits may have changed, and the AD bind cap follows the lockout
@@ -106,6 +154,7 @@ def sync_tenant(session: Session, tenant_id: uuid.UUID, *, force: bool = False) 
     from app.policy.service import recompute_tenant  # local import avoids a cycle
     decisions = recompute_tenant(session, tenant_id)
     stats = {"users": len(users), "groups": len(groups), "created": created, "updated": updated, "deleted": len(to_delete),
+             "computers": len(known_computers), "computers_deleted": len(computers_to_delete),
              "decisions": decisions, "duration_ms": int((datetime.now(UTC) - started).total_seconds() * 1000)}
     cfg.last_sync_at, cfg.last_sync_status, cfg.last_sync_error, cfg.last_sync_stats = started, "ok", None, stats
     return {"ok": True, **stats}

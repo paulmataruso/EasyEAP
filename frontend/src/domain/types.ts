@@ -92,7 +92,7 @@ export interface CertificateAuthority {
   ocsp: { enabled: boolean; url: string | null } | null
 }
 
-export type CertPurpose = 'user' | 'device' | 'radius-server' | 'admin'
+export type CertPurpose = 'user' | 'device' | 'computer' | 'radius-server' | 'admin'
 
 export interface CertificateTemplate {
   id: string

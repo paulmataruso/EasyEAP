@@ -19,6 +19,7 @@
 //   device-admin?tab=accounts|directory|log|settings   show that tab
 //   device-admin?account=<id>    open that local account
 //   device-admin?device=<id>     open that device's configuration
+//   autoenroll?tab=settings|log  show that tab
 import type { ActionTarget } from './api/types'
 
 const t = (tid: string) => `/t/${tid}`
@@ -47,6 +48,7 @@ export const paths = {
   deviceAdmin: (tid: string, q?: { tab?: 'accounts' | 'directory' | 'log' | 'settings'; account?: string; device?: string }) =>
     `${t(tid)}/device-admin${q?.account ? `?account=${encodeURIComponent(q.account)}` : q?.device ? `?device=${encodeURIComponent(q.device)}` : q?.tab ? `?tab=${q.tab}` : ''}`,
   directory: (tid: string) => `${t(tid)}/directory`,
+  autoenroll: (tid: string, q?: { tab?: 'settings' | 'log' }) => `${t(tid)}/autoenroll${q?.tab ? `?tab=${q.tab}` : ''}`,
   pki: (tid: string) => `${t(tid)}/pki`,
   events: (tid: string, q?: { reason?: string; result?: string; event?: string; network?: 'wired' | 'wireless' }) =>
     `${t(tid)}/events${q?.event ? `?event=${encodeURIComponent(q.event)}` : q?.reason ? `?reason=${q.reason}` : q?.result ? `?result=${q.result}` : q?.network ? `?network=${q.network}` : ''}`,
@@ -61,6 +63,7 @@ export function targetPath(tid: string, target: ActionTarget): string {
   const arg = rest[0]
   switch (screen) {
     case 'directory': return paths.directory(tid)
+    case 'autoenroll': return paths.autoenroll(tid)
     case 'radius': return arg === 'client' && rest[1] ? paths.radius(tid, { client: rest[1] }) : paths.radius(tid)
     case 'pki': return paths.pki(tid)
     case 'setup': return paths.setup(tid)

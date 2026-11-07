@@ -67,6 +67,8 @@ services:
       - easyeap-secrets:/var/lib/easyeap/secrets
       - easyeap-backups:/var/lib/easyeap/backups
       - easyeap-control:/var/lib/easyeap/control
+      # The certificate the proxy serves: Group Policy autoenrollment checks Kerberos channel binding against it.
+      - ./secrets/tls.crt:/etc/easyeap/proxy-tls.crt:ro
     networks: [app, data, pki, radius, egress]
     depends_on:
       easyeap-db: { condition: service_healthy }

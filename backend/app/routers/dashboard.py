@@ -43,7 +43,7 @@ def dashboard(ctx: TenantCtx = Depends(require("tenant:read"))) -> dict:
     warn = policy_settings(s, ctx.id).expiry_warning_days
     expiring = s.execute(select(m.Certificate, m.Identity).outerjoin(m.Identity, m.Identity.id == m.Certificate.identity_id).where(
         m.Certificate.tenant_id == ctx.id, m.Certificate.status == "active", m.Certificate.not_after > now,
-        m.Certificate.not_after <= now + timedelta(days=warn), m.Certificate.purpose.in_(("user", "device"))).order_by(m.Certificate.not_after).limit(10)).all()
+        m.Certificate.not_after <= now + timedelta(days=warn), m.Certificate.purpose.in_(m.CLIENT_PURPOSES)).order_by(m.Certificate.not_after).limit(10)).all()
     recent = s.scalars(select(m.AuthEvent).where(m.AuthEvent.tenant_id == ctx.id).order_by(m.AuthEvent.id.desc()).limit(12)).all()
     rs = s.get(m.RadiusSettings, ctx.id)
     issuing = s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == ctx.id, m.CertificateAuthority.role == "issuing")).first()

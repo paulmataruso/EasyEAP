@@ -89,7 +89,7 @@ def recompute_tenant(session: Session, tenant_id: uuid.UUID) -> int:
     now = datetime.now(UTC)
     identities = {i.id: i for i in session.scalars(select(m.Identity).where(m.Identity.tenant_id == tenant_id))}
     certs = session.scalars(select(m.Certificate).where(
-        m.Certificate.tenant_id == tenant_id, m.Certificate.purpose.in_(("user", "device")))).all()
+        m.Certificate.tenant_id == tenant_id, m.Certificate.purpose.in_(m.CLIENT_PURPOSES))).all()
     session.execute(delete(m.Decision).where(m.Decision.tenant_id == tenant_id))
     count = 0
     for c in certs:
@@ -111,6 +111,35 @@ def recompute_tenant(session: Session, tenant_id: uuid.UUID) -> int:
         rs.snapshot_built_at = now
     session.flush()
     return count
+
+
+def decide_certificate(session: Session, cert: m.Certificate) -> m.Decision:
+    """Evaluate one certificate and store its decision, then bump the snapshot version: what a new certificate needs,
+    without re-evaluating the whole tenant (Group Policy autoenrollment issues certificates in bursts)."""
+    tenant_id = cert.tenant_id
+    ps = policy_settings(session, tenant_id)
+    now = datetime.now(UTC)
+    ident = session.get(m.Identity, cert.identity_id) if cert.identity_id else None
+    cin = CertInput(serial=cert.serial, status=cert.status, not_after=cert.not_after, purpose=cert.purpose)
+    if ident is None:
+        out = Outcome("deny", "cert_unknown", None, None, [], [{"kind": "account", "ok": False, "detail": "No identity is linked to this certificate"}])
+    else:
+        groups = {str(g.id) for g in ident.groups if not g.deleted}
+        out = evaluate(ident.account_state, groups, load_rules(session, tenant_id), ps.default_action, _default_vlan(session, ps), now, cin)
+    row = session.get(m.Decision, cert.id)
+    if row is None:
+        row = m.Decision(certificate_id=cert.id, tenant_id=tenant_id)
+        session.add(row)
+    row.identity_id, row.outcome, row.reason_code = cert.identity_id, out.outcome, out.reason_code
+    row.deciding_rule_id = uuid.UUID(out.deciding_rule_id) if out.deciding_rule_id else None
+    row.vlan_id, row.wired_vlan_id = out.vlan_id, wired_vlan(wired_vlan_map(session, tenant_id), out.outcome, out.vlan_id)
+    row.attributes, row.steps, row.computed_at = out.attributes, out.steps, now
+    rs = session.get(m.RadiusSettings, tenant_id)
+    if rs is not None:
+        rs.snapshot_version = max(int(now.timestamp() * 1000), (rs.snapshot_version or 0) + 1)
+        rs.snapshot_built_at = now
+    session.flush()
+    return row
 
 
 def snapshot(session: Session, tenant_id: uuid.UUID) -> dict:

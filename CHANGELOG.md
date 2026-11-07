@@ -82,14 +82,37 @@ versions follow [Semantic Versioning](https://semver.org/).
   - `tests/windows/run.sh`: PowerShell parses the generated files and runs the setup's steps with Windows' commands
     replaced by recorders; renewals signed by the script's own code verify in EasyEAP. Not yet run on a real Windows 11 PC.
 - **Windows Group Policy guide** ([docs/windows-group-policy.md](docs/windows-group-policy.md)) and a Windows Group
-  Policy dialog on the RADIUS screen with the CA certificates and the Wi-Fi and wired profiles to import. Group Policy
-  autoenrollment from EasyEAP (MS-XCEP and MS-WSTEP with Kerberos) is planned; until then, certificates come from the
-  setup file or the portal.
+  Policy dialog on the RADIUS screen with the CA certificates and the Wi-Fi and wired profiles to import.
+- **Group Policy autoenrollment (preview)**: domain PCs and the users who sign in to them get certificates from
+  EasyEAP through Group Policy, as from AD CS, and Windows renews them
+  ([docs/autoenrollment.md](docs/autoenrollment.md), [plan and critique](docs/plans/gpo-autoenrollment.md)).
+  - EasyEAP answers MS-XCEP (`/cep/<tenant>`) and MS-WSTEP (`/ces/<tenant>`) with Kerberos (SPNEGO, both Kerberos
+    OIDs), channel binding to the proxy's TLS certificate required by default, NTLM refused and named.
+  - **Computers are identities**: `NAME$` is checked in AD (computer account, workstation flag, enabled, optional
+    computer group) and read again by objectGUID before every certificate, kept current by the directory sync, and
+    listed under **Users → Computers**. Its `dNSHostName` must be its own (first label, AD domain, unique). A computer's
+    certificate carries its `dNSHostName` and is decided with its own AD groups; access rules gain the certificate
+    type **Domain computers**. On a PC that autoenrolls, the setup file's computer certificate is replaced.
+  - Callers it isn't for get an empty policy, as from AD CS. The keytab keeps only EasyEAP's own keys; a
+    whole-domain export is refused.
+  - Users get one certificate per PC (UPN from the directory). Subject names come from the directory, never the
+    request; RSA 2048 in the TPM or, on PCs without one, in software; ROCA keys refused; daily limits.
+  - Two templates per tenant with AD CS-style OIDs and revisions, issued through OpenBao CEL roles that fix key usage,
+    client authentication and the validity cap; **Re-enroll everyone** publishes a new major revision.
+  - The **GPO autoenrollment** screen: readiness (DNS name, directory, CA, keytab, test, channel binding, an access
+    rule for computers, MachineAccountQuota), service-account scripts for Windows AD (`ktpass`) and Samba AD, keytab
+    upload and a live Kerberos test against the domain controller, settings, and a request log with reasons.
+  - Upgrading: the new `docker-compose.yml` mounts the proxy's certificate into the API for channel binding (restart
+    `easyeap-api` too when you replace that certificate); the proxy accepts the larger Kerberos headers on `/cep` and
+    `/ces`, with its own per-address limit.
+  - The directory sync never imports computer accounts as users, even with a user filter like `(objectClass=user)`.
 - `tests/radius/run.sh`: the rendered FreeRADIUS configuration and the agent's store on real FreeRADIUS with real
   EAP-TLS, including every version-skew combination with the 1.0.1 agent and configuration, MAC authentication, and
   the TACACS+ service. Runs in CI.
-- `tests/e2e/run.sh` covers wired 802.1X, MAC authentication and device administration (switch logins with AD groups
-  and EasyEAP accounts) end to end, and can drive another deployment (`E2E_DEPLOY_DIR`).
+- `tests/e2e/run.sh` covers wired 802.1X, MAC authentication, device administration (switch logins with AD groups
+  and EasyEAP accounts) and Group Policy autoenrollment (a Kerberos client written from the specifications against
+  Samba AD, through the proxy, then EAP-TLS with the issued computer certificate) end to end, and can drive another
+  deployment (`E2E_DEPLOY_DIR`). `tests/autoenroll/kerberos.sh` checks Kerberos acceptance against a real MIT KDC.
 
 ### Changed
 

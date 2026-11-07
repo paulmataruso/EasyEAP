@@ -47,7 +47,7 @@ def worker_seen_at(s: Session) -> datetime | None:
 def certificate_holders(s: Session, tenant_id: uuid.UUID, now: datetime) -> int:
     return s.scalar(select(func.count(distinct(m.Certificate.identity_id))).where(
         m.Certificate.tenant_id == tenant_id, m.Certificate.status != "revoked", m.Certificate.not_after > now,
-        m.Certificate.purpose.in_(("user", "device")))) or 0
+        m.Certificate.purpose.in_(m.CLIENT_PURPOSES))) or 0
 
 
 def enforcement(s: Session, t: m.Tenant, agent: dict | None, now: datetime | None = None) -> dict:
@@ -151,7 +151,8 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
     now = now or datetime.now(UTC)
     ps = policy_settings(s, t.id)
     holders = certificate_holders(s, t.id, now)
-    users = s.scalar(select(func.count()).select_from(m.Identity).where(m.Identity.tenant_id == t.id, m.Identity.account_state != "deleted")) or 0
+    users = s.scalar(select(func.count()).select_from(m.Identity).where(m.Identity.tenant_id == t.id, m.Identity.kind == "user",
+                                                                     m.Identity.account_state != "deleted")) or 0
     deadline = datetime.fromisoformat(enf["deadline_at"]) if enf["deadline_at"] else None
     items: list[dict] = []
 
@@ -278,7 +279,7 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
     soon = now + timedelta(days=ps.expiry_warning_days)
     exp = s.execute(select(func.count(), func.min(m.Certificate.not_after), func.count(distinct(m.Certificate.identity_id))).where(
         m.Certificate.tenant_id == t.id, m.Certificate.status == "active", m.Certificate.not_after > now, m.Certificate.not_after <= soon,
-        m.Certificate.purpose.in_(("user", "device")))).one()
+        m.Certificate.purpose.in_(m.CLIENT_PURPOSES))).one()
     if exp[0]:
         add("certs_expiring", "warning", f"{exp[0]} certificate{'s' if exp[0] != 1 else ''} expire within {ps.expiry_warning_days} days",
             "Devices that aren't re-enrolled stop connecting when their certificate expires. Create a renewal link from each user's record.",

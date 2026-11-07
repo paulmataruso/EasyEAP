@@ -275,6 +275,45 @@ def sign_csr(session: Session, bao: OpenBao, tenant: m.Tenant, tpl: m.Certificat
     return _record(session, tenant.id, ca, tpl, data["certificate"], key_origin, identity_id, device_id, enrollment_id)
 
 
+# ── Group Policy autoenrollment: OpenBao CEL roles (docs/plans/gpo-autoenrollment.md §2.5) ──────────────────────
+
+def _autoenroll_program(max_hours: int) -> dict:
+    """The role's CEL program. It fixes what EasyEAP mustn't vary (not a CA, digital signature, client authentication,
+    validity capped) and takes from the request only the subject CN and two extensions, by OID: the certificate
+    template extension Windows needs and the subject alternative name EasyEAP built from the directory."""
+    return {"cel_program": {
+        "variables": [
+            {"name": "ok", "expression": "has(request.cn) && has(request.template_ext) && has(request.san) && has(request.ttl) && "
+                                         f"duration(request.ttl) > duration('1h') && duration(request.ttl) <= duration('{max_hours}h')"},
+            {"name": "cert", "expression":
+                "CertTemplate{Subject: PKIX.Name{CommonName: request.cn}, NotBefore: now - duration('5m'), "
+                "NotAfter: now + duration(request.ttl), KeyUsage: KeyUsage.KeyUsageDigitalSignature, "
+                "ExtKeyUsage: [ExtKeyUsage.ExtKeyUsageClientAuth], BasicConstraintsValid: true, IsCA: false, ExtraExtensions: ["
+                "PKIX.Extension{Id: [1, 3, 6, 1, 4, 1, 311, 21, 7], Critical: false, Value: base64.decode(request.template_ext)}, "
+                "PKIX.Extension{Id: [2, 5, 29, 17], Critical: false, Value: base64.decode(request.san)}]}"},
+            {"name": "output", "expression": "ValidationOutput{template: cert, issuer_ref: 'default'}"},
+        ],
+        "expression": "ok ? output : 'EasyEAP autoenrollment: missing or out-of-range request fields'",
+    }}
+
+
+def write_autoenroll_role(bao: OpenBao, tenant_id: uuid.UUID, tpl: m.CertificateTemplate) -> None:
+    bao.write(f"{tenant_mount(tenant_id)}/cel/roles/{tpl.bao_role}", _autoenroll_program(tpl.validity_days * 24))
+
+
+def sign_autoenroll(session: Session, bao: OpenBao, tenant: m.Tenant, tpl: m.CertificateTemplate, csr_pem: str, *, common_name: str,
+                    san_der: bytes, template_ext_der: bytes, ttl: timedelta, identity_id: uuid.UUID, device_id: uuid.UUID | None) -> m.Certificate:
+    """Issue through the template's CEL role. The CSR's own subject and extensions are ignored."""
+    import base64
+
+    ca = issuing_ca(session, tenant.id)
+    data = bao.write(f"{tenant_mount(tenant.id)}/cel/sign/{tpl.bao_role}", {
+        "csr": csr_pem, "cn": common_name, "san": base64.b64encode(san_der).decode(),
+        "template_ext": base64.b64encode(template_ext_der).decode(), "ttl": f"{int(ttl.total_seconds())}s",
+    })["data"]
+    return _record(session, tenant.id, ca, tpl, data["certificate"], "device", identity_id, device_id, None)
+
+
 def issue_with_server_key(session: Session, bao: OpenBao, tenant: m.Tenant, tpl: m.CertificateTemplate, names: dict[str, str], *,
                           identity_id: uuid.UUID | None, device_id: uuid.UUID | None, enrollment_id: uuid.UUID | None = None) -> tuple[m.Certificate, str]:
     """Issue with a key generated inside OpenBao. The caller must protect the returned key immediately."""

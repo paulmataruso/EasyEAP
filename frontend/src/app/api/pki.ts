@@ -83,7 +83,7 @@ export const keyAlgorithmLabels: Record<string, string> = {
 }
 /** Fields a template pattern may use (routers/pki.py _check_patterns). */
 export const TEMPLATE_FIELDS = ['upn', 'username', 'email', 'display_name', 'device', 'domain', 'tenant'] as const
-export const purposeLabels: Record<string, string> = { user: 'User', device: 'Device', 'radius-server': 'RADIUS server' }
+export const purposeLabels: Record<string, string> = { user: 'User', device: 'Device', computer: 'Domain computer', 'radius-server': 'RADIUS server' }
 
 const base = (tid: string) => `/api/tenants/${tid}/pki`
 

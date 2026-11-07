@@ -5,6 +5,7 @@
 import { useState, type RefObject } from 'react'
 import { Download, MonitorCheck } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
+import { useAutoenroll } from '../../api/autoenroll'
 import { saveBlob } from '../../api/client'
 import { useTenant } from '../../api/tenant'
 import { createWindowsSetup, invalidatePeople, useRadius, type WindowsSetupResult } from '../../api/people'
@@ -30,9 +31,11 @@ export function WindowsSetupDialog({ identity, open, onOpenChange, returnFocus }
   onOpenChange: (o: boolean) => void
   returnFocus?: RefObject<HTMLElement | null>
 }) {
-  const { tid } = useTenant()
+  const { tid, can } = useTenant()
   const qc = useQueryClient()
   const radius = useRadius(tid, open)
+  const ae = useAutoenroll(tid, open && can('directory:read')).data?.config
+  const gpoComputers = !!(ae?.enabled && ae.computers)
   const settings = radius.data?.settings
   const [userCert, setUserCert] = useState(true)
   const [computerCert, setComputerCert] = useState(true)
@@ -100,6 +103,11 @@ export function WindowsSetupDialog({ identity, open, onOpenChange, returnFocus }
           <ESwitch checked={userCert} onChange={setUserCert} label={`${name}’s certificate`} />
           <ESwitch checked={computerCert} onChange={setComputerCert} label="The computer’s certificate (network at the sign-in screen)" />
           {computerCert && <ESwitch checked={shared} onChange={setShared} label="Shared PC: always connect with the computer’s certificate" />}
+          {computerCert && gpoComputers && (
+            <Callout tone="warn" title="Group Policy gives domain PCs their own certificate">
+              Computer autoenrollment is on. On a domain PC, leave the computer’s certificate off: autoenrollment replaces it at the next policy refresh, and the PC then connects as itself (its AD groups), not as {name}.
+            </Callout>
+          )}
         </fieldset>
         <fieldset className="space-y-2.5">
           <legend className="ee-label mb-2">Networks</legend>

@@ -82,7 +82,7 @@ export default function Certificates() {
         <ESelect label="Status" className="min-w-0 flex-1 sm:hidden" value={status} onChange={onStatus}
           options={statusOptions.map((o) => ({ value: o.value, label: <>{o.label}{o.count !== undefined && <span className="ee-ink-3 ml-1.5 tabular-nums">{o.count}</span>}</> }))} />
         <ESelect label="Purpose" className="min-w-0 flex-1 sm:min-w-[160px] sm:flex-none" value={values.purpose || 'any'} onChange={(v) => set({ purpose: v === 'any' ? null : v })}
-          options={[{ value: 'any', label: 'User and device' }, { value: 'user', label: 'User certificates' }, { value: 'device', label: 'Device certificates' }]} />
+          options={[{ value: 'any', label: 'Every kind' }, { value: 'user', label: 'User certificates' }, { value: 'device', label: 'Device certificates' }, { value: 'computer', label: 'Domain computers' }]} />
         {filtered && <Btn size="sm" variant="ghost" onClick={clear}><X aria-hidden />Clear filters</Btn>}
       </div>
 

@@ -1,5 +1,6 @@
 // Group Policy for domain PCs (docs/windows-group-policy.md): the tenant's values and files, and the steps. Certificates
-// come from the Windows setup file or the portal (Group Policy autoenrollment is planned); this sets up everything around them.
+// come from Group Policy autoenrollment (screens/Autoenroll.tsx), the Windows setup file or the portal; this sets up
+// everything around them.
 import { useQuery } from '@tanstack/react-query'
 import { Download } from 'lucide-react'
 import { api, saveBlob } from '../../api/client'
@@ -28,7 +29,7 @@ export function GroupPolicyDialog({ open, onOpenChange }: { open: boolean; onOpe
   const g = q.data
   return (
     <EDialog open={open} onOpenChange={onOpenChange} wide title="Windows Group Policy"
-      description="Trust, services and the Wi-Fi and wired policies for domain PCs. Certificates come from the Windows setup file on a user’s page (the user’s and the computer’s, renewed automatically) or the EasyEAP portal.">
+      description="Trust, services and the Wi-Fi and wired policies for domain PCs. Certificates come from Group Policy autoenrollment, the Windows setup file on a user’s page, or the EasyEAP portal.">
       {q.isLoading ? <LoadingBlock rows={6} label="Building the guide" /> : q.error || !g ? <ErrorState error={q.error} onRetry={() => q.refetch()} /> : (
         <div className="space-y-5">
           <Dl items={[

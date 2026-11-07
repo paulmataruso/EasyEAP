@@ -8,13 +8,20 @@ import { Btn, Callout, ESelect, ESwitch, EDialog, Field, vlanVar } from '../../u
 import { newKey, type DraftRule } from './draft'
 import { GroupPicker } from './GroupPicker'
 
-type PurposeChoice = 'any' | 'user' | 'device'
+type PurposeChoice = 'any' | 'user' | 'device' | 'computer'
 const choiceOf = (p: string[]): PurposeChoice => {
   const s = new Set(p)
   if (s.size === 1 && s.has('user')) return 'user'
   if (s.size === 1 && s.has('device')) return 'device'
+  if (s.size === 1 && s.has('computer')) return 'computer'
   return 'any'
 }
+const PURPOSE_CHOICES = [
+  ['any', 'Any certificate', 'Users, their devices and domain computers'],
+  ['user', 'User certificates', 'Issued to a person'],
+  ['device', 'Device certificates', 'A person’s device or PC'],
+  ['computer', 'Domain computers', 'Group Policy autoenrollment: the computer’s own AD groups'],
+] as const
 
 interface Props {
   tid: string
@@ -119,8 +126,8 @@ function RuleForm({ tid, rule, vlans, allowedAttributes, onSave, onOpenChange }:
 
       <fieldset>
         <legend className="mb-1.5 text-[13px] font-semibold">Applies to</legend>
-        <RadioGroup.Root value={purpose} onValueChange={(v) => setPurpose(v as PurposeChoice)} className="grid gap-2 sm:grid-cols-3" aria-label="Certificate types">
-          {([['any', 'Any certificate', 'User and device certificates'], ['user', 'User certificates', 'Issued to a person'], ['device', 'Device certificates', 'Issued to a machine']] as const).map(([v, t, d]) => (
+        <RadioGroup.Root value={purpose} onValueChange={(v) => setPurpose(v as PurposeChoice)} className="grid gap-2 sm:grid-cols-2" aria-label="Certificate types">
+          {PURPOSE_CHOICES.map(([v, t, d]) => (
             <RadioGroup.Item key={v} value={v} className="ee-radio-card">
               <span className="ee-radio-dot" aria-hidden />
               <span><span className="block text-[13px] font-semibold">{t}</span><span className="ee-small ee-ink-2">{d}</span></span>

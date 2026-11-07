@@ -48,7 +48,7 @@ def list_certs(ctx: TenantCtx = Depends(require("certificates:read")), q: str = 
     if purpose:
         stmt = stmt.where(m.Certificate.purpose == purpose)
     else:
-        stmt = stmt.where(m.Certificate.purpose.in_(("user", "device")))
+        stmt = stmt.where(m.Certificate.purpose.in_(m.CLIENT_PURPOSES))
     if identity_id:
         stmt = stmt.where(m.Certificate.identity_id == identity_id)
     if q:
@@ -67,7 +67,7 @@ def list_certs(ctx: TenantCtx = Depends(require("certificates:read")), q: str = 
         stmt = stmt.where(m.Certificate.status == "superseded", m.Certificate.not_after > now)
     total = s.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = s.execute(stmt.order_by(m.Certificate.not_after.asc()).offset((page - 1) * page_size).limit(page_size)).all()
-    base = select(func.count()).select_from(m.Certificate).where(m.Certificate.tenant_id == ctx.id, m.Certificate.purpose.in_(("user", "device")))
+    base = select(func.count()).select_from(m.Certificate).where(m.Certificate.tenant_id == ctx.id, m.Certificate.purpose.in_(m.CLIENT_PURPOSES))
     counts = {
         "revoked": s.scalar(base.where(m.Certificate.status == "revoked")) or 0,
         "expired": s.scalar(base.where(m.Certificate.status != "revoked", m.Certificate.not_after <= now)) or 0,

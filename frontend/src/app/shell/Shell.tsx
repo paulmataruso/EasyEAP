@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 
 import { Dialog, DropdownMenu, Popover } from 'radix-ui'
 import { NavLink, useLocation, useNavigate } from 'react-router'
 import {
-  Building, Cable, Check, ChevronsUpDown, Clock, Command, FileKey, FilePlus, KeyRound, LayoutDashboard, ListOrdered, LogOut, Menu, Router,
+  Building, Cable, Check, ChevronsUpDown, Clock, Command, FileBadge, FileKey, FilePlus, KeyRound, LayoutDashboard, ListOrdered, LogOut, Menu, Router,
   ScrollText, Search, ServerCog, Settings, ShieldCheck, SquareTerminal, UserCog, Users, X, BookUser, History,
 } from 'lucide-react'
 import { LogoMark, Wordmark } from '@/ui/Logo'
@@ -264,6 +264,7 @@ function SidebarContent({ inputRef, onNavigated, onPalette }: { inputRef: React.
               { to: paths.mac(tid), label: 'MAC allow list', icon: <Cable aria-hidden />, perm: 'mac:read' },
               { to: paths.deviceAdmin(tid), label: 'Device administration', icon: <SquareTerminal aria-hidden />, perm: 'admin:read' },
               { to: paths.directory(tid), label: 'Directory', icon: <BookUser aria-hidden />, perm: 'directory:read' },
+              { to: paths.autoenroll(tid), label: 'GPO autoenrollment', icon: <FileBadge aria-hidden />, perm: 'directory:read' },
               { to: paths.pki(tid), label: 'Certificate authority', icon: <KeyRound aria-hidden />, perm: 'certificates:read' },
             ]} />
             <NavGroup title="Govern" onNavigated={onNavigated} items={[

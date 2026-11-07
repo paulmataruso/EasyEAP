@@ -104,7 +104,7 @@ def test_pkcs12_uses_aes_and_password():
 def test_profiles():
     _, root = _self_signed()
     xml = profiles.windows_wlan_xml("Corp", "radius.corp.example", root)
-    tree = ET.fromstring(xml)  # noqa: S314 — parsing our own generated profile
+    tree = ET.fromstring(xml)
     assert tree.tag.endswith("WLANProfile") and "radius.corp.example" in xml and "<useOneX>true</useOneX>" in xml
     mc = profiles.apple_mobileconfig(ssid="Corp", server_name="radius.corp.example", root_pem=root, issuing_pem=root, org="Corp", tenant_slug="corp", identity_label="j")
     assert profiles.PKCS12_MARKER.encode() in mc

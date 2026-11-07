@@ -44,10 +44,12 @@ def _template(ctx: TenantCtx, template_id: uuid.UUID | None, purpose: str = "use
     s = ctx.session
     if template_id:
         t = s.get(m.CertificateTemplate, template_id)
-        if t is None or t.tenant_id != ctx.id or t.purpose == "radius-server":
+        if t is None or t.tenant_id != ctx.id or t.purpose == "radius-server" or t.autoenroll_kind:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose a certificate template.")
         return t
-    t = s.scalars(select(m.CertificateTemplate).where(m.CertificateTemplate.tenant_id == ctx.id, m.CertificateTemplate.purpose == purpose)).first()
+    # Group Policy's templates (autoenroll_kind) are only for Windows autoenrollment.
+    t = s.scalars(select(m.CertificateTemplate).where(m.CertificateTemplate.tenant_id == ctx.id, m.CertificateTemplate.purpose == purpose,
+                                                      m.CertificateTemplate.autoenroll_kind.is_(None)).order_by(m.CertificateTemplate.created_at)).first()
     if t is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Initialize the tenant's PKI first.")
     return t

@@ -63,7 +63,7 @@ def check(expr):
     raw = sys.stdin.read()
     try:
         d = json.loads(raw)
-        good = bool(eval(expr, {"__builtins__": {}, "any": any, "all": all, "len": len, "set": set, "sorted": sorted, "str": str, "next": next}, {"d": d}))  # noqa: S307 — test-authored
+        good = bool(eval(expr, {"__builtins__": {}, "any": any, "all": all, "len": len, "set": set, "sorted": sorted, "str": str, "next": next, "sum": sum}, {"d": d}))  # noqa: S307 — test-authored
     except Exception as e:  # noqa: BLE001 — report any failure as a failed check
         good, raw = False, f"{type(e).__name__}: {e} in {raw[:600]}"
     if not good:
@@ -76,7 +76,7 @@ def check_script(script):
     raw = sys.stdin.read()
     try:
         d = json.loads(raw)
-        exec(script, {"__builtins__": {"any": any, "all": all, "len": len, "set": set, "sorted": sorted, "str": str, "next": next,  # noqa: S102 — test-authored
+        exec(script, {"__builtins__": {"any": any, "all": all, "len": len, "set": set, "sorted": sorted, "str": str, "next": next, "sum": sum,  # noqa: S102 — test-authored
                                         "AssertionError": AssertionError}, "d": d})
         return 0
     except Exception as e:  # noqa: BLE001 — report any failure as a failed check

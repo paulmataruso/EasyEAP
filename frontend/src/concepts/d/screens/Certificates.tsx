@@ -19,7 +19,7 @@ import { siteCode } from '../model/codes'
 
 type Nav = (s: ScreenId, id?: string) => void
 
-const PURPOSE_LABEL = { user: 'User Wi-Fi', device: 'Device Wi-Fi', 'radius-server': 'RADIUS server', admin: 'Administrator' } as const
+const PURPOSE_LABEL = { user: 'User Wi-Fi', device: 'Device Wi-Fi', computer: 'Domain computer', 'radius-server': 'RADIUS server', admin: 'Administrator' } as const
 
 const SORT: Column<Certificate>[] = [
   { key: 'serial', value: (c) => c.serial },

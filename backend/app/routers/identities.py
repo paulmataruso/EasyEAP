@@ -20,7 +20,8 @@ router = APIRouter(prefix="/api/tenants/{tenant_id}/identities", tags=["identiti
 
 
 def identity_out(i: m.Identity, certs: int | None = None, active_certs: int | None = None) -> dict:
-    return {"id": str(i.id), "source": i.source, "username": i.username, "upn": i.upn, "email": i.email, "display_name": i.display_name,
+    return {"id": str(i.id), "source": i.source, "kind": i.kind, "dns_name": i.dns_name, "username": i.username, "upn": i.upn,
+            "email": i.email, "display_name": i.display_name,
             "department": i.department, "title": i.title, "account_state": i.account_state, "enrolled": i.enrolled,
             "last_auth_at": i.last_auth_at.isoformat() if i.last_auth_at else None,
             "last_synced_at": i.last_synced_at.isoformat() if i.last_synced_at else None,
@@ -30,10 +31,13 @@ def identity_out(i: m.Identity, certs: int | None = None, active_certs: int | No
 
 @router.get("")
 def list_identities(ctx: TenantCtx = Depends(require("identities:read")), q: str = "", state: str = "", group_id: uuid.UUID | None = None,
-                    enrolled: bool | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200)) -> dict:
+                    enrolled: bool | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200),
+                    kind: str = Query("user", pattern="^(user|computer|all)$")) -> dict:
     s = ctx.session
     now = datetime.now(UTC)
     stmt = select(m.Identity).where(m.Identity.tenant_id == ctx.id)
+    if kind != "all":  # computers (Group Policy autoenrollment) are listed apart from people
+        stmt = stmt.where(m.Identity.kind == kind)
     if q:
         like = f"%{q.strip()}%"
         stmt = stmt.where(or_(m.Identity.username.ilike(like), m.Identity.display_name.ilike(like), m.Identity.email.ilike(like), m.Identity.upn.ilike(like)))
@@ -44,7 +48,7 @@ def list_identities(ctx: TenantCtx = Depends(require("identities:read")), q: str
     if enrolled is not None:
         # Enrolled = holds a certificate RADIUS would accept now; the stored flag only records that someone once enrolled.
         valid = select(m.Certificate.id).where(m.Certificate.identity_id == m.Identity.id, m.Certificate.status != "revoked",
-                                               m.Certificate.not_after > now, m.Certificate.purpose.in_(("user", "device"))).exists()
+                                               m.Certificate.not_after > now, m.Certificate.purpose.in_(m.CLIENT_PURPOSES)).exists()
         stmt = stmt.where(valid if enrolled else ~valid)
     if group_id:
         stmt = stmt.where(m.Identity.id.in_(select(m.IdentityGroup.identity_id).where(m.IdentityGroup.group_id == group_id)))
@@ -56,7 +60,7 @@ def list_identities(ctx: TenantCtx = Depends(require("identities:read")), q: str
                                                                                  m.Certificate.not_after > now).group_by(m.Certificate.identity_id)).all()) if ids else {}
     valid_holders = set(s.scalars(select(m.Certificate.identity_id).where(
         m.Certificate.identity_id.in_(ids), m.Certificate.status != "revoked", m.Certificate.not_after > now,
-        m.Certificate.purpose.in_(("user", "device"))))) if ids else set()
+        m.Certificate.purpose.in_(m.CLIENT_PURPOSES)))) if ids else set()
     access = _access(ctx, rows, now)
     from app.posture import enforcement
     from app.routers.radius import agent_out
@@ -90,7 +94,8 @@ def _access(ctx: TenantCtx, rows: list[m.Identity], now: datetime) -> dict[uuid.
                          {"status": "denied", "vlan_id": None, "reason_code": held[0].reason_code})
             continue
         o = evaluate(i.account_state, {str(g.id) for g in i.groups if not g.deleted}, rules, ps.default_action, dv, now,
-                     CertInput(serial="(preview)", status="active", not_after=now + timedelta(days=1), purpose="user"))
+                     CertInput(serial="(preview)", status="active", not_after=now + timedelta(days=1),
+                               purpose="computer" if i.kind == "computer" else "user"))
         out[i.id] = ({"status": "allowed_no_certificate", "vlan_id": o.vlan_id, "reason_code": None} if o.outcome == "allow" else
                      {"status": "denied", "vlan_id": None, "reason_code": o.reason_code})
     return out
@@ -135,7 +140,9 @@ def get_identity(identity_id: uuid.UUID, ctx: TenantCtx = Depends(require("ident
                          "purpose": purpose_of.get(e.template_id), "created_by": e.created_by, "created_at": e.created_at.isoformat() if e.created_at else None,
                          "expires_at": e.expires_at.isoformat(), "completed_at": e.completed_at.isoformat() if e.completed_at else None,
                          "certificate_id": str(e.certificate_id) if e.certificate_id else None} for e in enrollments],
-        "access": {"user": _outcome_json(evaluate_identity(s, i, purpose="user")), "device": _outcome_json(evaluate_identity(s, i, purpose="device"))},
+        # A computer has one kind of certificate: both answers are its computer-certificate decision.
+        "access": ({"user": (c := _outcome_json(evaluate_identity(s, i, purpose="computer"))), "device": c} if i.kind == "computer" else
+                   {"user": _outcome_json(evaluate_identity(s, i, purpose="user")), "device": _outcome_json(evaluate_identity(s, i, purpose="device"))}),
         "events": [event_out(e) for e in events],
     }
 

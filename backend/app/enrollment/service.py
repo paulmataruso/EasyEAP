@@ -148,7 +148,8 @@ def create_windows_setup(session: Session, tenant: m.Tenant, identity: m.Identit
     templates = {}
     for purpose in [p for p, on in (("user", user), ("device", computer)) if on]:
         tpl = session.scalars(select(m.CertificateTemplate).where(m.CertificateTemplate.tenant_id == tenant.id, m.CertificateTemplate.purpose == purpose,
-                                                                  m.CertificateTemplate.allow_client_keygen.is_(True))
+                                                                  m.CertificateTemplate.allow_client_keygen.is_(True),
+                                                                  m.CertificateTemplate.autoenroll_kind.is_(None))
                               .order_by(m.CertificateTemplate.created_at)).first()
         if tpl is None:
             raise EnrollmentError(f"No {purpose} certificate template accepts keys made on the device.")
@@ -227,6 +228,8 @@ def renew(session: Session, bao: OpenBao, *, certificate_der: bytes, csr_pem: st
     tenant = session.get(m.Tenant, old.tenant_id)
     if identity is None or tpl is None or tenant is None or tenant.status != "active":
         raise EnrollmentError("This certificate's user or template no longer exists. Enroll again.")
+    if tpl.autoenroll_kind:
+        raise EnrollmentError("Windows renews this certificate itself, through Group Policy autoenrollment.")
     if identity.account_state != "enabled":
         raise EnrollmentError(f"The account is {identity.account_state} in the directory, so its certificate isn't renewed.")
     if now < old.not_after - timedelta(days=tpl.renew_before_days):

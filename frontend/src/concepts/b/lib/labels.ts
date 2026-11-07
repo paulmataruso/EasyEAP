@@ -18,6 +18,7 @@ export const keyOriginLabels: Record<KeyOrigin, string> = {
 export const purposeLabels: Record<CertPurpose, string> = {
   user: 'User Wi-Fi',
   device: 'Device Wi-Fi',
+  computer: 'Domain computer',
   'radius-server': 'RADIUS server',
   admin: 'Administrator',
 }

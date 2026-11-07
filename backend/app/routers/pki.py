@@ -30,7 +30,10 @@ def ca_out(ca: m.CertificateAuthority) -> dict:
 def template_out(t: m.CertificateTemplate) -> dict:
     return {"id": str(t.id), "name": t.name, "purpose": t.purpose, "key_algorithm": t.key_algorithm, "validity_days": t.validity_days,
             "renew_before_days": t.renew_before_days, "extended_key_usage": t.extended_key_usage, "subject_pattern": t.subject_pattern,
-            "san_patterns": t.san_patterns, "allow_client_keygen": t.allow_client_keygen, "allow_server_keygen": t.allow_server_keygen}
+            "san_patterns": t.san_patterns, "allow_client_keygen": t.allow_client_keygen, "allow_server_keygen": t.allow_server_keygen,
+            # Group Policy autoenrollment's templates: edited under RADIUS → Windows Group Policy, not here.
+            "autoenroll_kind": t.autoenroll_kind, "template_oid": t.template_oid,
+            "revision": f"{t.revision_major}.{t.revision_minor}" if t.autoenroll_kind else None}
 
 
 @router.get("")
@@ -144,6 +147,9 @@ def update_template(template_id: uuid.UUID, body: TemplateIn, ctx: TenantCtx = D
     t = ctx.session.get(m.CertificateTemplate, template_id)
     if t is None or t.tenant_id != ctx.id or t.purpose == "radius-server":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Template not found.")
+    if t.autoenroll_kind:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This template belongs to Group Policy autoenrollment. Change its validity under "
+                                                         "RADIUS → Windows Group Policy → Autoenrollment.")
     for k, v in body.model_dump().items():
         setattr(t, k, v)
     issuing = pki.issuing_ca(ctx.session, ctx.id)

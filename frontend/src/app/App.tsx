@@ -30,6 +30,7 @@ const Admins = lazy(() => import('./screens/Admins'))
 const Radius = lazy(() => import('./screens/Radius'))
 const MacAllowList = lazy(() => import('./screens/MacAllowList'))
 const DeviceAdmin = lazy(() => import('./screens/DeviceAdmin'))
+const Autoenroll = lazy(() => import('./screens/Autoenroll'))
 const Pki = lazy(() => import('./screens/Pki'))
 const TenantSetup = lazy(() => import('./screens/TenantSetup'))
 const TenantSettings = lazy(() => import('./screens/TenantSettings'))
@@ -140,6 +141,7 @@ export function App() {
                   <Route path="mac" element={<MacAllowList />} />
                   <Route path="device-admin" element={<DeviceAdmin />} />
                   <Route path="directory" element={<Directory />} />
+                  <Route path="autoenroll" element={<Autoenroll />} />
                   <Route path="pki" element={<Pki />} />
                   <Route path="audit" element={<Audit scope="tenant" />} />
                   <Route path="setup" element={<TenantSetup />} />

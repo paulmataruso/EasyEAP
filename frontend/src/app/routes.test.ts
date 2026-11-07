@@ -5,6 +5,8 @@ describe('targetPath', () => {
   const tid = 't-1'
   it('maps every backend action target to a screen that exists', () => {
     expect(targetPath(tid, 'directory')).toBe(paths.directory(tid))
+    expect(targetPath(tid, 'autoenroll')).toBe('/t/t-1/autoenroll')
+    expect(paths.autoenroll(tid, { tab: 'log' })).toBe('/t/t-1/autoenroll?tab=log')
     expect(targetPath(tid, 'radius')).toBe('/t/t-1/radius')
     expect(targetPath(tid, 'pki')).toBe('/t/t-1/pki')
     expect(targetPath(tid, 'setup')).toBe('/t/t-1/setup')
