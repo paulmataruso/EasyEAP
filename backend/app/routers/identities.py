@@ -117,6 +117,8 @@ def get_identity(identity_id: uuid.UUID, ctx: TenantCtx = Depends(require("ident
     dev_by_id = {d.id: d for d in devices}
     certs = s.scalars(select(m.Certificate).where(m.Certificate.identity_id == i.id).order_by(m.Certificate.not_after.desc())).all()
     enrollments = s.scalars(select(m.Enrollment).where(m.Enrollment.identity_id == i.id).order_by(m.Enrollment.created_at.desc()).limit(20)).all()
+    purpose_of = dict(s.execute(select(m.CertificateTemplate.id, m.CertificateTemplate.purpose)
+                                .where(m.CertificateTemplate.id.in_({e.template_id for e in enrollments}))).tuples().all()) if enrollments else {}
     events = s.scalars(select(m.AuthEvent).where(m.AuthEvent.identity_id == i.id).order_by(m.AuthEvent.at.desc()).limit(20)).all()
     from app.posture import enforcement
     from app.routers.events import event_out
@@ -130,7 +132,7 @@ def get_identity(identity_id: uuid.UUID, ctx: TenantCtx = Depends(require("ident
         "devices": [{"id": str(d.id), "name": d.name, "platform": d.platform, "last_seen_mac": d.last_seen_mac, "created_at": d.created_at.isoformat() if d.created_at else None} for d in devices],
         "certificates": [cert_out(c, warn, None, dev_by_id.get(c.device_id)) for c in certs],
         "enrollments": [{"id": str(e.id), "device_name": e.device_name, "platform": e.platform, "method": e.method, "status": e.status,
-                         "created_by": e.created_by, "created_at": e.created_at.isoformat() if e.created_at else None,
+                         "purpose": purpose_of.get(e.template_id), "created_by": e.created_by, "created_at": e.created_at.isoformat() if e.created_at else None,
                          "expires_at": e.expires_at.isoformat(), "completed_at": e.completed_at.isoformat() if e.completed_at else None,
                          "certificate_id": str(e.certificate_id) if e.certificate_id else None} for e in enrollments],
         "access": {"user": _outcome_json(evaluate_identity(s, i, purpose="user")), "device": _outcome_json(evaluate_identity(s, i, purpose="device"))},

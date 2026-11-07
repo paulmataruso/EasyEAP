@@ -75,6 +75,60 @@ def create(body: EnrollIn, ctx: TenantCtx = Depends(require("enrollment:manage")
     return {"enrollment": enrollment_out(e, ident), "link": link_for(token)}
 
 
+class WindowsSetupIn(BaseModel):
+    identity_id: uuid.UUID
+    user_certificate: bool = True
+    computer_certificate: bool = True
+    wifi: bool = True
+    wired: bool | None = None       # None: what the tenant's enrollment packages do (RADIUS settings → wired)
+    shared_pc: bool = False         # computer certificate only on the network
+    ttl_hours: int = Field(default=72, ge=1, le=24 * 14)
+
+
+@router.post("/windows-setup", status_code=201)
+def windows_setup(body: WindowsSetupIn, ctx: TenantCtx = Depends(require("enrollment:manage"))) -> dict:
+    """One file that sets up a Windows 11 PC for a user (docs/plans/windows-setup.md): CA trust, the wired and Wi-Fi
+    profiles, the user's certificate and the computer's, and their renewal. Carries one-time codes, never a key."""
+    from app.enrollment import windows_setup as ws
+    from app.pki import service as pki
+    s = ctx.session
+    ident = s.get(m.Identity, body.identity_id)
+    if ident is None or ident.tenant_id != ctx.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+    if not body.user_certificate and not body.computer_certificate:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose the user's certificate, the computer's, or both.")
+    rs = s.get(m.RadiusSettings, ctx.id)
+    if rs is None or not rs.server_hostname:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Save the RADIUS settings first: the profiles need the server name.")
+    wired = rs.wired_enabled if body.wired is None else body.wired
+    if body.wifi and not rs.ssid:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The Wi-Fi network name isn't set in RADIUS settings. Turn Wi-Fi off or set it first.")
+    if not body.wifi and not wired:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose Wi-Fi, wired, or both.")
+    try:
+        device, made = enr.create_windows_setup(s, ctx.tenant, ident, user=body.user_certificate, computer=body.computer_certificate,
+                                                created_by=ctx.principal.admin.email, ttl_hours=body.ttl_hours)
+    except (enr.EnrollmentError, pki.PkiError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    issuing, root = pki.chain_pem(s, ctx.id)
+    user, comp = made.get("user"), made.get("device")
+    expires = max(e.expires_at for e, _, _ in made.values())
+    label = f"{ident.display_name} ({ident.upn or ident.username})" if ident.display_name else (ident.upn or ident.username)
+    content = ws.build(ws.SetupOptions(
+        api=get_settings().public_url, org=ctx.tenant.name, user_label=label, user_code=user[1] if user else None,
+        computer_code=comp[1] if comp else None, server_name=rs.server_hostname, root_pem=root or issuing, issuing_pem=issuing,
+        ssid=rs.ssid if body.wifi else None, wpa3=rs.wpa3, wired=wired, shared_pc=body.shared_pc,
+        user_renew_days=user[2].renew_before_days if user else 30, computer_renew_days=comp[2].renew_before_days if comp else 30,
+        expires=expires.strftime("%Y-%m-%d %H:%M UTC")))
+    audit.record(s, ctx.actor, "enrollment.windows_setup_created", tenant_id=ctx.id, target_type="identity", target_id=ident.id, target_label=ident.username,
+                 detail={"device_id": str(device.id), "user_certificate": bool(user), "computer_certificate": bool(comp), "wifi": body.wifi,
+                         "wired": wired, "shared_pc": body.shared_pc, "expires_at": expires.isoformat(),
+                         "enrollments": [str(e.id) for e, _, _ in made.values()]})
+    return {"filename": ws.filename(ident.username), "content": content, "expires_at": expires.isoformat(),
+            "sign_in_mode": ws.mode_for(bool(user), bool(comp), body.shared_pc),
+            "enrollments": [enrollment_out(e, ident) for e, _, _ in made.values()]}
+
+
 @router.get("")
 def list_enrollments(ctx: TenantCtx = Depends(require("certificates:read")), status_filter: str = "") -> dict:
     stmt = select(m.Enrollment, m.Identity).join(m.Identity, m.Identity.id == m.Enrollment.identity_id).where(m.Enrollment.tenant_id == ctx.id)

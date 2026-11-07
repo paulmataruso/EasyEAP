@@ -8,6 +8,8 @@ Commands (credentials come from E2E_EMAIL / E2E_PASSWORD; optional E2E_SETUP_TOK
   events                      print recent authentication events as JSON
   call <METHOD> <path> [json] call /api/tenants/<e2e tenant><path>; prints {"status": …, "body": …} whatever the status
   enroll <user> <platform>    enroll a new device for that user from an on-device key; prints the CSR response
+  winsetup <user>             the Windows setup for that user, run by a simulated PC (certreq-style requests), then
+                              renewal; prints checks and the renewed computer certificate for the lab client
 All output is JSON on stdout. Private keys are generated here (the RA never sees them) and returned for the lab client.
 """
 import json
@@ -173,6 +175,92 @@ def wait_admin(api):
     fail(f"RADIUS agent did not apply the latest device-admin data: {json.dumps(r['agent'])}")
 
 
+def _renewal(cert_pem, key, new_csr_pem, signed_at=None):
+    """What the setup's renew.ps1 sends (New-RenewalBody), with an EC key signing in P1363 form like .NET does."""
+    import base64
+    import hashlib
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+    der = x509.load_pem_x509_certificate(cert_pem.encode()).public_bytes(serialization.Encoding.DER)
+    csr_der = x509.load_pem_x509_csr(new_csr_pem.encode()).public_bytes(serialization.Encoding.DER)
+    signed_at = int(time.time()) if signed_at is None else signed_at
+    msg = f"easyeap-renew-v1|{hashlib.sha256(der).hexdigest()}|{signed_at}|{hashlib.sha256(csr_der).hexdigest()}".encode()
+    r, s = decode_dss_signature(key.sign(msg, ec.ECDSA(hashes.SHA256())))
+    return {"certificate": base64.b64encode(der).decode(), "csr": new_csr_pem, "signed_at": signed_at,
+            "signature": base64.b64encode(r.to_bytes(32, "big") + s.to_bytes(32, "big")).decode(), "key_storage": "software"}
+
+
+def _certreq(name):
+    """A key and request as certreq writes them: `NEW CERTIFICATE REQUEST`, subject CN=EasyEAP."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = x509.CertificateSigningRequestBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "EasyEAP")])).sign(key, hashes.SHA256())
+    return key, csr.public_bytes(serialization.Encoding.PEM).decode().replace("CERTIFICATE REQUEST", "NEW CERTIFICATE REQUEST")
+
+
+def _codes(content):
+    import re
+    found = dict(re.findall(r"^\$(UserCode|ComputerCode) = '([^']*)'", content, re.M))
+    return found.get("UserCode") or None, found.get("ComputerCode") or None
+
+
+def winsetup(api, user):
+    """docs/plans/windows-setup.md §6: the setup a console admin downloads, run by a simulated Windows PC."""
+    T = api.tenant()
+    users = {i["username"]: i for i in api("GET", f"/api/tenants/{T}/identities", params={"page_size": 100})["items"]}
+    checks = {}
+    pc = "PC-" + user.upper() + "01"
+    setup = api("POST", f"/api/tenants/{T}/enrollments/windows-setup", json={"identity_id": users[user]["id"], "wired": True})
+    content = setup["content"]
+    ucode, ccode = _codes(content)
+    checks["file"] = (setup["filename"].endswith(".cmd") and content.startswith("<# :") and "\r\n" in content and "PRIVATE KEY" not in content
+                      and bool(ucode) and bool(ccode) and setup["sign_in_mode"] == "machineOrUser")
+    issued = {}
+    for kind, code, storage in (("user", ucode, "tpm"), ("computer", ccode, "software")):
+        key, csr = _certreq(pc)
+        res = api("POST", f"/api/enroll/{code}/csr", json={"csr": csr, "key_origin": "device", "device_hint": pc, "key_storage": storage})
+        issued[kind] = (key, res)
+        again = api.c.post(f"/api/enroll/{code}/csr", json={"csr": csr, "key_origin": "device", "device_hint": pc})
+        checks[f"{kind}_code_once"] = again.status_code == 410
+    certs = {c["serial"]: c for c in api("GET", f"/api/tenants/{T}/certificates", params={"page_size": 200})["items"]}
+    u, c = certs[issued["user"][1]["serial"]], certs[issued["computer"][1]["serial"]]
+    checks["purposes"] = u["purpose"] == "user" and c["purpose"] == "device"
+    checks["pc_named"] = c["device"]["name"] == pc and u["device"]["id"] == c["device"]["id"] and c["common_name"].lower().startswith(pc.lower())
+    checks["key_storage"] = u["key_storage"] == "tpm" and c["key_storage"] == "software"
+
+    # Renewal: nothing before the window; inside it a new certificate, the old one superseded and never renewed twice.
+    ckey, cres = issued["computer"]
+    nkey, ncsr = _certreq(pc)
+    early = api("POST", "/api/enroll/renew", json=_renewal(cres["certificate_pem"], ckey, ncsr))
+    checks["not_yet"] = early["renewed"] is False and bool(early["renew_from"])
+    tpl = next(t for t in api("GET", f"/api/tenants/{T}/pki")["templates"] if t["purpose"] == "device")
+    keep = {k: tpl[k] for k in ("name", "purpose", "key_algorithm", "validity_days", "renew_before_days", "subject_pattern", "san_patterns",
+                                "allow_client_keygen", "allow_server_keygen")}
+    api("PUT", f"/api/tenants/{T}/pki/templates/{tpl['id']}", json={**keep, "validity_days": 30, "renew_before_days": 180})
+    try:
+        setup2 = api("POST", f"/api/tenants/{T}/enrollments/windows-setup", json={"identity_id": users[user]["id"], "user_certificate": False})
+        _, ccode2 = _codes(setup2["content"])
+        checks["computer_only_mode"] = setup2["sign_in_mode"] == "machine" and _codes(setup2["content"])[0] is None
+        okey, ocsr = _certreq(pc)
+        old = api("POST", f"/api/enroll/{ccode2}/csr", json={"csr": ocsr, "key_origin": "device", "device_hint": pc, "key_storage": "tpm"})
+        nkey, ncsr = _certreq(pc)
+        bad_sig = _renewal(old["certificate_pem"], nkey, ncsr)  # signed by the wrong key
+        checks["wrong_key_refused"] = api.c.post("/api/enroll/renew", json=bad_sig).status_code == 400
+        stale = _renewal(old["certificate_pem"], okey, ncsr, signed_at=int(time.time()) - 3600)
+        checks["stale_refused"] = api.c.post("/api/enroll/renew", json=stale).status_code == 400
+        same_key = _renewal(old["certificate_pem"], okey, ocsr)
+        checks["same_key_refused"] = api.c.post("/api/enroll/renew", json=same_key).status_code == 400
+        new = api("POST", "/api/enroll/renew", json=_renewal(old["certificate_pem"], okey, ncsr))
+        certs = {c["serial"]: c for c in api("GET", f"/api/tenants/{T}/certificates", params={"page_size": 200})["items"]}
+        checks["renewed"] = (new["renewed"] is True and certs[old["serial"]]["stored_status"] == "superseded"
+                             and certs[new["serial"]]["renewal_of"] == certs[old["serial"]]["id"] and certs[new["serial"]]["key_storage"] == "software"
+                             and certs[new["serial"]]["device"]["name"] == pc)
+        n2key, n2csr = _certreq(pc)
+        checks["renews_once"] = api.c.post("/api/enroll/renew", json=_renewal(old["certificate_pem"], okey, n2csr)).status_code == 400
+    finally:
+        api("PUT", f"/api/tenants/{T}/pki/templates/{tpl['id']}", json=keep)
+    print(json.dumps({"checks": checks, "pc": pc, "cert_pem": new["certificate_pem"],
+                      "key_pem": nkey.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()}))
+
+
 def main():
     cmd = sys.argv[1]
     if cmd == "provision":
@@ -219,6 +307,8 @@ def main():
         info = api("GET", f"/api/enroll/{token}")
         res = api("POST", f"/api/enroll/{token}/csr", json={"csr": csr, "key_origin": "csr"})
         print(json.dumps({"info": info, "csr": res}))
+    elif cmd == "winsetup":
+        winsetup(Api(), sys.argv[2])
     else:
         fail(f"unknown command {cmd}")
 

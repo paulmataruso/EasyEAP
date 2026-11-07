@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse, Response
@@ -76,15 +78,17 @@ class CsrIn(BaseModel):
     csr: str = Field(min_length=100, max_length=20_000)
     key_origin: str = "browser"
     device_hint: str | None = Field(default=None, max_length=120)
+    key_storage: str | None = Field(default=None, max_length=16)  # tpm | software (Windows setup and helper)
 
 
 @router.post("/{token}/csr")
 def submit_csr(token: str, body: CsrIn, request: Request, s: Session = Depends(db)) -> dict:
     e, tenant, ident = _load(token, request, s, pending=True)
-    if e.method != "link":
+    if e.method not in ("link", enr.WINDOWS_SETUP):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This link is for a prepared package. Download it instead.")
     try:
-        cert = enr.complete_with_csr(s, OpenBao(), e, body.csr.strip() + "\n", body.key_origin)
+        cert = enr.complete_with_csr(s, OpenBao(), e, body.csr.strip() + "\n", body.key_origin, key_storage=body.key_storage,
+                                     device_hint=body.device_hint)
     except (enr.EnrollmentError, pki.PkiError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     issuing, root = pki.chain_pem(s, tenant.id)
@@ -93,7 +97,8 @@ def submit_csr(token: str, body: CsrIn, request: Request, s: Session = Depends(d
     org = tenant.name
     audit.record(s, audit.Actor("enrollee", ident.username, str(ident.id), client_ip(request)), "enrollment.completed", tenant_id=tenant.id,
                  target_type="certificate", target_id=cert.id, target_label=f"{cert.common_name} ({cert.serial})",
-                 detail={"device": e.device_name, "platform": e.platform, "key_origin": cert.key_origin})
+                 detail={"device": e.device_name, "platform": e.platform, "key_origin": cert.key_origin, "key_storage": cert.key_storage,
+                         "method": e.method, "purpose": cert.purpose})
     identity_name = ident.upn or ident.username
     return {
         "certificate_pem": cert.certificate_pem, "issuing_ca_pem": issuing, "root_ca_pem": root, "serial": cert.serial,
@@ -112,6 +117,46 @@ def submit_csr(token: str, body: CsrIn, request: Request, s: Session = Depends(d
         },
         "identity": identity_name, "instructions": profiles.instructions(e.platform, ssid, server, wired),
     }
+
+
+class RenewIn(BaseModel):
+    certificate: str = Field(min_length=100, max_length=20_000)  # the current certificate, base64 DER
+    csr: str = Field(min_length=100, max_length=20_000)          # the new key's request (PEM)
+    signed_at: int                                              # Unix time the signature was made
+    signature: str = Field(min_length=40, max_length=2_000)      # base64, by the current certificate's key
+    key_storage: str | None = Field(default=None, max_length=16)
+
+
+@router.post("/renew")
+def renew(body: RenewIn, request: Request, s: Session = Depends(db)) -> dict:
+    """Renew a certificate with its own key (docs/plans/windows-setup.md §4): the Windows setup's renewal task calls
+    this daily; nothing is issued until the certificate is inside its template's renewal window."""
+    if not limiter.hit(f"renew:{client_ip(request)}", 60):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests. Wait a minute and try again.")
+    try:
+        der = base64.b64decode(body.certificate, validate=True)
+        signature = base64.b64decode(body.signature, validate=True)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The certificate or signature isn't valid base64.") from exc
+    if not limiter.hit(f"renew-cert:{hashlib.sha256(der).hexdigest()}", 10):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests for this certificate. Try again later.")
+    set_platform(s)
+    try:
+        old, new = enr.renew(s, OpenBao(), certificate_der=der, csr_pem=body.csr.strip() + "\n", signed_at=body.signed_at,
+                             signature=signature, key_storage=body.key_storage)
+    except (enr.EnrollmentError, pki.PkiError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    if new is None:
+        tpl = s.get(m.CertificateTemplate, old.template_id) if old.template_id else None
+        return {"renewed": False, "not_after": old.not_after.isoformat(),
+                "renew_from": (old.not_after - timedelta(days=tpl.renew_before_days)).isoformat() if tpl else None}
+    set_tenant(s, new.tenant_id)
+    issuing, root = pki.chain_pem(s, new.tenant_id)
+    audit.record(s, audit.Actor("certificate", old.common_name, str(old.id), client_ip(request)), "certificate.renewed", tenant_id=new.tenant_id,
+                 target_type="certificate", target_id=new.id, target_label=f"{new.common_name} ({new.serial})",
+                 detail={"previous_serial": old.serial, "key_storage": new.key_storage, "purpose": new.purpose})
+    return {"renewed": True, "certificate_pem": new.certificate_pem, "serial": new.serial, "not_after": new.not_after.isoformat(),
+            "issuing_ca_pem": issuing, "root_ca_pem": root}
 
 
 @router.get("/{token}/windows.ps1", response_class=PlainTextResponse)

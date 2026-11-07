@@ -37,8 +37,11 @@ export interface IdentityEnrollment {
   id: string
   device_name: string
   platform: string
-  method: 'link' | 'server'
+  /** windows-setup: one code of a Windows setup file (screens/people/WindowsSetupDialog.tsx). */
+  method: 'link' | 'server' | 'windows-setup'
   status: EnrollmentStatus
+  /** The certificate it issues: device = the PC's own certificate in a Windows setup. Identity detail only. */
+  purpose?: 'user' | 'device' | null
   created_by: string
   created_at: string | null
   expires_at: string
@@ -128,6 +131,11 @@ export interface Certificate {
   identity: { id: string; username: string; display_name: string } | null
   device: { id: string; name: string; platform: string } | null
   created_at: string | null
+  /** Where Windows keeps the key: tpm | software (a PC without a TPM) | null (not reported). */
+  key_storage?: 'tpm' | 'software' | null
+  /** The certificate this one renewed, and when this one was renewed (renewal by its own key). */
+  renewal_of?: string | null
+  renewed_at?: string | null
 }
 
 export interface CertificatePage extends Page<Certificate> { counts: Record<CertStatusValue, number>; warning_days: number }
@@ -191,6 +199,24 @@ export type EnrollResult =
 
 /** Called directly, not through useMutation, so the one-time link and PKCS#12 password never enter a query cache. */
 export const createEnrollment = (tid: string, body: EnrollIn) => api.post<EnrollResult>(`/api/tenants/${tid}/enrollments`, body)
+/** The Windows 11 setup for one user (routers/enrollments.py windows_setup): a .cmd file with one-time codes. */
+export interface WindowsSetupIn {
+  identity_id: string
+  user_certificate: boolean
+  computer_certificate: boolean
+  wifi: boolean
+  wired: boolean
+  shared_pc: boolean
+  ttl_hours: number
+}
+export interface WindowsSetupResult {
+  filename: string
+  content: string
+  expires_at: string
+  sign_in_mode: 'user' | 'machine' | 'machineOrUser'
+  enrollments: unknown[]
+}
+export const createWindowsSetup = (tid: string, body: WindowsSetupIn) => api.post<WindowsSetupResult>(`/api/tenants/${tid}/enrollments/windows-setup`, body)
 export const cancelEnrollment = (tid: string, id: string) => api.post<{ ok: boolean }>(`/api/tenants/${tid}/enrollments/${id}/cancel`)
 /** Takes the one-time PKCS#12 package (consumes it). */
 export const downloadPackage = (tid: string, id: string) => api.postRaw(`/api/tenants/${tid}/enrollments/${id}/download`)
@@ -251,7 +277,7 @@ export function usePki(tid: string, enabled = true) {
 
 export interface RadiusClientLite { id: string; name: string; vendor: string; address: string; site: string; coa_enabled: boolean; coa_port: number }
 export interface RadiusOverview {
-  settings: { session_timeout_seconds: number | null; ssid: string; server_hostname: string } | null
+  settings: { session_timeout_seconds: number | null; ssid: string; server_hostname: string; wired_enabled?: boolean } | null
   clients: RadiusClientLite[]
 }
 

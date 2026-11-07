@@ -56,6 +56,8 @@ Status as of 2026-11-06 (release 1.0.1).
 - [x] One-time, device-bound links (72-hour default)
 - [x] On-device keys by default (browser WebCrypto + PKI.js; TPM-aware Windows helper)
 - [x] Opt-in server-generated PKCS#12, one download, purged when undelivered
+- [x] Windows setup file: user and computer certificates (TPM or non-exportable software key), Wi-Fi and wired
+  profiles, automatic renewal signed by the current key
 
 ### Console and portal
 - [x] Foundation: theme, API client, session, tenant scope, search-first shell, command palette
@@ -99,7 +101,9 @@ Status as of 2026-11-06 (release 1.0.1).
   RADIUS node; fine-grained password policies aren't read; anyone who can reach a device's SSH can lock a named
   EasyEAP account for 15 minutes; FreeRADIUS and the TACACS+ service share the container user that can read the
   admin data.
-- **Wired 802.1X gaps.** No machine certificates (Windows wired connects after sign-in), no IP-phone voice domain, no
+- **Windows setup file not run on a real Windows 11 PC.** It's tested under PowerShell 7 with Windows' commands
+  replaced by recorders; certreq with the TPM, netsh, the approval prompt and the scheduled tasks are unverified.
+- **Wired 802.1X gaps.** Computer certificates come from the Windows setup file, not yet from Group Policy autoenrollment; no IP-phone voice domain, no
   merge with an existing 802.1X configuration on a switch, no profiling or automatic approval for MAC authentication.
 - **Directory sources** other than Active Directory over LDAPS (Entra ID, Google Workspace) are not supported.
 - **Real-device installs** are confirmed on an iPhone: it enrolled through the portal with its key made on the
@@ -125,8 +129,8 @@ Status as of 2026-11-06 (release 1.0.1).
 - SCEP for MDM-managed devices
 - Switch audit: SNMP and syslog from switches to check that ports enforce 802.1X as configured
   ([docs/plans/switch-audit.md](docs/plans/switch-audit.md))
-- Machine certificates for domain-joined Windows PCs through a Group Policy startup task
-  ([docs/plans/windows-gpo.md](docs/plans/windows-gpo.md))
+- Group Policy autoenrollment for domain PCs and users (MS-XCEP and MS-WSTEP with Kerberos)
+  ([docs/plans/gpo-autoenrollment.md](docs/plans/gpo-autoenrollment.md))
 - Device administration phase 2: TACACS+ over TLS, command authorization, other vendors
 - RadSec
 - Additional RADIUS nodes with health in System

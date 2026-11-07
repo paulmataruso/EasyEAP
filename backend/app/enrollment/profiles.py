@@ -24,8 +24,20 @@ def _der(pem: str) -> bytes:
     return x509.load_pem_x509_certificate(pem.encode()).public_bytes(Encoding.DER)
 
 
-def _eap_config(server_name: str, root_pem: str) -> str:
-    """The EAP-TLS method configuration shared by the Wi-Fi (WLAN) and wired (LAN) profiles."""
+def _eap_config(server_name: str, root_pem: str, issuers: list[str] | None = None) -> str:
+    """The EAP-TLS method configuration shared by the Wi-Fi (WLAN) and wired (LAN) profiles. `issuers` (CA certificates,
+    PEM) adds Windows' certificate filter, so a PC with other client certificates (an AD CS machine certificate, a VPN
+    certificate) picks one issued by EasyEAP; it's what Group Policy's "Advanced → Certificate Issuer" writes."""
+    extensions = ""
+    if issuers:
+        hashes = "".join(f"<IssuerHash>{_thumbprint(pem)}</IssuerHash>" for pem in issuers)
+        extensions = ("""              <PerformServerValidation xmlns="http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2">true</PerformServerValidation>
+              <AcceptServerName xmlns="http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2">true</AcceptServerName>
+              <TLSExtensions xmlns="http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV2">
+                <FilteringInfo xmlns="http://www.microsoft.com/provisioning/EapTlsConnectionPropertiesV3"><CAHashList Enabled="true">"""
+                      + hashes + """</CAHashList></FilteringInfo>
+              </TLSExtensions>
+""")
     return f"""      <EAPConfig><EapHostConfig xmlns="http://www.microsoft.com/provisioning/EapHostConfig">
         <EapMethod><Type xmlns="http://www.microsoft.com/provisioning/EapCommon">13</Type><VendorId xmlns="http://www.microsoft.com/provisioning/EapCommon">0</VendorId><VendorType xmlns="http://www.microsoft.com/provisioning/EapCommon">0</VendorType><AuthorId xmlns="http://www.microsoft.com/provisioning/EapCommon">0</AuthorId></EapMethod>
         <Config xmlns="http://www.microsoft.com/provisioning/EapHostConfig">
@@ -38,14 +50,22 @@ def _eap_config(server_name: str, root_pem: str) -> str:
                 <TrustedRootCA>{_thumbprint(root_pem)}</TrustedRootCA>
               </ServerValidation>
               <DifferentUsername>false</DifferentUsername>
-            </EapType>
+{extensions}            </EapType>
           </Eap>
         </Config>
       </EapHostConfig></EAPConfig>
 """
 
 
-def windows_wlan_xml(ssid: str, server_name: str, root_pem: str, wpa3: bool = False) -> str:
+AUTH_MODES = ("user", "machine", "machineOrUser")
+
+
+def windows_wlan_xml(ssid: str, server_name: str, root_pem: str, wpa3: bool = False, *, auth_mode: str = "user",
+                     issuers: list[str] | None = None) -> str:
+    """`auth_mode`: user (the user's certificate, after sign-in), machine (the computer's, always) or machineOrUser
+    (the computer's at the sign-in screen, the user's after). machine and machineOrUser need an all-users profile."""
+    if auth_mode not in AUTH_MODES:
+        raise ValueError(f"auth_mode must be one of {AUTH_MODES}")
     auth = "WPA3ENT" if wpa3 else "WPA2"
     hex_ssid = ssid.encode().hex().upper()
     return f"""<?xml version="1.0"?>
@@ -57,16 +77,18 @@ def windows_wlan_xml(ssid: str, server_name: str, root_pem: str, wpa3: bool = Fa
   <MSM><security>
     <authEncryption><authentication>{auth}</authentication><encryption>AES</encryption><useOneX>true</useOneX></authEncryption>
     <OneX xmlns="http://www.microsoft.com/networking/OneX/v1">
-      <authMode>user</authMode>
-{_eap_config(server_name, root_pem)}    </OneX>
+      <authMode>{auth_mode}</authMode>
+{_eap_config(server_name, root_pem, issuers)}    </OneX>
   </security></MSM>
 </WLANProfile>
 """
 
 
-def windows_lan_xml(server_name: str, root_pem: str) -> str:
-    """Windows wired (LAN) profile: 802.1X with EAP-TLS and the user's certificate. OneXEnforced=false: on a port
-    without 802.1X the computer still connects normally."""
+def windows_lan_xml(server_name: str, root_pem: str, *, auth_mode: str = "user", issuers: list[str] | None = None) -> str:
+    """Windows wired (LAN) profile: 802.1X with EAP-TLS and the user's certificate (or the computer's: `auth_mode`, as
+    for Wi-Fi). OneXEnforced=false: on a port without 802.1X the computer still connects normally."""
+    if auth_mode not in AUTH_MODES:
+        raise ValueError(f"auth_mode must be one of {AUTH_MODES}")
     return f"""<?xml version="1.0"?>
 <LANProfile xmlns="http://www.microsoft.com/networking/LAN/profile/v1">
   <MSM><security>
@@ -74,8 +96,8 @@ def windows_lan_xml(server_name: str, root_pem: str) -> str:
     <OneXEnabled>true</OneXEnabled>
     <OneX xmlns="http://www.microsoft.com/networking/OneX/v1">
       <cacheUserData>true</cacheUserData>
-      <authMode>user</authMode>
-{_eap_config(server_name, root_pem)}    </OneX>
+      <authMode>{auth_mode}</authMode>
+{_eap_config(server_name, root_pem, issuers)}    </OneX>
   </security></MSM>
 </LANProfile>
 """
@@ -89,7 +111,7 @@ def windows_wired_script(server_name: str, root_pem: str, issuing_pem: str, org:
     return f"""# EasyEAP wired 802.1X for Windows ({org}). Run as administrator or SYSTEM (Intune, RMM, startup script).
 # Uses the EasyEAP certificate each user already has from Wi-Fi enrollment; this script contains nothing secret.
 # Note: the profile signs in with the user's certificate, so wired 802.1X starts after a user signs in. At the sign-in
-# screen the port has no access, so domain-joined PCs need cached credentials (machine certificates come later).
+# screen the port has no access unless the PC has a computer certificate (the Windows setup file installs one).
 #Requires -RunAsAdministrator
 $ErrorActionPreference = 'Stop'
 $Work = Join-Path $env:TEMP ('easyeap-wired-' + [guid]::NewGuid())
@@ -156,9 +178,9 @@ def group_policy_guide(*, server_name: str, ssid: str, wpa3: bool, root_pem: str
         ],
         "sections": [
             {"title": "Before you start", "steps": [
-                "Windows can't enroll certificates from EasyEAP through Group Policy: autoenrollment only talks to a Microsoft "
-                "Enterprise CA. Users enroll each device from the EasyEAP portal (its helper keeps the key in the TPM); Group "
-                "Policy sets up trust and the network policies around it.",
+                "Certificates come from the Windows setup file (a user's page → Windows setup: the user's and the computer's "
+                "certificates, renewed automatically) or the EasyEAP portal. Group Policy sets up trust and the network policies "
+                "around them. Group Policy autoenrollment from EasyEAP is planned.",
                 "Create one GPO for the network (for example “EasyEAP 802.1X”) and link it to the OUs that hold the computers. "
                 "Everything below is under Computer Configuration → Policies → Windows Settings → Security Settings.",
                 "Download the files on this page. None of them is secret.",
@@ -181,29 +203,32 @@ def group_policy_guide(*, server_name: str, ssid: str, wpa3: bool, root_pem: str
                 + ("(and WPA3-Enterprise, which the Group Policy editor can't select)." if wpa3 else "(skip the next steps if you import it)."),
                 f"Or Add → Infrastructure: Network name {ssid}; Security: {'WPA3-Enterprise' if wpa3 else 'WPA2-Enterprise'}, AES.",
                 *eap,
-                "Advanced → Specify authentication mode: User authentication (see “Sign-in and machine certificates”).",
+                "Advanced → Specify authentication mode: User or computer authentication on PCs with a computer certificate, "
+                "otherwise User authentication (see “Sign-in and machine certificates”).",
             ]},
             {"title": "4. Wired policy", "steps": [
                 "Wired Network (IEEE 802.3) Policies → Create A New Wired Network Policy for Windows Vista and Later Releases.",
                 "Security: Enable use of IEEE 802.1X authentication for network access.",
                 *eap,
-                "Advanced → Specify authentication mode: User authentication. Cache user information for subsequent connections: on. "
+                "Advanced → Specify authentication mode: as for Wi-Fi. Cache user information for subsequent connections: on. "
                 "Enforce use of IEEE 802.1X authentication: off, so the PC still works on ports without 802.1X.",
                 f"Or deploy {slug}-wired.xml with the Windows wired kit's script instead of this policy, but never both on the same PCs.",
             ]},
             {"title": "Sign-in and machine certificates", "steps": [
-                "EasyEAP certificates belong to users, so the network starts after a user signs in. On an enforcing switch port the "
-                "sign-in screen has no network: a user who never signed in on that PC can't, and computer policy doesn't refresh "
-                "before sign-in. Domain users need cached credentials on wired-only PCs, or a first sign-in on Wi-Fi or a port in "
-                "monitor mode.",
-                "Machine certificates (User or computer authentication) are planned and will fix this. Until then, keep User "
-                "authentication: User or computer mode without a machine certificate falls back to nothing at the sign-in screen.",
+                "With only user certificates the network starts after sign-in: on an enforcing switch port the sign-in screen has "
+                "no network, a user who never signed in on that PC can't, and computer policy doesn't refresh before sign-in.",
+                "A computer certificate fixes that. The Windows setup file installs one (a device certificate of that user, so the "
+                "PC gets the user's access) and uses User or computer authentication: the computer's certificate at the sign-in "
+                "screen, the user's after.",
+                "In Group Policy profiles, choose User or computer authentication only for PCs with a computer certificate: "
+                "without one, the sign-in screen still has no network. A Group Policy profile replaces the setup file's profile "
+                "with the same name.",
             ]},
             {"title": "Check it", "steps": [
                 "On a PC: gpupdate /force, then netsh wlan show profiles (the network is listed with “Group policy profiles”) and "
                 "netsh lan show profiles.",
                 f"certlm.msc → Trusted Root Certification Authorities shows {root_cn}.",
-                "The user enrolls from the EasyEAP portal, then connects. EasyEAP's Authentication log shows the result and, if it "
+                "Run the Windows setup file on the PC (or the user enrolls from the portal), then connect. EasyEAP's Authentication log shows the result and, if it "
                 "fails, why.",
                 "A Group Policy profile wins over a profile with the same name installed by the EasyEAP helper; remove one of "
                 "them so users see one network.",

@@ -13,6 +13,13 @@ Every device gets its own certificate. EasyEAP never shares one certificate betw
 The user opens the link **on the device being enrolled**. By default the device generates its own private key and
 sends only a certificate signing request. The key never leaves the device.
 
+### Windows PCs: the setup file
+
+For a Windows 11 PC, **Windows setup** on the user's page makes one file that does everything: trust in the CA, the
+Wi-Fi and wired 802.1X profiles, the user's certificate and the computer's certificate (so the sign-in screen has
+network), and their automatic renewal. Keys stay in the TPM, or in a non-exportable software key on PCs without one.
+See [windows-setup.md](windows-setup.md).
+
 ### Server-generated keys (opt-in)
 
 A Tenant Administrator can allow server-generated keys for devices that can't run the portal. It must be allowed
@@ -47,7 +54,7 @@ The certificate a device enrolls with works on switch ports too. What sets the E
 |---|---|
 | **macOS** | With **Wired settings in enrollment packages** on (RADIUS settings), the configuration profile also contains an Ethernet payload (`com.apple.globalethernet.managed`) using the same certificate and server name. |
 | **Linux** | With that setting on, the portal's "For IT staff" section adds a wired NetworkManager profile and a wired `wpa_supplicant` file, using the same files in `/etc/easyeap/`. |
-| **Windows 10/11** | Set up by IT, not the portal: **RADIUS → Windows wired kit** has a LAN profile, an install script (run as administrator or SYSTEM, for example from Intune or a startup script) and Group Policy steps. It uses the certificate each user already has, so enroll users for Wi-Fi first. User certificates connect after sign-in, so domain-joined PCs need cached credentials. |
+| **Windows 10/11** | Set up by IT, not the portal. The [Windows setup file](windows-setup.md) adds the wired profile with the computer's certificate, so the port opens at the sign-in screen. Or **RADIUS → Windows wired kit**: a LAN profile, an install script (run as administrator or SYSTEM, for example from Intune or a startup script) and Group Policy steps, using the certificate each user already has; it connects after sign-in. |
 | **iPhone, iPad, Android** | Not applicable. |
 
 The setting is off by default, so adding a test switch doesn't change what new devices get. Devices enrolled before

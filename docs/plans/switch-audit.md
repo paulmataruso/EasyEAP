@@ -1,7 +1,22 @@
 # Plan: switch visibility and audit (SNMP, then syslog)
 
-Status: revised after critique (2026-11-07). Request: "a way for EasyEAP to see into the switch to see if port security
+Status: revised after critique (2026-11-07), then revised again with the user's decisions and a check of the MIB
+text (§0). Request: "a way for EasyEAP to see into the switch to see if port security
 is working as it should / audit — maybe SNMP + a syslog from each device."
+
+## 0. Revision 2 (2026-11-07): user decisions and MIB corrections
+
+- **SNMPv2c is the default** (the user's call), SNMPv3 authPriv an option. With v2c the community travels in clear, so
+  EasyEAP generates a random 24-character community, the generated switch configuration binds it to the read-only view
+  (§6) and to an ACL that permits only EasyEAP's address, and it's stored Transit-encrypted like every other secret. The
+  console says what v3 adds (no community on the wire) next to the choice.
+- **OIDs checked against CISCO-AUTH-FRAMEWORK-MIB (2013-08-23) and CISCO-ERR-DISABLE-MIB.** The first table below had
+  wrong column numbers; the corrected ones are in §3.
+- **Capability probe**: CAF is supported when cafAuthMethodRegTable (.656.1.1.2) returns rows (it lists the registered
+  methods, dot1x and mab, on every switch that runs the framework); err-disable when cErrDisableRecoveryInterval.0 answers.
+- **Collector token**: the API writes a random token on first start to a small volume shared only with the collector
+  (`easyeap-collector`), so upgrades need no new file under `deploy/secrets` (`docker compose build && up -d` keeps
+  working).
 
 ## 1. Goal
 
@@ -30,16 +45,17 @@ never touches FreeRADIUS.
 - Multi-node: one collector per deployment in v1. With several, the API assigns each switch to one collector (lowest
   collector id seen in the last 2 minutes wins). The design leaves room; v1 runs one.
 
-## 3. What is read (SNMPv3 authPriv only)
+## 3. What is read (SNMPv2c by default, SNMPv3 authPriv optional)
 
 | Data | MIB / OID | Notes |
 |---|---|---|
-| Ports: name, alias, admin/oper status | IF-MIB ifName .31.1.1.1.1, ifAlias .18, ifAdminStatus .2.2.1.7, ifOperStatus .8 | |
-| Port control, host mode, **pre-auth open access** | CISCO-AUTH-FRAMEWORK-MIB cafPortConfigTable .9.9.656.1.2.1.1: .3 control direction, .4 cafPortPreAuthOpenAccess, .5 authorization (host) mode | `.4 = true` on an enforcing switch means `access-session closed` is missing: the port is open |
-| Sessions | cafSessionTable .9.9.656.1.4.1.1: .2 MAC, .5 domain, .6 status, .10 VLAN group, .12 authz by, .13 critical, .14 user, .15 audit session id, .16 timeout | |
-| Method per session | cafSessionMethodsInfoTable .9.9.656.1.4.2.1.2 (dot1x / mab, state) | |
-| Err-disabled ports | CISCO-ERR-DISABLE-MIB cErrDisableIfStatusCause .9.9.548.1.3.1.1.2 | |
-| Facts | sysDescr, ENTITY-MIB entPhysicalModelName / SerialNum, snmpEngineID | engine id tracked (§5) |
+| Ports: name, alias, type, admin/oper status | IF-MIB ifName 1.3.6.1.2.1.31.1.1.1.1, ifAlias …31.1.1.1.18, ifType 1.3.6.1.2.1.2.2.1.3, ifAdminStatus …2.2.1.7, ifOperStatus …2.2.1.8 | |
+| Port control, host mode, **pre-auth open access** | CISCO-AUTH-FRAMEWORK-MIB cafPortConfigTable 1.3.6.1.4.1.9.9.656.1.2.1.1 (INDEX ifIndex): .1 controlled direction, .3 cafPortAuthHostMode (singleHost 1, multiHost 2, multiAuth 3, multiDomain 4), .4 cafPortPreAuthOpenAccess (TruthValue), .5 cafPortAuthorizeControl (forceUnauthorized 1, auto 2, forceAuthorized 3) | `.4 = true` on an enforcing switch means `access-session closed` is missing: the port is open |
+| Sessions | cafSessionTable …656.1.4.1.1 (INDEX ifIndex, IMPLIED cafSessionId): .2 MAC, .5 status (authorizationSuccess 6, …), .6 domain (data 2, voice 3), .10 user name, .12 authorized by (text), .13 critical time left, .14 authorized VLAN (0 = none), .22 VLAN group name | |
+| Method per session | cafSessionMethodsInfoTable …656.1.4.2.1.2 (INDEX ifIndex, cafSessionId length-prefixed, cafSessionMethod: dot1x 2, macAuthBypass 3, webAuth 4): state (authcSuccess 4, authcFailed 5, …) | |
+| CAF present | cafAuthMethodRegTable …656.1.1.2 | capability probe |
+| Err-disabled ports | CISCO-ERR-DISABLE-MIB cErrDisableIfStatusCause 1.3.6.1.4.1.9.9.548.1.3.1.1.2 (INDEX ifIndex, VLAN) | cause enum (bpduGuard 2, dot1xSecurityViolation 8, portSecurityViolation 9, …) |
+| Facts | sysDescr, sysName, ENTITY-MIB entPhysicalModelName …47.1.1.1.1.13 / SerialNum …11, snmpEngineID (v3) | engine id tracked for v3 (§5) |
 
 No forwarding-table (BRIDGE-MIB) walks: per-VLAN contexts are slow, need a wide view, and the closed-port check above
 answers "does traffic pass without authorization" directly.
@@ -101,7 +117,10 @@ snmp-server view EASYEAP-RO 1.3.6.1.2.1.47.1.1.1.1 included ! entPhysicalTable
 snmp-server view EASYEAP-RO 1.3.6.1.4.1.9.9.656 included  ! CAF
 snmp-server view EASYEAP-RO 1.3.6.1.4.1.9.9.548 included  ! err-disable
 snmp-server group EASYEAP v3 priv read EASYEAP-RO access EASYEAP-SNMP
-snmp-server user <user> EASYEAP v3 auth sha256 <auth> priv aes 128 <priv> access EASYEAP-SNMP
+! SNMPv2c (default):
+snmp-server community <community> view EASYEAP-RO RO EASYEAP-SNMP
+! or SNMPv3:
+snmp-server user <user> EASYEAP v3 auth sha-2 256 <auth> priv aes 128 <priv> access EASYEAP-SNMP
 ```
 
 The keys are generated by EasyEAP and shown once, like the RADIUS secret (`snmp-server user` isn't stored in the running
@@ -119,7 +138,7 @@ configuration, so re-pasting is how they're rotated). Nothing global changes: no
 
 ## 8. Security
 
-SNMPv3 authPriv only (communities travel in clear and would sit in the database); read-only view narrowed to the six
+SNMPv2c by default (the user's decision, §0): a generated community bound to the view and the ACL, Transit-encrypted at rest; SNMPv3 authPriv when chosen; read-only view narrowed to the six
 subtrees; a switch-side ACL; keys Transit-encrypted at rest, decrypted by the API only for the collector's token, held in
 the collector's memory only; the engine id pinned after the first poll; results size-capped; findings are evidence,
 never used for decisions.

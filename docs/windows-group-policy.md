@@ -6,15 +6,16 @@ Group Policy**. This page is the long form; where they differ, the console is cu
 
 ## Can Group Policy enroll certificates from EasyEAP automatically?
 
-No, not today. Windows certificate autoenrollment only talks to a Microsoft Enterprise CA (over DCOM), or to a Microsoft
-Certificate Enrollment Policy and Enrollment Web Service pair. No Group Policy setting points it at another CA, and every
-third-party product that plugs into autoenrollment needs certificate templates in Active Directory, a service account and
-usually an on-site agent. SCEP on Windows is available only through an MDM such as Intune.
+Not yet, but it can be done. Windows certificate autoenrollment can use any enrollment service that speaks Microsoft's
+Certificate Enrollment Policy and Enrollment Web Service protocols (MS-XCEP and MS-WSTEP), set with the Group Policy
+setting **Certificate Services Client – Certificate Enrollment Policy**. EasyEAP is adding those, with Kerberos, so
+domain PCs and users get and renew their certificates on their own
+([docs/plans/gpo-autoenrollment.md](plans/gpo-autoenrollment.md)). SCEP on Windows is available only through an MDM
+such as Intune.
 
-So users enroll each device from the EasyEAP portal (the Windows helper creates the key in the TPM where it can), and
-Group Policy sets up everything around it: trust in the EasyEAP CA, the 802.1X services, and the Wi-Fi and wired
-policies. Automatic machine certificates through a Group Policy startup task are planned (see
-[docs/plans/windows-gpo.md](plans/windows-gpo.md) §3).
+Until then, run the [Windows setup file](windows-setup.md) on each PC: it installs the user's and the computer's
+certificates (keys in the TPM, or non-exportable software keys on PCs without one) and renews them by itself. Group
+Policy sets up everything around them: trust in the EasyEAP CA, the 802.1X services, and the Wi-Fi and wired policies.
 
 ## Before you start
 
@@ -56,7 +57,8 @@ policies. Automatic machine certificates through a Group Policy startup task are
    - **Trusted Root Certification Authorities**: tick your EasyEAP root only.
    - **Don't prompt user to authorize new servers or trusted CAs**: on (newer Group Policy Management: Notifications
      before connecting → Don't ask user). Without it, a user can accept an impostor's certificate.
-5. **Advanced → Specify authentication mode: User authentication** (see [Sign-in and machine
+5. **Advanced → Specify authentication mode: User or computer authentication** on PCs with a computer certificate
+   from the Windows setup file, otherwise **User authentication** (see [Sign-in and machine
    certificates](#sign-in-and-machine-certificates)).
 6. OK, and close the policy.
 
@@ -65,29 +67,33 @@ policies. Automatic machine certificates through a Group Policy startup task are
 1. **Wired Network (IEEE 802.3) Policies → Create A New Wired Network Policy for Windows Vista and Later Releases.**
 2. **Security**: Enable use of IEEE 802.1X authentication for network access.
 3. The same method settings as step 3.4 (certificate on this computer, issuer filter, server name, root, don't prompt).
-4. **Advanced → Specify authentication mode: User authentication.** Cache user information for subsequent connections:
-   on. **Enforce use of IEEE 802.1X authentication: off**, so the PC still works on ports without 802.1X.
+4. **Advanced → Specify authentication mode**: as for Wi-Fi (step 3.5). Cache user information for subsequent
+   connections: on. **Enforce use of IEEE 802.1X authentication: off**, so the PC still works on ports without 802.1X.
 5. Or deploy `<tenant>-wired.xml` with the script from the Windows wired kit (RADIUS → Windows wired kit) instead of this
    policy, but never both on the same PCs: a Group Policy wired profile disables the Settings toggle and replaces the
    script's profile.
 
 ## Sign-in and machine certificates
 
-EasyEAP certificates belong to users, so the network starts after a user signs in.
+With only user certificates, the network starts after a user signs in: on a switch port that enforces 802.1X the
+sign-in screen has no network, a user who has never signed in on that PC can't, and computer Group Policy doesn't
+refresh before sign-in.
 
-- On a switch port that enforces 802.1X, the sign-in screen has no network. A user who has never signed in on that PC
-  can't, and computer Group Policy doesn't refresh before sign-in. Domain users need cached credentials on wired-only PCs,
-  or a first sign-in over Wi-Fi or on a port in monitor mode.
-- Keep **User authentication** for now. **User or computer authentication** needs a machine certificate; without one,
-  the sign-in screen still has no network.
-- Machine certificates are planned and will fix this; this guide will then recommend User or computer authentication.
+A computer certificate fixes that. The [Windows setup file](windows-setup.md) installs one in the computer's store
+(a device certificate of the user it was made for, so the PC gets that user's access) and sets its own profiles to
+**User or computer authentication**: the computer's certificate at the sign-in screen, the user's after sign-in.
+
+- If you deploy the profiles through Group Policy instead, choose **User or computer authentication** for PCs that have
+  a computer certificate, and **User authentication** for the rest: without a computer certificate, the sign-in screen
+  still has no network.
+- A Group Policy profile replaces the setup file's profile with the same name, so use one or the other on a PC.
 
 ## Check it
 
 1. On a PC: `gpupdate /force`, then `netsh wlan show profiles` (your SSID appears under "Group policy profiles") and
    `netsh lan show profiles`.
 2. `certlm.msc` → Trusted Root Certification Authorities shows your EasyEAP root.
-3. The user enrolls from the EasyEAP portal, then connects. EasyEAP's Authentication log shows the result and, if it
+3. The user enrolls from the EasyEAP portal, or IT runs the Windows setup file, then the PC connects. EasyEAP's Authentication log shows the result and, if it
    fails, why (for example "Secure handshake failed" when the PC doesn't trust the server).
 4. A Group Policy profile wins over a profile with the same name installed by the EasyEAP helper. Remove one of them so
    users see one network.

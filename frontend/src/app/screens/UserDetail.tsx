@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Ban, Building, CircleCheck, Download, FilePlus, FlaskConical, Hourglass, Pencil, PlugZap, ShieldX, UserRoundCheck, X } from 'lucide-react'
+import { ArrowLeft, Ban, Building, CircleCheck, Download, FilePlus, FlaskConical, Hourglass, MonitorCog, Pencil, PlugZap, ShieldX, UserRoundCheck, X } from 'lucide-react'
 import { ApiError, filenameFrom, saveBlob } from '../api/client'
 import { useTenant } from '../api/tenant'
 import {
@@ -22,7 +22,8 @@ import { pushRecent } from '../lib/recent'
 import { useNow } from '../lib/useNow'
 import { IssueDialog } from './people/IssueDialog'
 import { RevokeDialog } from './people/RevokeDialog'
-import { AccountChip, EventList, GroupPicker, joinNames, keyOrigin, reasonLabel } from './people/shared'
+import { WindowsSetupDialog } from './people/WindowsSetupDialog'
+import { AccountChip, EventList, GroupPicker, joinNames, keyOrigin, keyStorage, reasonLabel } from './people/shared'
 
 const first = (name: string) => name.split(' ')[0] || name
 const statusRank: Record<string, number> = { active: 0, expiring: 1, expired: 2, revoked: 3 }
@@ -104,6 +105,8 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
   // Issue dialog returns focus to the header button (also when it was opened by ?issue=1).
   const issueBtn = useRef<HTMLButtonElement | null>(null)
   const focusAfterRevoke = useRef<HTMLElement | null>(null)
+  const [setupOpen, setSetupOpen] = useState(false)
+  const setupBtn = useRef<HTMLButtonElement | null>(null)
 
   const certs = useMemo(() => [...u.certificates].sort((a, b) => (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9) || b.not_after.localeCompare(a.not_after)), [u.certificates])
   const live = certs.filter((c) => c.status === 'active' || c.status === 'expiring')
@@ -128,6 +131,7 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
           <>
             <Link to={paths.policy(tid, { test: u.id })} className="ee-btn"><FlaskConical aria-hidden />Test access</Link>
             {canWrite && <Btn onClick={() => setDisconnectOpen(true)}><PlugZap aria-hidden />Disconnect</Btn>}
+            {canIssue && u.account_state === 'enabled' && <Btn ref={setupBtn} onClick={() => setSetupOpen(true)}><MonitorCog aria-hidden />Windows setup</Btn>}
             {canIssue && <Btn ref={issueBtn} variant="primary" onClick={() => setIssueOpen(true)}><FilePlus aria-hidden />Issue certificate</Btn>}
           </>
         }
@@ -215,6 +219,7 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
       </Panel>
 
       {canIssue && <IssueDialog identity={u} open={issueOpen} onOpenChange={setIssueOpen} returnFocus={issueBtn} />}
+      {canIssue && <WindowsSetupDialog identity={u} open={setupOpen} onOpenChange={setSetupOpen} returnFocus={setupBtn} />}
       <RevokeDialog cert={revoking ? { ...revoking, identity: { id: u.id, display_name: u.display_name } } : null} open={!!revoking} onOpenChange={(o) => { if (!o) setRevoking(null) }}
         returnFocus={focusAfterRevoke} />
       <DisconnectDialog u={u} open={disconnectOpen} onOpenChange={setDisconnectOpen} />
@@ -308,6 +313,7 @@ function AccessStatement({ u, live, listed, enforceable, enforcement, missing, l
 // ── Certificates ────────────────────────────────────────────────────────
 function CertRow({ tid, c, now, onRevoke, linkRef }: { tid: string; c: Certificate; now: Date; onRevoke?: () => void; linkRef: (el: HTMLAnchorElement | null) => void }) {
   const origin = keyOrigin(c.key_origin)
+  const storage = keyStorage(c.key_storage)
   return (
     <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 py-3 first:pt-0 last:pb-0">
       <div className="min-w-0">
@@ -320,7 +326,8 @@ function CertRow({ tid, c, now, onRevoke, linkRef }: { tid: string; c: Certifica
         <p className="ee-small ee-ink-3 mt-1 flex flex-wrap gap-x-2">
           <Link ref={linkRef} to={paths.certificate(tid, c.id)} className="ee-mono ee-ink-2 underline decoration-[var(--ee-line-3)] hover:text-[var(--ee-ink)]" aria-label={`Open certificate ${fmtSerial(c.serial)}`}>{fmtSerial(c.serial).slice(0, 19)}…</Link>
           <span>{c.purpose === 'device' ? 'Device' : 'User'} certificate</span>
-          <span title={origin.long}>Key: {origin.short}</span>
+          <span title={origin.long}>Key: {origin.short}{storage && <> · <span title={storage.long}>{storage.short}</span></>}</span>
+          {c.renewal_of && <span>Renewed automatically</span>}
         </p>
         {c.status === 'revoked' && (
           <p className="ee-small ee-ink-2 mt-1">Revoked {fmtDateTime(c.revoked_at)} · {reasonLabel(c.revocation_reason)}{c.revoked_by ? ` · by ${c.revoked_by}` : ''}</p>
@@ -338,6 +345,11 @@ function CertRow({ tid, c, now, onRevoke, linkRef }: { tid: string; c: Certifica
 }
 
 // ── Enrollment links ────────────────────────────────────────────────────
+const enrollmentKind = (e: IdentityEnrollment) =>
+  e.method === 'server' ? 'server-generated package'
+    : e.method === 'windows-setup' ? `Windows setup file · ${e.purpose === 'device' ? 'computer’s certificate' : 'user’s certificate'}`
+      : 'key on device'
+
 function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: IdentityDetail; pending: IdentityEnrollment[]; past: IdentityEnrollment[]; now: Date }) {
   const { can } = useTenant()
   const [showPast, setShowPast] = useState(false)
@@ -356,7 +368,7 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <PlatformIcon platform={e.platform} />
           <span className="text-[13.5px] font-semibold">{e.device_name}</span>
-          <span className="ee-small ee-ink-3">{platformLabels[e.platform] ?? e.platform} · {e.method === 'server' ? 'server-generated package' : 'key on device'}</span>
+          <span className="ee-small ee-ink-3">{platformLabels[e.platform] ?? e.platform} · {enrollmentKind(e)}</span>
           {statusChip(e)}
         </div>
         <p className="ee-small ee-ink-3 mt-1">

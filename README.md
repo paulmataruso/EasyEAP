@@ -74,7 +74,8 @@ older than the limit you set, it **fails closed** and denies everyone.
 
 **One certificate per device**<br>
 Enrollment links work on Windows, macOS, iOS and iPadOS, Android and Linux. By default each device generates its own
-key, in the browser or with the TPM on Windows. Server-generated keys are opt-in.
+key, in the browser or with the TPM on Windows. One setup file sets up a Windows 11 PC with the user's and the
+computer's certificates, which renew themselves. Server-generated keys are opt-in.
 
 </td>
 <td width="50%" valign="top">
@@ -272,6 +273,7 @@ issue.
 | [docs/controllers/](docs/controllers/README.md) | Cisco Catalyst 9800, Cisco AireOS, UniFi and Catalyst switch configuration |
 | [docs/enrollment.md](docs/enrollment.md) | Issuing certificates and what users do on each platform |
 | [docs/device-administration.md](docs/device-administration.md) | Switch and controller logins with AD and EasyEAP accounts over TACACS+ |
+| [docs/windows-setup.md](docs/windows-setup.md) | The Windows setup file: one download that sets up a PC, with computer certificates and renewal |
 | [docs/windows-group-policy.md](docs/windows-group-policy.md) | Setting up domain-joined Windows PCs for 802.1X with Group Policy |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Every failure reason and status, and how to fix it |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Repository layout, the development stack, tests, conventions |

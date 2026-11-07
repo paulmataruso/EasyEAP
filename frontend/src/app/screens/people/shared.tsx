@@ -27,6 +27,12 @@ const KEY_ORIGIN: Record<string, { short: string; long: string }> = {
 }
 export const keyOrigin = (o: string) => KEY_ORIGIN[o] ?? { short: o, long: o }
 
+/** Where Windows keeps the key, when the Windows setup or helper reported it. */
+export const keyStorage = (s: string | null | undefined): { short: string; long: string } | null =>
+  s === 'tpm' ? { short: 'TPM', long: 'Kept in the PC’s TPM: it can’t be copied off the PC.' }
+    : s === 'software' ? { short: 'Software key', long: 'Kept by Windows in software, not exportable. The PC has no usable TPM (for example Windows 11 installed with the TPM bypass).' }
+      : null
+
 export const keyAlgorithm = (a: string) =>
   a.startsWith('ecdsa-p') ? `ECDSA P-${a.slice(7)}` : a.startsWith('rsa-') ? `RSA ${a.slice(4)}` : a
 

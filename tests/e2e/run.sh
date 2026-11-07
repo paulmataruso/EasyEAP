@@ -14,6 +14,7 @@
 #   E2E_DEPLOY_DIR=<dir>   a deployment directory other than deploy/ (COMPOSE_PROJECT_NAME and COMPOSE_FILE are honoured)
 #   E2E_WIRED=0            skip the wired 802.1X steps (a build from before wired 802.1X)
 #   E2E_ADMIN=0            skip the device-administration (TACACS+) steps (a build from before device administration)
+#   E2E_WINSETUP=0         skip the Windows setup steps (a build from before the Windows setup)
 set -uo pipefail
 shopt -s lastpipe   # `… | jok` runs jok in this shell, so its PASS/FAIL counts
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -355,6 +356,27 @@ drive enroll nina linux | jok "Linux: wired NetworkManager and wpa_supplicant fi
   'd["csr"]["profiles"]["networkmanager_wired"] and "802-1x" in d["csr"]["profiles"]["networkmanager_wired"] and d["csr"]["profiles"]["wpa_supplicant_wired"]'
 drive call GET /radius/wired-kit | jok "Windows wired kit: a LAN profile and an install script, no private key" \
   'd["status"] == 200 and "LANProfile" in d["body"]["files"][0]["content"] and "PRIVATE KEY" not in str(d)'
+
+if [ "${E2E_WINSETUP:-1}" != 0 ]; then
+step "11a. Windows setup: user and computer certificates from one download, renewal, the computer certificate on the network"
+WS="$(drive winsetup nina)"
+for c in file:"the setup is one .cmd with two one-time codes and no key; sign-in mode machineOrUser" \
+         user_code_once:"the user's code works once" computer_code_once:"the computer's code works once" \
+         purposes:"a user certificate and a device certificate (the PC's) for nina" \
+         pc_named:"both belong to one device named by the PC (PC-NINA01), which is in the certificate's name" \
+         key_storage:"where Windows kept each key is recorded (TPM, software)" \
+         not_yet:"renewal before the window issues nothing" computer_only_mode:"a computer-only setup uses the computer's certificate always" \
+         wrong_key_refused:"a renewal signed by another key is refused" stale_refused:"a renewal signed an hour ago is refused" \
+         same_key_refused:"a renewal that reuses the old key is refused" \
+         renewed:"inside the window: a new certificate, the old one superseded, same device, key storage recorded" \
+         renews_once:"a certificate renews once"; do
+  echo "$WS" | jok "${c#*:}" "d['checks']['${c%%:*}']"
+done
+echo "$WS" | python3 -c 'import json,sys; d=json.load(sys.stdin); open(sys.argv[1]+"/nina-pc.pem","w").write(d["cert_pem"]); open(sys.argv[1]+"/nina-pc.key","w").write(d["key_pem"])' "$CERTS" \
+  && chmod 644 "$CERTS/nina-pc.pem" "$CERTS/nina-pc.key"
+must "wait for snapshot" drive wait
+expect nina-pc "accept 120" "the renewed computer certificate connects with nina's VLAN"
+fi
 
 if [ "${E2E_ADMIN:-1}" != 0 ]; then
 step "11b. Device administration: switch logins with AD and EasyEAP accounts over TACACS+"

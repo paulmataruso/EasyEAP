@@ -31,6 +31,9 @@ def cert_out(c: m.Certificate, warn_days: int, identity: m.Identity | None = Non
         "identity": {"id": str(identity.id), "username": identity.username, "display_name": identity.display_name} if identity else None,
         "device": {"id": str(device.id), "name": device.name, "platform": device.platform} if device else None,
         "created_at": c.created_at.isoformat() if c.created_at else None,
+        # Where Windows keeps the key (tpm | software | None: not reported), and the renewal chain.
+        "key_storage": c.key_storage, "renewal_of": str(c.renewal_of) if c.renewal_of else None,
+        "renewed_at": c.renewed_at.isoformat() if c.renewed_at else None,
     }
 
 

@@ -688,8 +688,9 @@ def wired_kit(ctx: TenantCtx = Depends(require("radius:read"))) -> dict:
             "gpo_steps": profiles.WINDOWS_GPO_STEPS,
             "notes": ["Run the script as administrator or SYSTEM: Intune (Scripts), an RMM, or a computer startup script.",
                       "It uses the EasyEAP certificate each user already has, so enroll users for Wi-Fi first.",
-                      "With user certificates, wired 802.1X starts after sign-in: the sign-in screen has no network on an enforced port, "
-                      "so domain-joined PCs need cached credentials. Machine certificates are planned.",
+                      "With user certificates, wired 802.1X starts after sign-in: the sign-in screen has no network on an enforced port. "
+                      "For network at the sign-in screen, use the Windows setup file (a user's page → Windows setup) instead: it adds "
+                      "the computer's certificate and its own wired profile.",
                       "For domain PCs, Windows Group Policy (next to this kit) has the full steps: trust, services, Wi-Fi and wired policies."]}
 
 

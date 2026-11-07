@@ -3,6 +3,11 @@
 Status: revised after critique (2026-11-07). Request: can Group Policy make domain PCs pull user and device certificates
 from EasyEAP automatically? If admins have to configure Group Policy by hand, write a guide.
 
+> **Superseded in part (2026-11-07).** The guide (§2) shipped. §1's "no" was too strong: an enrollment service that
+> speaks MS-XCEP and MS-WSTEP with Kerberos works with Windows autoenrollment without AD templates or an on-site agent;
+> that's [gpo-autoenrollment.md](gpo-autoenrollment.md). The startup-task enrollment (§3) became the Windows setup
+> file ([windows-setup.md](windows-setup.md)): computer and user certificates with renewal, run once per PC.
+
 ## 1. Answer to the question
 
 - **No Group Policy setting makes Windows enroll from EasyEAP today.** Windows' own autoenrollment talks only to an AD

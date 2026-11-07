@@ -67,10 +67,24 @@ versions follow [Semantic Versioning](https://semver.org/).
   - Changing the address, type or site of a device with admin logins, or deleting it, needs a tenant administrator.
   - TCP 49 is published only when `EASYEAP_TACACS_BIND` is set to a reachable address.
   - Not yet verified on Cisco hardware: tested against a protocol client that follows IOS's login sequence.
+- **Windows setup file**: one download per user that sets up a Windows 11 PC
+  ([docs/windows-setup.md](docs/windows-setup.md), [plan and review](docs/plans/windows-setup.md)).
+  - A user's page → **Windows setup**: the user's certificate, the **computer's certificate** (so the sign-in screen
+    has network and people who never signed in on the PC can, without cached credentials), Wi-Fi, wired 802.1X, and a
+    shared-PC mode. The file carries one-time codes that expire, never a key.
+  - Keys are made on the PC, non-exportable: in the TPM (ECDSA, then RSA), or with the Microsoft Software Key Storage
+    Provider on PCs without one, such as Windows 11 installed with the TPM bypass. The console shows **TPM** or
+    **Software key** for each certificate.
+  - Profiles use **User or computer authentication** and pick the EasyEAP certificate by its issuer.
+  - **Automatic renewal**: scheduled tasks renew both certificates inside the template's renewal window; the current
+    certificate's key signs the request (`POST /api/enroll/renew`), and the console shows "Renewed automatically".
+  - Each step stands alone, the user part covers what the administrator part couldn't do, and the summary lists both.
+  - `tests/windows/run.sh`: PowerShell parses the generated files and runs the setup's steps with Windows' commands
+    replaced by recorders; renewals signed by the script's own code verify in EasyEAP. Not yet run on a real Windows 11 PC.
 - **Windows Group Policy guide** ([docs/windows-group-policy.md](docs/windows-group-policy.md)) and a Windows Group
   Policy dialog on the RADIUS screen with the CA certificates and the Wi-Fi and wired profiles to import. Group Policy
-  can't enroll certificates from EasyEAP automatically: [docs/plans/windows-gpo.md](docs/plans/windows-gpo.md) explains
-  why and plans a startup-task enrollment.
+  autoenrollment from EasyEAP (MS-XCEP and MS-WSTEP with Kerberos) is planned; until then, certificates come from the
+  setup file or the portal.
 - `tests/radius/run.sh`: the rendered FreeRADIUS configuration and the agent's store on real FreeRADIUS with real
   EAP-TLS, including every version-skew combination with the 1.0.1 agent and configuration, MAC authentication, and
   the TACACS+ service. Runs in CI.

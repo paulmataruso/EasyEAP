@@ -195,6 +195,12 @@ class Certificate(Base):
     revoked_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
     enrollment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+    # Where Windows created the key: tpm | software (a PC without a TPM) | None (not reported). docs/plans/windows-setup.md
+    key_storage: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Renewal by the certificate's own key (POST /api/enroll/renew): the certificate this one replaced, and when this
+    # one was replaced. A certificate renews once.
+    renewal_of: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    renewed_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
 
 
 # ── Directory & identity ────────────────────────────────────────────────────

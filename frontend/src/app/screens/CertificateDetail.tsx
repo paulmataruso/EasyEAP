@@ -13,7 +13,7 @@ import { ago, fmtDate, fmtDateTime, fmtFingerprint, fmtSerial, relative, remaini
 import { pushRecent } from '../lib/recent'
 import { useNow } from '../lib/useNow'
 import { RevokeDialog } from './people/RevokeDialog'
-import { certTone, EventList, keyAlgorithm, keyOrigin, REASON_META } from './people/shared'
+import { certTone, EventList, keyAlgorithm, keyOrigin, keyStorage, REASON_META } from './people/shared'
 
 export default function CertificateDetail() {
   const { id = '' } = useParams()
@@ -52,6 +52,7 @@ function CertRecord({ c }: { c: Cert }) {
   const root = pki.data?.authorities.find((a) => a.role === 'root' && a.status === 'active')
   const issuingCa = pki.data?.authorities.find((a) => a.common_name === c.issuer) ?? pki.data?.authorities.find((a) => a.role === 'issuing' && a.status === 'active')
   const origin = keyOrigin(c.key_origin)
+  const storage = keyStorage(c.key_storage)
   const isServerCert = c.purpose === 'radius-server'
   const revocable = c.status !== 'revoked' && !isServerCert && can('certificates:revoke')
   const holder = c.identity?.display_name ?? c.common_name
@@ -161,6 +162,8 @@ function CertRecord({ c }: { c: Cert }) {
               ['Valid until', <><time dateTime={c.not_after} className="ee-num">{fmtDateTime(c.not_after)}</time><span className="ee-small ee-ink-3 block">{c.status === 'revoked' ? 'No longer valid: revoked' : remaining(c.not_after, now).startsWith('Expired') ? remaining(c.not_after, now) : `${remaining(c.not_after, now)} remaining`}</span></>],
               ['Key algorithm', keyAlgorithm(c.key_algorithm)],
               ['Key generated', <span className="inline-flex items-start gap-1.5"><KeyRound className="mt-0.5 size-3.5 shrink-0 ee-ink-3" aria-hidden /><span>{origin.short}<span className="ee-small ee-ink-3 block">{origin.long}</span></span></span>],
+              ...(storage ? [['Key storage', <>{storage.short}<span className="ee-small ee-ink-3 block">{storage.long}</span></>] as [string, ReactNode]] : []),
+              ...(c.renewal_of ? [['Renewed', <>Automatically, by its own key, from <Link to={paths.certificate(tid, c.renewal_of)} className="underline">the previous certificate</Link></>] as [string, ReactNode]] : []),
               ['Issued', <time dateTime={c.created_at ?? undefined} className="ee-num">{fmtDateTime(c.created_at)}</time>],
               ['Serial', <span className="ee-mono text-[12.5px] break-words">{fmtSerial(c.serial)}</span>],
             ]} />
