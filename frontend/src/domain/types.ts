@@ -205,7 +205,7 @@ export interface Decision {
 
 // ── RADIUS ──────────────────────────────────────────────────────────────────
 
-export type NasVendor = 'cisco-9800' | 'cisco-aireos' | 'unifi' | 'other'
+export type NasVendor = 'cisco-9800' | 'cisco-aireos' | 'cisco-switch' | 'unifi' | 'other'
 
 export interface RadiusClient {
   id: string
@@ -249,6 +249,9 @@ export type FailureCode =
   | 'snapshot_stale'
   | 'tls_handshake'
   | 'client_timeout'
+  | 'network_not_enabled'
+  | 'network_unknown'
+  | 'mab_unsupported'
 
 export interface AuthEvent {
   id: string

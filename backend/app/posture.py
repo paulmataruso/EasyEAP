@@ -18,7 +18,9 @@ from app.radius.explain import explain
 SEVERITY = {"critical": 0, "warning": 1, "info": 2}
 # Reject reasons that indicate something to fix (policy_deny is the policy working as configured).
 ACTIONABLE_REJECTS = {"unknown_ca", "cert_unknown", "cert_expired", "cert_revoked", "identity_unauthorized", "account_disabled",
-                      "snapshot_stale", "vlan_assignment", "tls_handshake", "client_timeout"}
+                      "snapshot_stale", "vlan_assignment", "tls_handshake", "client_timeout", "network_not_enabled", "mab_unsupported"}
+# A switch left in monitor mode this long is a reminder: its ports aren't protected yet (docs/plans/wired-8021x.md §6.2).
+MONITOR_NUDGE = timedelta(days=14)
 
 
 # The worker heartbeats every minute and rebuilds every tenant's snapshot hourly.
@@ -63,7 +65,7 @@ def enforcement(s: Session, t: m.Tenant, agent: dict | None, now: datetime | Non
     if rs is None or rs.server_certificate_id is None:
         missing.append({"code": "radius_certificate", "message": "Configure RADIUS and issue its server certificate", "target": "radius"})
     if clients == 0:
-        missing.append({"code": "controllers", "message": "Add a wireless controller", "target": "radius"})
+        missing.append({"code": "controllers", "message": "Add a wireless controller or switch", "target": "radius"})
     if t.status != "active":
         missing.append({"code": "tenant_status", "message": "Activate the tenant" if t.status == "setup" else "The tenant is suspended",
                         "target": "setup" if t.status == "setup" else "tenant"})
@@ -260,6 +262,18 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
             "RADIUS checks only the issuing CA's list, so Wi-Fi isn't affected. Devices and controllers that check the whole chain may "
             "start refusing the RADIUS server when it lapses. Renewing it needs the offline root key.",
             "Review PKI", "pki", affected=holders, impact_at=root.crl_next_update, source_at=None)
+
+    for c in s.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == t.id)):
+        prof = c.wired_profile or {}
+        set_at = prof.get("mode_set_at")
+        if "wired" not in (c.networks or []) or prof.get("mode") != "monitor" or not set_at:
+            continue
+        since = datetime.fromisoformat(set_at)
+        if now - since >= MONITOR_NUDGE:
+            add(f"wired_monitor:{c.id}", "info", f"{c.name} has been in monitor mode for {(now - since).days} days",
+                "Its ports are open: devices that fail 802.1X, or don't try it, still get on the network. Review the evidence and "
+                "enforce when every device that should connect is accepted.", "Review the switch", f"radius:client:{c.id}",
+                affected=0, impact_at=None, source_at=since)
 
     soon = now + timedelta(days=ps.expiry_warning_days)
     exp = s.execute(select(func.count(), func.min(m.Certificate.not_after), func.count(distinct(m.Certificate.identity_id))).where(

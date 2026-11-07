@@ -11,6 +11,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -287,6 +288,10 @@ class Vlan(Base):
     name: Mapped[str] = mapped_column(String(80))
     description: Mapped[str] = mapped_column(String(300), default="")
     color: Mapped[str] = mapped_column(String(16), default="blue")
+    # What a switch port gets when a rule assigns this VLAN: the same VLAN ID, the port's own VLAN (none assigned),
+    # or another VLAN (wired_vlan_id). docs/plans/wired-8021x.md §3.
+    wired_mode: Mapped[str] = mapped_column(String(8), default="same")  # same | port | vlan
+    wired_vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class AccessRule(Base):
@@ -330,6 +335,7 @@ class Decision(Base):
     reason_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     deciding_rule_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    wired_vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # on switch ports, from the VLAN's mapping; None = assign none
     attributes: Mapped[list[dict]] = mapped_column(JSONB, default=list)
     steps: Mapped[list[dict]] = mapped_column(JSONB, default=list)
     computed_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
@@ -350,6 +356,7 @@ class RadiusSettings(Base):
     tls_min_version: Mapped[str] = mapped_column(String(4), default="1.2")
     tls_session_cache: Mapped[bool] = mapped_column(Boolean, default=False)
     session_timeout_seconds: Mapped[int] = mapped_column(Integer, default=28_800)
+    wired_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  # include wired settings in enrollment packages
     server_certificate_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("certificates.id", ondelete="SET NULL"), nullable=True)
     server_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
     snapshot_version: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -362,7 +369,9 @@ class RadiusClient(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
     name: Mapped[str] = mapped_column(String(120))
-    vendor: Mapped[str] = mapped_column(String(16))  # cisco-9800 | cisco-aireos | unifi | other
+    vendor: Mapped[str] = mapped_column(String(16))  # cisco-9800 | cisco-aireos | cisco-switch | unifi | other
+    networks: Mapped[list[str]] = mapped_column(ARRAY(String), default=lambda: ["wireless"])  # wireless | wired: what it may authenticate
+    wired_profile: Mapped[dict] = mapped_column(JSONB, default=dict)  # the switch port plan and rollout mode (app/radius/wired.py); no secrets
     address: Mapped[str] = mapped_column(String(64), index=True)  # IP or CIDR; uniqueness across shared-port tenants enforced in service
     site: Mapped[str] = mapped_column(String(120), default="")
     secret_ct: Mapped[str] = mapped_column(Text)
@@ -375,6 +384,7 @@ class RadiusClient(Base):
 
 class AuthEvent(Base):
     __tablename__ = "auth_events"
+    __table_args__ = (Index("ix_auth_events_tenant_network_at", "tenant_id", "network", "at"),)
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
     event_uid: Mapped[str] = mapped_column(String(64), unique=True)  # dedupe key from the agent
@@ -391,6 +401,9 @@ class AuthEvent(Base):
     nas_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     nas_client_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     ssid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    network: Mapped[str | None] = mapped_column(String(8), nullable=True)  # wireless | wired
+    nas_port_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # the switch port, e.g. GigabitEthernet1/0/5
+    monitor: Mapped[bool] = mapped_column(Boolean, default=False)  # monitor mode: vlan_id is what would have been assigned
     vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rule_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     raw_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -411,6 +424,8 @@ class AccountingSession(Base):
     called_station_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     framed_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    network: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    nas_port_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
     stopped_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)

@@ -1,6 +1,7 @@
 """Ingestion of authentication events and accounting records shipped by the radius-agent."""
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -58,6 +59,7 @@ def ingest_auth(session: Session, events: list[dict[str, Any]]) -> int:
             cert_serial=serial, cert_issuer=_clean(e.get("issuer"), 300), calling_station_id=_clean(e.get("mac"), 64),
             called_station_id=_clean(e.get("called"), 128), nas_ip=nas_ip, nas_client_id=nas.id if nas else None,
             ssid=_ssid(_clean(e.get("called"), 128)), vlan_id=int(vlan) if vlan and vlan.isdigit() else None,
+            network=_network(e.get("network")), nas_port_id=_clean(e.get("port_id"), 64), monitor=e.get("monitor") == "yes",
             rule_id=uuid.UUID(rule) if rule and _is_uuid(rule) else None, raw_message=message,
         ).on_conflict_do_nothing(index_elements=["event_uid"])
         if session.execute(stmt).rowcount:
@@ -99,6 +101,8 @@ def ingest_accounting(session: Session, records: list[dict[str, Any]]) -> int:
         row.calling_station_id = _clean(r.get("mac"), 64) or row.calling_station_id
         row.called_station_id = _clean(r.get("called"), 128) or row.called_station_id
         row.framed_ip = _clean(r.get("framed_ip"), 64) or row.framed_ip
+        row.network = _network(r.get("network")) or row.network
+        row.nas_port_id = _clean(r.get("port_id"), 64) or row.nas_port_id
         vlan = _clean(r.get("vlan"), 8)
         if vlan and vlan.isdigit():
             row.vlan_id = int(vlan)
@@ -112,9 +116,14 @@ def ingest_accounting(session: Session, records: list[dict[str, Any]]) -> int:
     return n
 
 
+def _network(v: Any) -> str | None:
+    return v if v in ("wireless", "wired") else None
+
+
 def attribute_client(clients: list[m.RadiusClient], src_ip: str | None, nas_ip: str | None) -> m.RadiusClient | None:
-    """The controller a request came from: by the packet's source address (what FreeRADIUS matched the client on),
-    then by the NAS-IP-Address it reported. None when neither falls inside a registered controller's range."""
+    """The controller or switch a request came from: by the packet's source address (what FreeRADIUS matched the
+    client on), then by the NAS-IP-Address it reported. The most specific registration wins, as in FreeRADIUS, so a
+    switch registered inside a UniFi range is told apart. None when neither falls inside a registered range."""
     return _match_client(clients, src_ip) or _match_client(clients, nas_ip)
 
 
@@ -126,17 +135,26 @@ def _match_client(clients: list[m.RadiusClient], ip: str | None) -> m.RadiusClie
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return None
+    best: tuple[int, m.RadiusClient] | None = None
     for c in clients:
         try:
-            if addr in ipaddress.ip_network(c.address, strict=False):
-                return c
+            net = ipaddress.ip_network(c.address, strict=False)
         except ValueError:
             continue
-    return None
+        if addr in net and (best is None or net.prefixlen > best[0]):
+            best = (net.prefixlen, c)
+    return best[1] if best else None
+
+
+# "MAC:SSID", the same test FreeRADIUS uses to tell Wi-Fi from wired (services/radius/agent/render.py MAC_RE).
+_CALLED_SSID = re.compile(r"^(?:[0-9A-Fa-f]{2}[-:.]?){5}[0-9A-Fa-f]{2}:(.+)$")
 
 
 def _ssid(called: str | None) -> str | None:
     # Called-Station-Id is usually "AA-BB-CC-DD-EE-FF:SSID"
+    mt = _CALLED_SSID.match(called or "")
+    if mt:
+        return mt.group(1)[:64]
     if called and ":" in called:
         tail = called.rsplit(":", 1)[-1]
         if len(tail) > 2 and not all(c in "0123456789abcdefABCDEF-" for c in tail):

@@ -86,6 +86,10 @@ def classify_freeradius(line: str) -> tuple[str, str] | None:
         return "error", msg
     if kind in ("warning", "warn"):
         return "warning", msg
+    # A wrong shared secret is logged at Info and the request dropped unanswered, so the NAS only sees a timeout. It's
+    # the one trace of the mistake: keep it (the console's "waiting for the first request" explains it).
+    if kind == "info" and "invalid Message-Authenticator" in msg:
+        return "warning", msg
     return None
 
 
@@ -142,14 +146,19 @@ def api(method: str, path: str, body: dict | None = None, timeout: float = 20) -
 # ── Authorization snapshot store ────────────────────────────────────────────
 
 
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB, timeout=5, isolation_level=None)
+def db(path: Path | None = None) -> sqlite3.Connection:
+    conn = sqlite3.connect(path or DB, timeout=5, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("CREATE TABLE IF NOT EXISTS meta (tenant TEXT PRIMARY KEY, version INTEGER NOT NULL, built_at INTEGER NOT NULL, "
                  "valid_until INTEGER NOT NULL, applied_at INTEGER NOT NULL, digest TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS authz (tenant TEXT NOT NULL, serial TEXT NOT NULL, outcome TEXT NOT NULL, reason TEXT, "
                  "vlan TEXT, rule_id TEXT, username TEXT, extra TEXT, not_after INTEGER, PRIMARY KEY (tenant, serial))")
+    # The VLAN on switch ports, where the snapshot gives one ('' = assign none). A separate table, so `authz` stays
+    # exactly as older agents and configurations read and write it; the version ties each row to the snapshot that
+    # wrote it, so rows left behind by a rollback to an older agent are ignored.
+    conn.execute("CREATE TABLE IF NOT EXISTS authz_wired (tenant TEXT NOT NULL, serial TEXT NOT NULL, version INTEGER NOT NULL, "
+                 "vlan TEXT NOT NULL, PRIMARY KEY (tenant, serial))")
     return conn
 
 
@@ -163,15 +172,20 @@ def apply_snapshot(conn: sqlite3.Connection, snap: dict) -> None:
     if snap.get("unchanged"):
         conn.execute("UPDATE meta SET valid_until = MAX(valid_until, ?) WHERE tenant = ? AND version = ?", (snap["valid_until"], tid, snap["version"]))
         return
-    rows = []
+    rows, wired = [], []
     for e in snap["entries"]:
         extra = ";".join(f"{a['name']}={a['value']}" for a in e.get("attributes", []) if ";" not in a["value"])
         rows.append((tid, e["serial"], e["outcome"], e.get("reason"), str(e["vlan"]) if e.get("vlan") is not None else None,
                      e.get("rule_id"), e.get("username"), extra, e.get("not_after")))
+        # No key (an API from before wired 802.1X): no row, so switch ports get the Wi-Fi VLAN as they did then.
+        if "wired_vlan" in e:
+            wired.append((tid, e["serial"], snap["version"], str(e["wired_vlan"]) if e["wired_vlan"] is not None else ""))
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("DELETE FROM authz WHERE tenant = ?", (tid,))
+        conn.execute("DELETE FROM authz_wired WHERE tenant = ?", (tid,))
         conn.executemany("INSERT INTO authz VALUES (?,?,?,?,?,?,?,?,?)", rows)
+        conn.executemany("INSERT INTO authz_wired VALUES (?,?,?,?)", wired)
         conn.execute("INSERT INTO meta VALUES (?,?,?,?,?,?) ON CONFLICT(tenant) DO UPDATE SET version=excluded.version, "
                      "built_at=excluded.built_at, valid_until=excluded.valid_until, applied_at=excluded.applied_at, digest=excluded.digest",
                      (tid, snap["version"], snap["built_at"], snap["valid_until"], now, snap.get("digest")))
@@ -186,6 +200,7 @@ def drop_removed_tenants(conn: sqlite3.Connection, active: list[str]) -> None:
     for (t,) in conn.execute("SELECT tenant FROM meta").fetchall():
         if t not in active:
             conn.execute("DELETE FROM authz WHERE tenant = ?", (t,))
+            conn.execute("DELETE FROM authz_wired WHERE tenant = ?", (t,))
             conn.execute("DELETE FROM meta WHERE tenant = ?", (t,))
 
 
@@ -261,7 +276,10 @@ def apply_config(radius: Radius, desired: dict) -> tuple[bool, str | None]:
             LIVE.rename(old)
         new_live.rename(LIVE)
         (STATE / "config.json").write_text(json.dumps({"version": desired["version"], "applied_at": int(time.time()),
-                                                       "tenants": [t["id"] for t in desired.get("tenants", [])]}))
+                                                       "tenants": [t["id"] for t in desired.get("tenants", [])],
+                                                       # Per tenant: the change counter this configuration includes, so
+                                                       # the console knows when a change (e.g. Enforce) is live.
+                                                       "config_versions": {t["id"]: t.get("config_version") for t in desired.get("tenants", [])}}))
         radius.restart()
         return True, None
     except Exception as exc:  # noqa: BLE001
@@ -283,6 +301,15 @@ def current_config_version() -> str | None:
         return json.loads((STATE / "config.json").read_text())["version"]
     except (OSError, ValueError, KeyError):
         return None
+
+
+def applied_config_versions() -> dict[str, int]:
+    """Per tenant, the config_version of the configuration FreeRADIUS is running ({} if applied by an older agent)."""
+    try:
+        got = json.loads((STATE / "config.json").read_text()).get("config_versions")
+        return {str(k): v for k, v in got.items() if isinstance(v, int)} if isinstance(got, dict) else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
 
 
 def served_tenants() -> list[str] | None:
@@ -314,11 +341,14 @@ def transform(kind: str, item: dict) -> dict:
                 "user": _v(rec, "User-Name"), "serial": _v(rec, "EasyEAP-Serial", "TLS-Client-Cert-Serial"), "issuer": _v(rec, "TLS-Client-Cert-Issuer"),
                 "mac": _v(rec, "Calling-Station-Id"), "called": _v(rec, "Called-Station-Id"), "nas_ip": _v(rec, "NAS-IP-Address", "Packet-Src-IP-Address"),
                 "src_ip": _v(rec, "EasyEAP-Source", "Packet-Src-IP-Address"),
-                "vlan": _v(rec, "EasyEAP-Vlan"), "rule": _v(rec, "EasyEAP-Rule"), "reason": _v(rec, "EasyEAP-Reason"), "message": _v(rec, "Module-Failure-Message")}
+                "vlan": _v(rec, "EasyEAP-Vlan"), "rule": _v(rec, "EasyEAP-Rule"), "reason": _v(rec, "EasyEAP-Reason"), "message": _v(rec, "Module-Failure-Message"),
+                "network": _v(rec, "EasyEAP-Network"), "port_id": _v(rec, "NAS-Port-Id"), "port_type": _v(rec, "NAS-Port-Type"),
+                "monitor": _v(rec, "EasyEAP-Monitor")}
     return {"ts": item.get("ts"), "tenant": _v(rec, "EasyEAP-Tenant"), "status": _v(rec, "Acct-Status-Type"), "session_id": _v(rec, "Acct-Session-Id"),
             "nas_ip": _v(rec, "NAS-IP-Address", "Packet-Src-IP-Address"), "src_ip": _v(rec, "EasyEAP-Source", "Packet-Src-IP-Address"),
             "user": _v(rec, "User-Name"), "mac": _v(rec, "Calling-Station-Id"), "called": _v(rec, "Called-Station-Id"), "framed_ip": _v(rec, "Framed-IP-Address"), "vlan": _v(rec, "Tunnel-Private-Group-Id"),
-            "in_octets": _v(rec, "Acct-Input-Octets"), "out_octets": _v(rec, "Acct-Output-Octets"), "cause": _v(rec, "Acct-Terminate-Cause")}
+            "in_octets": _v(rec, "Acct-Input-Octets"), "out_octets": _v(rec, "Acct-Output-Octets"), "cause": _v(rec, "Acct-Terminate-Cause"),
+            "network": _v(rec, "EasyEAP-Network"), "port_id": _v(rec, "NAS-Port-Id")}
 
 
 def ship_events() -> int:
@@ -409,8 +439,10 @@ def main() -> None:
     while not _stop.is_set():
         try:
             desired = api("GET", "/api/agent/config")
-            # served_tenants() is None once after upgrading from an agent that didn't record them: re-apply to record them.
-            if desired.get("version") != current_config_version() or not (LIVE / "radiusd.conf").exists() or served_tenants() is None:
+            # served_tenants() is None, or the per-tenant change counters are missing, once after upgrading from an agent
+            # that didn't record them: re-apply to record them.
+            if (desired.get("version") != current_config_version() or not (LIVE / "radiusd.conf").exists() or served_tenants() is None
+                    or (desired.get("tenants") and not applied_config_versions())):
                 if desired.get("tenants"):
                     ok, err = apply_config(radius, desired)
                     config_error = err
@@ -428,7 +460,8 @@ def main() -> None:
             send_coa(desired)
             api("POST", "/api/agent/status", {"agent_id": AGENT_ID, "config_version": current_config_version() or "", "config_ok": config_error is None,
                                               "config_error": config_error, "snapshot_versions": applied_versions(conn), "radius_running": radius.running,
-                                              "detail": {"tenants": len((desired or {}).get("tenants", [])), "tenant_ids": served_tenants()}})
+                                              "detail": {"tenants": len((desired or {}).get("tenants", [])), "tenant_ids": served_tenants(),
+                                                         "config_versions": applied_config_versions()}})
             last_ok = time.time()
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
             if time.time() - last_ok > 60:

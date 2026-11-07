@@ -52,16 +52,24 @@ def _net(s: Session, tenant_id) -> tuple[str, str, bool]:
     return (rs.ssid if rs else "", rs.server_hostname if rs else "", rs.wpa3 if rs else False)
 
 
+def _wired(s: Session, tenant_id) -> bool:
+    """Whether enrollment packages include wired 802.1X settings (RADIUS settings → wired)."""
+    rs = s.get(m.RadiusSettings, tenant_id)
+    return bool(rs and rs.wired_enabled)
+
+
 @router.get("/{token}")
 def info(token: str, request: Request, s: Session = Depends(db)) -> dict:
     e, tenant, ident = _load(token, request, s)
     ssid, server, wpa3 = _net(s, tenant.id)
+    wired = _wired(s, tenant.id)
     if e.status != "pending":
         s.commit()
         return {"status": e.status, "tenant": tenant.name}
     return {"status": e.status, "tenant": tenant.name, "user": {"display_name": ident.display_name, "upn": ident.upn or ident.username},
             "device_name": e.device_name, "platform": e.platform, "method": e.method, "expires_at": e.expires_at.isoformat(),
-            "network": {"ssid": ssid, "server_name": server, "wpa3": wpa3}, "instructions": profiles.instructions(e.platform, ssid, server)}
+            "network": {"ssid": ssid, "server_name": server, "wpa3": wpa3, "wired": wired},
+            "instructions": profiles.instructions(e.platform, ssid, server, wired)}
 
 
 class CsrIn(BaseModel):
@@ -81,6 +89,7 @@ def submit_csr(token: str, body: CsrIn, request: Request, s: Session = Depends(d
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     issuing, root = pki.chain_pem(s, tenant.id)
     ssid, server, wpa3 = _net(s, tenant.id)
+    wired = _wired(s, tenant.id)
     org = tenant.name
     audit.record(s, audit.Actor("enrollee", ident.username, str(ident.id), client_ip(request)), "enrollment.completed", tenant_id=tenant.id,
                  target_type="certificate", target_id=cert.id, target_label=f"{cert.common_name} ({cert.serial})",
@@ -88,16 +97,20 @@ def submit_csr(token: str, body: CsrIn, request: Request, s: Session = Depends(d
     identity_name = ident.upn or ident.username
     return {
         "certificate_pem": cert.certificate_pem, "issuing_ca_pem": issuing, "root_ca_pem": root, "serial": cert.serial,
-        "not_after": cert.not_after.isoformat(), "network": {"ssid": ssid, "server_name": server, "wpa3": wpa3},
+        "not_after": cert.not_after.isoformat(), "network": {"ssid": ssid, "server_name": server, "wpa3": wpa3, "wired": wired},
         "profiles": {
             "windows_xml": profiles.windows_wlan_xml(ssid, server, root or issuing, wpa3) if ssid else None,
             "mobileconfig_template": profiles.apple_mobileconfig(ssid=ssid, server_name=server, root_pem=root or issuing, issuing_pem=issuing, org=org,
-                                                                 tenant_slug=tenant.slug, identity_label=identity_name, wpa3=wpa3).decode() if ssid else None,
+                                                                 tenant_slug=tenant.slug, identity_label=identity_name, wpa3=wpa3,
+                                                                 wired=wired and e.platform == "macos").decode() if ssid else None,
             "mobileconfig_marker": profiles.PKCS12_MARKER,
             "networkmanager": profiles.networkmanager(ssid, server, identity_name, wpa3) if ssid else None,
             "wpa_supplicant": profiles.wpa_supplicant(ssid, server, identity_name) if ssid else None,
+            # Wired 802.1X (Linux). Windows wired is set up by IT (RADIUS → Windows wired kit); Macs get it in the profile.
+            "networkmanager_wired": profiles.networkmanager_wired(server, identity_name) if wired else None,
+            "wpa_supplicant_wired": profiles.wpa_supplicant_wired(server, identity_name) if wired else None,
         },
-        "identity": identity_name, "instructions": profiles.instructions(e.platform, ssid, server),
+        "identity": identity_name, "instructions": profiles.instructions(e.platform, ssid, server, wired),
     }
 
 
@@ -148,7 +161,7 @@ def download_package(token: str, request: Request, s: Session = Depends(db), for
         ssid, server, wpa3 = _net(s, tenant.id)
         profile = profiles.apple_mobileconfig(ssid=ssid or tenant.name, server_name=server, root_pem=root or issuing, issuing_pem=issuing,
                                               org=tenant.name, tenant_slug=tenant.slug, identity_label=ident.upn or ident.username, wpa3=wpa3,
-                                              pkcs12_b64=base64.b64encode(data).decode())
+                                              pkcs12_b64=base64.b64encode(data).decode(), wired=_wired(s, tenant.id) and e.platform == "macos")
         return Response(profile, media_type="application/x-apple-aspen-config",
                         headers={"Content-Disposition": f'attachment; filename="{tenant.slug}-wifi.mobileconfig"', "Cache-Control": "no-store"})
     return Response(data, media_type="application/x-pkcs12", headers={"Content-Disposition": f'attachment; filename="{tenant.slug}-wifi.p12"', "Cache-Control": "no-store"})

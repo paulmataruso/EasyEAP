@@ -1,13 +1,13 @@
 // Authentication log: every RADIUS decision for the tenant with the reason in plain language. Filters by result,
-// reason, text and time window; pages backwards with the API's before_id cursor. Honours ?reason=, ?result= and
-// ?event= (opens that attempt's detail sheet), then clears them.
+// reason, network (Wi-Fi or wired), text and time window; pages backwards with the API's before_id cursor. Honours
+// ?reason=, ?result=, ?network= and ?event= (opens that attempt's detail sheet), then clears them.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { useQueries, useQueryClient } from '@tanstack/react-query'
 import { Tabs } from 'radix-ui'
 import { RefreshCw, ScrollText, Search, X } from 'lucide-react'
 import { api } from '../api/client'
-import { eventsKey, eventsUrl, useControllers, usePolicyLite, type AuthEvent, type EventFilters, type EventsResponse } from '../api/events'
+import { eventsKey, eventsUrl, useControllers, usePolicyLite, type AuthEvent, type EventFilters, type EventsResponse, type Network } from '../api/events'
 import { qk } from '../api/keys'
 import { useTenant } from '../api/tenant'
 import { fmtDateTime, plural, relative } from '../lib/format'
@@ -31,7 +31,7 @@ function AttemptsView({ initial, initialEvent }: { initial: Partial<EventFilters
   const { tid, can } = useTenant()
   const qc = useQueryClient()
   const now = useNow()
-  const [filters, setFilters] = useState<EventFilters>({ result: initial.result ?? (initial.reason ? 'reject' : ''), reason: initial.reason ?? '', q: '', hours: 24 })
+  const [filters, setFilters] = useState<EventFilters>({ result: initial.result ?? (initial.reason ? 'reject' : ''), reason: initial.reason ?? '', q: '', hours: 24, network: initial.network ?? '' })
   const [text, setText] = useState('')
   const [openId, setOpenId] = useState<string | null>(initialEvent)
   const [sheetOpen, setSheetOpen] = useState(!!initialEvent)
@@ -65,7 +65,7 @@ function AttemptsView({ initial, initialEvent }: { initial: Partial<EventFilters
   const next = last?.data?.next_before_id ?? null
   const firstData = first?.data
   const reasons = useMemo(() => firstData?.reasons ?? [], [firstData])
-  const filtered = !!(filters.result || filters.reason || filters.q)
+  const filtered = !!(filters.result || filters.reason || filters.q || filters.network)
   const seed = items.find((e) => e.id === openId)
 
   const reasonOptions = useMemo(() => {
@@ -99,14 +99,20 @@ function AttemptsView({ initial, initialEvent }: { initial: Partial<EventFilters
           onChange={(v) => update({ reason: v === 'all' ? '' : v, result: v === 'all' ? filters.result : 'reject' })}
           options={reasonOptions}
         />
+        <Seg<'all' | Network>
+          label="Network"
+          value={filters.network || 'all'}
+          onChange={(v) => update({ network: v === 'all' ? '' : v })}
+          options={[{ value: 'all', label: 'All' }, { value: 'wireless', label: 'Wi-Fi' }, { value: 'wired', label: 'Wired' }]}
+        />
         <ESelect label="Time window" className="min-w-[160px]" value={String(filters.hours)} onChange={(v) => update({ hours: Number(v) })} options={RANGES} />
         <div className="relative min-w-[220px] flex-1 sm:max-w-[340px]">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 ee-ink-3" aria-hidden />
           <input
             className="ee-input pl-8 pr-8"
             type="search"
-            aria-label="Search by user, MAC address, certificate serial or NAS address"
-            placeholder="User, MAC, serial or NAS address"
+            aria-label="Search by user, MAC address, certificate serial, NAS address or switch port"
+            placeholder="User, MAC, serial, NAS or port"
             value={text}
             onChange={(e) => setText(e.target.value)}
           />
@@ -116,7 +122,7 @@ function AttemptsView({ initial, initialEvent }: { initial: Partial<EventFilters
             </button>
           )}
         </div>
-        {filtered && <Btn variant="ghost" size="sm" onClick={() => { setText(''); update({ result: '', reason: '', q: '' }) }}>Clear filters</Btn>}
+        {filtered && <Btn variant="ghost" size="sm" onClick={() => { setText(''); update({ result: '', reason: '', q: '', network: '' }) }}>Clear filters</Btn>}
       </div>
 
       <Panel className="p-5">
@@ -132,7 +138,7 @@ function AttemptsView({ initial, initialEvent }: { initial: Partial<EventFilters
           : first?.error ? <ErrorState error={first.error} onRetry={() => first.refetch()} title="The authentication log couldn’t be loaded" />
           : items.length === 0 ? (
             <Empty icon={<ScrollText aria-hidden />} title={filtered ? 'No attempts match these filters' : `No authentication attempts in the ${rangeText(filters.hours)}`}
-              action={filtered ? <Btn size="sm" onClick={() => { setText(''); update({ result: '', reason: '', q: '' }) }}>Clear filters</Btn> : filters.hours < 2160 ? <Btn size="sm" onClick={() => update({ hours: 2160 })}>Show the last 90 days</Btn> : undefined}>
+              action={filtered ? <Btn size="sm" onClick={() => { setText(''); update({ result: '', reason: '', q: '', network: '' }) }}>Clear filters</Btn> : filters.hours < 2160 ? <Btn size="sm" onClick={() => update({ hours: 2160 })}>Show the last 90 days</Btn> : undefined}>
               {filtered ? `Nothing in the ${rangeText(filters.hours)} matches. Try a longer time window or fewer filters.` : 'RADIUS hasn’t reported any attempts for this tenant in this window.'}
             </Empty>
           ) : (
@@ -178,23 +184,26 @@ export default function Events() {
   // cleared from the URL. Each new intent remounts the attempts view with those filters.
   const readIntent = (p: URLSearchParams, n: number) => {
     const result = p.get('result')
+    const network = p.get('network')
     return {
       n,
       reason: p.get('reason') ?? undefined,
       result: (result === 'accept' || result === 'reject' ? result : undefined) as EventFilters['result'] | undefined,
+      network: (network === 'wireless' || network === 'wired' ? network : undefined) as Network | undefined,
       event: p.get('event'),
     }
   }
   const [intent, setIntent] = useState(() => readIntent(params, 0))
   const [tab, setTab] = useState('attempts')
   useEffect(() => {
-    if (params.has('reason') || params.has('result') || params.has('event')) {
+    if (params.has('reason') || params.has('result') || params.has('event') || params.has('network')) {
       setIntent((cur) => (cur.n === 0 && cur.reason === (params.get('reason') ?? undefined) && cur.event === params.get('event') && cur.result === (params.get('result') ?? undefined)
+        && cur.network === (params.get('network') ?? undefined)
         ? cur
         : readIntent(params, cur.n + 1)))
       setTab('attempts')
       const p = new URLSearchParams(params)
-      p.delete('reason'); p.delete('result'); p.delete('event')
+      p.delete('reason'); p.delete('result'); p.delete('event'); p.delete('network')
       setParams(p, { replace: true })
     }
   }, [params, setParams])
@@ -208,7 +217,7 @@ export default function Events() {
           <Tabs.Trigger value="sessions" className={tabCls}>Sessions</Tabs.Trigger>
         </Tabs.List>
         <Tabs.Content value="attempts" forceMount hidden={tab !== 'attempts'} className="outline-none">
-          <AttemptsView key={intent.n} initial={{ reason: intent.reason, result: intent.result }} initialEvent={intent.event} />
+          <AttemptsView key={intent.n} initial={{ reason: intent.reason, result: intent.result, network: intent.network }} initialEvent={intent.event} />
         </Tabs.Content>
         <Tabs.Content value="sessions" className="outline-none">
           <SessionsView />

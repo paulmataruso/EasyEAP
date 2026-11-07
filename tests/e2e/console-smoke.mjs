@@ -74,6 +74,83 @@ if (ids.items?.[0]) {
   ledger ? ok('user page shows the decision ledger') : bad('user page: decision ledger missing')
 }
 
+// Wired 802.1X through the real UI: the Add switch wizard, the switch panel, Enforce (the change appears only once
+// RADIUS runs it), the log's Network filter, VLANs on switch ports and the wired enrollment setting.
+{
+  const before = problems.length
+  const shot = (n) => (shots ? page.screenshot({ path: join(shots, `${n}.png`), fullPage: true }) : null)
+  const step = async (name, fn) => {
+    try { (await fn()) === false ? bad(name) : ok(name) } catch (e) { bad(`${name}: ${String(e.message ?? e).split('\n')[0].slice(0, 200)}`) }
+  }
+  const n = Math.floor(Math.random() * 200) + 20
+  const name = `Smoke switch ${n}`
+  await page.goto(`${base}/#/t/${tenant.id}/radius`)
+  await page.waitForSelector('h1')
+  await step('RADIUS: “Controllers and switches” with an Add menu', async () => {
+    await page.getByRole('heading', { name: 'Controllers and switches' }).waitFor({ timeout: 10000 })
+    await page.getByRole('button', { name: 'Add', exact: true }).first().click()
+    await page.getByRole('menuitem', { name: /Switch \(wired 802\.1X\)/ }).click()
+  })
+  const dlg = page.getByRole('dialog')
+  await step('Add switch: the switch, then its port plan', async () => {
+    await dlg.getByLabel('Name', { exact: true }).fill(name)
+    await dlg.getByLabel('Source address or CIDR').fill(`10.250.${n}.10`)
+    await shot('wired-1-switch')
+    await dlg.getByRole('button', { name: /^Next/ }).click()
+    await dlg.getByLabel('Access ports').fill('Gi1/0/1-48')
+    await dlg.getByLabel(/Ports to leave alone/).fill('Gi1/0/48')
+    await shot('wired-2-ports')
+    await dlg.getByRole('button', { name: /Add and generate secret/ }).click()
+    await dlg.locator('[aria-label="Switch configuration"]').waitFor({ timeout: 15000 })
+  })
+  await step('Add switch: the secret once, preflight, safe paste, the configuration without the left-alone uplink, the first-request wait', async () => {
+    await dlg.getByText('interface range GigabitEthernet1/0/1 - 47').first().waitFor({ timeout: 15000 })
+    const text = await dlg.innerText()
+    await shot('wired-3-configure')
+    return /reload in 15/.test(text) && /show running-config/.test(text) && (await dlg.locator('[aria-label="First request"]').count()) === 1
+  })
+  await step('Add switch: Done only after the secret is acknowledged', async () => {
+    const done = dlg.getByRole('button', { name: 'Done' })
+    if (await done.isEnabled()) return false
+    await dlg.getByLabel(/I’ve saved the shared secret/).check()
+    await done.click()
+    await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+  })
+  await step('switch panel: monitor mode, readiness, Enforce…', async () => {
+    await page.getByRole('heading', { name: `Wired 802.1X on ${name}` }).waitFor({ timeout: 10000 })
+    await page.getByText('Monitor mode').first().waitFor({ timeout: 5000 })
+    await shot('wired-4-panel')
+    await page.getByRole('button', { name: /Enforce…/ }).click()
+    await dlg.getByLabel(/I’ve checked which devices would lose access/).check()
+    await shot('wired-5-enforce')
+    await dlg.getByRole('button', { name: /Enforce and show the change/ }).click()
+  })
+  await step('Enforce: the closed-mode change appears once RADIUS sends VLANs', async () => {
+    await dlg.getByText(/access-session closed/).first().waitFor({ timeout: 60000 })
+    const t = await dlg.innerText()
+    await shot('wired-6-enforced')
+    await dlg.getByRole('button', { name: 'Done' }).click()
+    return /RADIUS now sends VLANs/.test(t)
+  })
+  await step('authentication log: Network filter, wired attempts with their switch port', async () => {
+    await page.goto(`${base}/#/t/${tenant.id}/events?network=wired`)
+    await page.waitForSelector('h1')
+    await page.waitForLoadState('networkidle').catch(() => {})
+    await page.getByText(/Wired · GigabitEthernet1\/0\/5/).first().waitFor({ timeout: 10000 })
+    await shot('wired-7-log')
+  })
+  await step('access policy: what switch ports get for each VLAN', async () => {
+    await page.goto(`${base}/#/t/${tenant.id}/policy`)
+    await page.getByText('On switch ports').first().waitFor({ timeout: 10000 })
+    await shot('wired-8-policy')
+  })
+  await step('RADIUS settings: wired settings in enrollment packages', async () => {
+    await page.goto(`${base}/#/t/${tenant.id}/radius`)
+    await page.getByText('Wired in packages').first().waitFor({ timeout: 10000 })
+  })
+  if (problems.length > before) bad(`wired walkthrough: ${problems.slice(before).join('; ').slice(0, 400)}`)
+}
+
 // Command palette opens and finds a user.
 await page.goto(`${base}/#/t/${tenant.id}/dashboard`)
 await page.waitForSelector('h1')

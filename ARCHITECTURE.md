@@ -104,7 +104,7 @@ One-time enrollment links carry a random 256-bit token (stored hashed), bound to
 ```mermaid
 sequenceDiagram
   participant D as Device
-  participant N as Controller (NAS)
+  participant N as Controller or switch (NAS)
   participant R as FreeRADIUS (tenant virtual server)
   participant S as Local authz snapshot (SQLite)
   participant A as radius-agent
@@ -127,6 +127,9 @@ sequenceDiagram
 - **Freshness:** directory sync every 15 min (configurable) and on demand; certificate, rule and revocation changes republish immediately. The agent pulls every 15 seconds (and on SIGHUP), so a change reaches RADIUS within about 15 seconds. Snapshot age is shown on the dashboard and enforced by RADIUS.
 - **Revocation latency, honestly:** new authentications are rejected within seconds of revocation (snapshot + CRL). A device **already connected** keeps its session until it re-authenticates: controllers re-authenticate on `Session-Timeout` (default 8h, tenant-configurable) and may skip full EAP on roaming (PMK caching / OKC / 802.11r). For controllers with CoA enabled, EasyEAP sends a Disconnect-Request immediately to end the session (UDP 3799; Catalyst 9800 defaults to 1700). TLS session resumption is disabled by default so a resumed session cannot bypass the snapshot check.
 - **Blast-RADIUS (CVE-2024-3596):** `require_message_authenticator = yes` and `limit_proxy_state = yes` on every client. RADIUS/UDP must not cross untrusted networks; use a site-to-site VPN, or RadSec where the controller supports it (planned).
+- **Wired 802.1X** ([plan and critique](docs/plans/wired-8021x.md)). Each RADIUS client is registered for Wi-Fi, wired or both (`radius_clients.networks`). FreeRADIUS decides which network a request is, in this order: a `Called-Station-Id` of the form `MAC:` with an empty SSID (hostapd's wired form) → wired; `NAS-Port-Type` Ethernet → wired, Wireless-802.11 → Wi-Fi; the client's only registered network; an SSID in `Called-Station-Id` → Wi-Fi, otherwise wired. A request for a network the client isn't registered for is rejected (`network_not_enabled`) before EAP; `Service-Type = Call-Check` (MAB) is rejected as `mab_unsupported`. Nested registrations (a switch inside a controller's range) resolve to the longest prefix, in FreeRADIUS and in EasyEAP's event attribution and CoA.
+- **VLANs on switch ports.** Each decision has a Wi-Fi VLAN and a wired VLAN (`decisions.wired_vlan_id`), from each VLAN's `wired_mode`: the same VLAN, none (the port keeps its own), or another ID. The snapshot carries both; the agent stores the wired VLAN in `authz_wired`, tied to the snapshot version, so any mix of agent, configuration and API versions falls back to the Wi-Fi VLAN (1.0.1 behaviour) and never to another decision.
+- **Monitor mode.** A switch whose port plan is in monitor mode is rendered with `easyeap_monitor = yes`: FreeRADIUS still decides and logs, but sends no Tunnel or extra attributes, and the event records the VLAN it would have assigned. The switch's own configuration keeps its ports open. Enforce is an explicit, audited step; the console asks for the switch's session list first.
 - **Configuration management:** the agent fetches the desired state (tenants, clients, virtual servers, certificates) from the API, renders FreeRADIUS configuration from templates, validates it with `freeradius -C` in a staging directory, swaps it atomically and restarts FreeRADIUS; on validation failure it keeps the running configuration and reports the error to the API (shown in System Health). Shared secrets reach the agent over the authenticated channel and live only on the RADIUS volume (mode 0600).
 
 ## 6. Access-policy precedence
@@ -159,8 +162,8 @@ LDAPS (636) or LDAP + StartTLS with certificate verification against an uploaded
 | Platform | `tenants`, `admins` (Argon2id hash, TOTP secret ciphertext), `admin_sessions` (token hash), `role_grants`, `platform_settings`, `jobs`, `audit_events` (hash-chained: each row stores `sha256(prev_hash ‖ canonical_row)`; UPDATE and DELETE revoked from the application role) |
 | PKI | `certificate_authorities` (metadata + PEM, never private keys), `certificate_templates`, `certificates` |
 | Identity | `directory_configs` (bind secret ciphertext, last sync status and stats), `directory_groups`, `identities`, `identity_groups`, `devices` |
-| Policy | `vlans`, `access_rules`, `access_rule_groups`, `policy_settings`, `decisions` (per certificate, with trace) |
-| RADIUS | `radius_settings` (snapshot version and build time, server key ciphertext), `radius_clients` (secret ciphertext), `auth_events`, `accounting_sessions`, `coa_requests`, `agent_status` |
+| Policy | `vlans` (with what switch ports get), `access_rules`, `access_rule_groups`, `policy_settings`, `decisions` (per certificate, with trace and the wired VLAN) |
+| RADIUS | `radius_settings` (snapshot version and build time, server key ciphertext, wired enrollment on/off), `radius_clients` (secret ciphertext, networks served, the switch's port plan and rollout mode), `auth_events` (network, switch port, monitor), `accounting_sessions`, `coa_requests`, `agent_status` |
 | Enrollment | `enrollments` (token hash, method, status, expiry), `key_escrow` (ciphertext, one-time) |
 
 Migrations: Alembic, run automatically by the api container on start (`alembic upgrade head`) under an advisory lock.

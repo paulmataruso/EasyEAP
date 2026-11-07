@@ -39,6 +39,20 @@ browser makes it up and never sends it to EasyEAP.
 
 A link that has been used, cancelled or has expired says so when opened again and can't be used. Issue a new one.
 
+## Wired 802.1X
+
+The certificate a device enrolls with works on switch ports too. What sets the Ethernet port up for 802.1X:
+
+| Platform | Wired 802.1X |
+|---|---|
+| **macOS** | With **Wired settings in enrollment packages** on (RADIUS settings), the configuration profile also contains an Ethernet payload (`com.apple.globalethernet.managed`) using the same certificate and server name. |
+| **Linux** | With that setting on, the portal's "For IT staff" section adds a wired NetworkManager profile and a wired `wpa_supplicant` file, using the same files in `/etc/easyeap/`. |
+| **Windows 10/11** | Set up by IT, not the portal: **RADIUS → Windows wired kit** has a LAN profile, an install script (run as administrator or SYSTEM, for example from Intune or a startup script) and Group Policy steps. It uses the certificate each user already has, so enroll users for Wi-Fi first. User certificates connect after sign-in, so domain-joined PCs need cached credentials. |
+| **iPhone, iPad, Android** | Not applicable. |
+
+The setting is off by default, so adding a test switch doesn't change what new devices get. Devices enrolled before
+it was turned on don't have the wired settings until they enroll again (or IT installs them).
+
 ## Revoking
 
 Revoke from the certificate or the user page. Revocation is permanent. New connections with that certificate are

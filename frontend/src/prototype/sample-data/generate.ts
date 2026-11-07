@@ -315,4 +315,7 @@ const RAW: Record<FailureCode, string> = {
   snapshot_stale: 'easyeap_authz: snapshot age 91844s exceeds max 86400s',
   tls_handshake: 'eap_tls: ERROR: TLS Alert read:fatal:handshake failure',
   client_timeout: 'eap: ERROR: Client stopped responding mid-handshake (no EAP-Response for 30s)',
+  network_not_enabled: 'easyeap: wired request from a client registered for wireless only',
+  mab_unsupported: 'easyeap: MAC authentication bypass request (Service-Type = Call-Check)',
+  network_unknown: 'easyeap: neither wired nor wireless could be determined from the request',
 }

@@ -10,6 +10,7 @@
 | `frontend/` | React console (`src/app/`), enrollment portal (`src/enroll/`), shared domain code (`src/domain/`), design prototypes (`src/concepts/`, `src/prototype/`, `src/compare/`) |
 | `deploy/` | Compose files, installer, backup and restore, proxy, OpenBao and lab configuration |
 | `tests/e2e/` | End-to-end EAP-TLS test against the full stack |
+| `tests/radius/` | FreeRADIUS integration test: the rendered configuration and agent store, real EAP-TLS, no API |
 | `design/` | Design concepts, critiques, audits and the chosen direction (`design/CONCEPTS.md`); the logo (`design/brand/`) |
 | `docs/` | Controller guides, enrollment, troubleshooting, plans and the README screenshots |
 | `.github/` | CI workflow, Dependabot, issue and pull request templates |
@@ -42,6 +43,7 @@ and test users are described in `deploy/lab/README.md`. Read the domain's CA cer
 | RADIUS config renderer | `docker run --rm -v "$PWD":/src -w /src/backend python:3.13-slim sh -c "pip -q install pytest && python -m pytest tests/test_radius_render.py"` (from the repo root) | — |
 | Frontend unit tests | `cd frontend && pnpm test` | — |
 | Type check and lint | `cd frontend && pnpm typecheck && pnpm lint`; `docker compose exec easyeap-api ruff check --no-cache app tests` | — |
+| RADIUS integration (wired and Wi-Fi detection, monitor mode, version skew) | `tests/radius/run.sh` | Docker; the `v1.0.1` tag |
 | End-to-end EAP-TLS | `tests/e2e/run.sh` | lab profile |
 | Console smoke test (browser) | `node tests/e2e/console-smoke.mjs https://127.0.0.1` | running stack, Playwright Chromium |
 
@@ -49,7 +51,8 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and eve
 
 - the backend's `ruff` lint and unit tests, plus a compile check of the RADIUS agent;
 - the frontend's type check, lint, unit tests and production build;
-- the Compose file validation and the API, RADIUS and proxy image builds.
+- the Compose file validation and the API, RADIUS and proxy image builds;
+- `tests/radius/run.sh`: real FreeRADIUS with the rendered configuration and real EAP-TLS, in seconds.
 
 The integration tests, the end-to-end EAP-TLS test and the browser smoke test need the full stack, so run them
 locally before a release.
@@ -67,7 +70,16 @@ Then it authenticates with real EAP-TLS through FreeRADIUS. It checks:
 - the nested-group VLAN, the staff VLAN, the deny rule and a rogue self-signed client;
 - revocation, and an AD account disabled after issuance;
 - that RADIUS keeps authenticating with the API and worker stopped;
+- wired 802.1X, through two more lab-client containers registered as switches inside the controller's subnet:
+  monitor mode (accepted, no VLAN sent; the would-be VLAN logged), readiness and the pasted session list, the
+  generated configuration (no shared secret in it), Enforce (confirmation required, then the mapped VLAN on ports,
+  Wi-Fi unchanged), "keep the port's VLAN", wrong-network and MAB refusals, the wrong-secret diagnosis, wired
+  enrollment packages and the Windows wired kit;
 - the audit chain.
+
+`E2E_WIRED=0` skips the wired steps (for a build from before wired 802.1X). `E2E_DEPLOY_DIR`, `COMPOSE_PROJECT_NAME`
+and `COMPOSE_FILE` point it at another deployment, for example one installed from a previous release to test an
+upgrade.
 
 The policy engine is implemented twice: `backend/app/policy/engine.py` is authoritative, and
 `frontend/src/domain/policy.ts` serves previews in the prototypes. Both are tested against the same fixtures in

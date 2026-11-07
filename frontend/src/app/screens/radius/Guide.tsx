@@ -13,7 +13,7 @@ import { useTenant } from '../../api/tenant'
 import { CopyButton, ErrorState, Field, LoadingBlock } from '../../ui'
 
 /** Render text with any remaining <placeholder> highlighted. */
-function Marked({ text }: { text: string }) {
+export function Marked({ text }: { text: string }) {
   const parts = text.split(/(<[a-z][a-z0-9-]*>)/g)
   return <>{parts.map((p, i) => (/^<[a-z][a-z0-9-]*>$/.test(p) ? <mark key={i}>{p}</mark> : <Fragment key={i}>{p}</Fragment>))}</>
 }

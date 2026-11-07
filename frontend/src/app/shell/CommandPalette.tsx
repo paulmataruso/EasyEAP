@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNod
 import { Dialog } from 'radix-ui'
 import { useNavigate } from 'react-router'
 import {
-  ArrowLeft, Building, CornerDownLeft, FilePlus, FileX, FlaskConical, KeyRound, LayoutDashboard, ListOrdered, LogOut, RefreshCw, Router,
+  ArrowLeft, Building, CornerDownLeft, EthernetPort, FilePlus, FileX, FlaskConical, KeyRound, LayoutDashboard, ListOrdered, LogOut, RefreshCw, Router,
   ScrollText, Search, ServerCog, ShieldCheck, Users,
 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -51,6 +51,10 @@ export function CommandPalette({ open, onOpenChange, start }: { open: boolean; o
           run: () => pick({ kind: 'pick', title: 'Revoke certificate…', placeholder: 'Find by serial, user or device', kinds: ['certificate'], filter: (s) => s === 'active' || s === 'expiring', onPick: (id) => go(paths.certificates(tid, { revoke: id })) }) },
         { id: 'rotate', label: 'Rotate shared secret for…', icon: <KeyRound aria-hidden />, keywords: 'controller nas radius client', perm: 'radius:secrets',
           run: () => pick({ kind: 'pick', title: 'Rotate shared secret for…', placeholder: 'Find a controller by name, address or site', kinds: ['controller'], onPick: (id) => go(paths.radius(tid, { rotate: id })) }) },
+        { id: 'add-switch', label: 'Add switch (wired 802.1X)', icon: <EthernetPort aria-hidden />, keywords: 'catalyst unifi port dot1x wired ethernet nas', perm: 'radius:write',
+          run: () => go(paths.radius(tid, { add: 'switch' })) },
+        { id: 'add-controller', label: 'Add wireless controller', icon: <Router aria-hidden />, keywords: 'wlc 9800 aireos unifi nas radius client', perm: 'radius:write',
+          run: () => go(paths.radius(tid, { add: true })) },
         { id: 'test', label: 'Test a user against the policy…', icon: <FlaskConical aria-hidden />, keywords: 'why vlan simulate decision', perm: 'policy:read',
           run: () => pick({ kind: 'pick', title: 'Test a user…', placeholder: 'Find a user', kinds: ['user'], onPick: (id) => go(paths.policy(tid, { test: id })) }) },
         { id: 'sync', label: 'Sync directory now', icon: <RefreshCw aria-hidden />, keywords: 'active directory ldap', perm: 'directory:sync',
@@ -64,7 +68,7 @@ export function CommandPalette({ open, onOpenChange, start }: { open: boolean; o
         { id: 'go-certs', label: 'Certificates', hint: 'Go to', icon: <ShieldCheck aria-hidden />, run: () => go(paths.certificates(tid)) },
         { id: 'go-events', label: 'Authentication log', hint: 'Go to', icon: <ScrollText aria-hidden />, keywords: 'radius events rejects', run: () => go(paths.events(tid)) },
         { id: 'go-policy', label: 'Access policy', hint: 'Go to', icon: <ListOrdered aria-hidden />, keywords: 'vlan rules', run: () => go(paths.policy(tid)) },
-        { id: 'go-radius', label: 'RADIUS and controllers', hint: 'Go to', icon: <Router aria-hidden />, run: () => go(paths.radius(tid)) },
+        { id: 'go-radius', label: 'RADIUS, controllers and switches', hint: 'Go to', icon: <Router aria-hidden />, keywords: 'nas wired', run: () => go(paths.radius(tid)) },
         { id: 'go-directory', label: 'Directory', hint: 'Go to', icon: <Building aria-hidden />, keywords: 'active directory ldaps', run: () => go(paths.directory(tid)) },
         { id: 'go-pki', label: 'Certificate authority', hint: 'Go to', icon: <KeyRound aria-hidden />, keywords: 'pki ca crl', run: () => go(paths.pki(tid)) },
       )
@@ -103,7 +107,7 @@ export function CommandPalette({ open, onOpenChange, start }: { open: boolean; o
       .map((c) => ({ key: c.id, label: c.label, sub: c.hint, icon: c.icon, group: c.hint ? 'Go to' : 'Actions', run: c.run }))
     const ents = tid ? search.hits.map((h) => ({
       key: h.key, label: h.label, sub: h.sub, group: h.group,
-      run: () => go(h.kind === 'user' ? paths.user(tid, h.id) : h.kind === 'certificate' ? paths.certificate(tid, h.id) : h.kind === 'controller' ? paths.radius(tid) : paths.policy(tid)),
+      run: () => go(h.kind === 'user' ? paths.user(tid, h.id) : h.kind === 'certificate' ? paths.certificate(tid, h.id) : h.kind === 'controller' ? paths.radius(tid, { client: h.id }) : paths.policy(tid)),
     })) : []
     const actions = cmds.filter((c) => c.group === 'Actions'), gotos = cmds.filter((c) => c.group === 'Go to')
     return [...actions, ...ents, ...gotos]

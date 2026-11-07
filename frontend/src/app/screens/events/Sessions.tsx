@@ -11,6 +11,9 @@ import { paths } from '../../routes'
 import { fmtBytes } from './bytes'
 import { Empty, ErrorState, LoadingBlock, Panel, Seg, VlanTag } from '../../ui'
 
+/** Wi-Fi, or wired with the switch port the session is on. */
+const sessionNetwork = (s: AcctSession) => (s.network === 'wired' ? (s.nas_port_id ? `Wired · ${s.nas_port_id}` : 'Wired') : 'Wi-Fi')
+
 function Times({ s, now }: { s: AcctSession; now: Date }) {
   return (
     <>
@@ -37,7 +40,7 @@ export function SessionsView() {
         {q.data && <p className="ee-small ee-ink-2">{plural(items.length, scope === 'active' ? 'active session' : 'session')}{items.length === 500 && ' (newest 500)'}</p>}
       </div>
       <p className="ee-small ee-ink-3 mb-4 max-w-[75ch]">
-        Sessions come from RADIUS accounting sent by your controllers. A session counts as active when its controller reported it in the last 26 hours and hasn’t sent a Stop. Controllers without accounting enabled don’t appear here.
+        Sessions come from RADIUS accounting sent by your controllers and switches. A session counts as active when its controller or switch reported it in the last 26 hours and hasn’t sent a Stop. Ones without accounting enabled don’t appear here.
       </p>
       <Panel className="p-5">
       {q.isLoading ? <LoadingBlock rows={5} label="Loading sessions" />
@@ -52,7 +55,7 @@ export function SessionsView() {
             <div className="hidden overflow-x-auto md:block">
               <table className="ee-table">
                 <caption className="sr-only">{scope === 'active' ? 'Active sessions' : 'Recent sessions'}</caption>
-                <thead><tr><th>User</th><th>Device MAC</th><th>Controller</th><th>Client IP</th><th>VLAN</th><th>Last report</th><th className="text-right" title="Acct-Input-Octets / Acct-Output-Octets">Device sent / received</th></tr></thead>
+                <thead><tr><th>User</th><th>Device MAC</th><th>Controller / network</th><th>Client IP</th><th>VLAN</th><th>Last report</th><th className="text-right" title="Acct-Input-Octets / Acct-Output-Octets">Device sent / received</th></tr></thead>
                 <tbody>
                   {items.map((s) => {
                     const c = controllerFor(radius.data?.clients, { nas_ip: s.nas_ip })
@@ -60,7 +63,11 @@ export function SessionsView() {
                       <tr key={s.id}>
                         <td className="max-w-[240px] truncate font-medium">{s.username ?? <span className="ee-ink-3 font-normal">Unknown</span>}</td>
                         <td className="ee-mono whitespace-nowrap text-[12.5px] ee-ink-2">{s.calling_station_id ?? '—'}</td>
-                        <td><span className="block">{c?.name ?? s.nas_ip}</span>{c && <span className="ee-mono block text-[12px] ee-ink-3">{s.nas_ip}</span>}</td>
+                        <td>
+                          <span className="block">{c?.name ?? s.nas_ip}</span>
+                          {c && <span className="ee-mono block text-[12px] ee-ink-3">{s.nas_ip}</span>}
+                          {s.network && <span className="block text-[12px] ee-ink-3">{sessionNetwork(s)}</span>}
+                        </td>
                         <td className="ee-mono text-[12.5px]">{s.framed_ip ?? <span className="ee-ink-3">—</span>}</td>
                         <td>{s.vlan_id !== null ? <VlanTag vlanId={s.vlan_id} name={vlan(s.vlan_id)?.name} color={vlan(s.vlan_id)?.color} /> : <span className="ee-ink-3">—</span>}</td>
                         <td className="whitespace-nowrap"><Times s={s} now={now} /></td>
@@ -80,6 +87,7 @@ export function SessionsView() {
                     <p className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[12px] ee-ink-3">
                       {s.calling_station_id && <span className="ee-mono">{s.calling_station_id}</span>}
                       <span>{c?.name ?? s.nas_ip}</span>
+                      {s.network && <span>{sessionNetwork(s)}</span>}
                       {s.framed_ip && <span className="ee-mono">{s.framed_ip}</span>}
                       {s.vlan_id !== null && <span>VLAN {s.vlan_id}</span>}
                     </p>

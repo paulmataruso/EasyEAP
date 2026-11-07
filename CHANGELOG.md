@@ -5,6 +5,46 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Wired 802.1X for Cisco Catalyst and UniFi switches**, with the same device certificates as Wi-Fi
+  ([docs/controllers/cisco-catalyst-switch.md](docs/controllers/cisco-catalyst-switch.md),
+  [plan and critique](docs/plans/wired-8021x.md)).
+  - **Add switch** wizard on the RADIUS screen: the switch and its shared secret, a port plan (access ports, ports to
+    leave alone, server-down and no-802.1X behaviour), then the configuration for that switch's ports with preflight
+    commands, safe-paste steps (`reload in 15`) and a live wait for the first request. UniFi: steps, or "turn on wired
+    for an existing registration".
+  - **Monitor mode first.** A new switch's ports stay open and EasyEAP sends it no VLAN; the log shows the VLAN it
+    would assign. The switch panel shows readiness by port, checks a pasted `show access-session`, and asks for
+    confirmation before **Enforce**, then shows the change to paste only once RADIUS is sending VLANs (the agent now
+    reports which configuration change it runs for each tenant). Back to monitor mode at any time. Switches in monitor mode for 14 days appear in
+    the needs-action queue.
+  - **VLANs on switch ports**: each VLAN gives switch ports the same VLAN, the port's own VLAN, or another VLAN ID.
+    The policy simulator says when ports get something different from Wi-Fi.
+  - **Which network**: each controller or switch is registered for Wi-Fi, wired or both. Requests are counted as
+    wired or Wi-Fi from the port type, the SSID and the registration; a request for a network the client isn't
+    registered for is refused (`network_not_enabled`), and MAC Authentication Bypass attempts are named
+    (`mab_unsupported`).
+  - **Authentication log**: a Network filter, the switch port, and monitor-mode attempts marked as such. Sessions show
+    the port.
+  - **Diagnosis while waiting for a switch**: FreeRADIUS's own log lines for an unregistered source address or a wrong
+    shared secret, shown in the wizard.
+  - **Enrollment**: "Wired settings in enrollment packages" (off by default) adds an Ethernet payload to macOS
+    profiles and wired NetworkManager and `wpa_supplicant` files for Linux. Windows: the **Windows wired kit** (LAN
+    profile, install script, Group Policy steps) for IT.
+  - Nested registrations: a switch can be registered inside a controller's range; the longest prefix wins, as in
+    FreeRADIUS. Events and CoA now match the same way.
+- `tests/radius/run.sh`: the rendered FreeRADIUS configuration and the agent's store on real FreeRADIUS with real
+  EAP-TLS, including every version-skew combination with the 1.0.1 agent and configuration. Runs in CI.
+- `tests/e2e/run.sh` covers wired 802.1X end to end, and can drive another deployment (`E2E_DEPLOY_DIR`).
+
+### Changed
+
+- Upgrading keeps behaviour: existing controllers serve both Wi-Fi and wired (a switch registered as "Other" keeps
+  working), every VLAN is the same VLAN on switch ports, and enrollment packages stay Wi-Fi only.
+- "Wireless controllers" is now "Controllers and switches" on the RADIUS screen; Add offers a wireless controller or
+  a switch.
+
 ## [1.0.1] - 2026-11-06
 
 ### Changed

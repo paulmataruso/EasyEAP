@@ -241,7 +241,9 @@ function HelperInstall({ token, result, c, onResult, onUseBrowser, onGone }: {
 function LinuxAdvanced({ result, c, n }: { result: Extract<FlowResult, { kind: 'browser' }>; c: GuideCtx; n: ReturnType<typeof fileNames> }) {
   const nm = result.csr.profiles.networkmanager
   const wpa = result.csr.profiles.wpa_supplicant
-  if (!nm && !wpa) return null
+  const nmWired = result.csr.profiles.networkmanager_wired ?? null
+  const wpaWired = result.csr.profiles.wpa_supplicant_wired ?? null
+  if (!nm && !wpa && !nmWired && !wpaWired) return null
   const prep = [
     'sudo mkdir -p /etc/easyeap',
     `sudo cp ${n.caPem} /etc/easyeap/ca-chain.pem`,
@@ -251,7 +253,7 @@ function LinuxAdvanced({ result, c, n }: { result: Extract<FlowResult, { kind: '
     'sudo install -m 600 client.key /etc/easyeap/client.key && rm client.key',
   ].join('\n')
   return (
-    <Disclosure summary="For IT staff: NetworkManager or wpa_supplicant">
+    <Disclosure summary={nmWired || wpaWired ? 'For IT staff: NetworkManager or wpa_supplicant (Wi-Fi and wired)' : 'For IT staff: NetworkManager or wpa_supplicant'}>
       <p className="en-body">EasyEAP’s configuration files expect the CA chain, the certificate and an unencrypted private key in <span className="ee-mono">/etc/easyeap/</span>. From the folder with your downloads, run (OpenSSL asks for the certificate password):</p>
       <pre className="ee-code mt-3">{prep}</pre>
       <div className="mt-2"><CopyButton text={prep} what="preparation commands" /></div>
@@ -269,7 +271,27 @@ function LinuxAdvanced({ result, c, n }: { result: Extract<FlowResult, { kind: '
           <div className="mt-2"><CopyButton text={wpa} what="wpa_supplicant block" /></div>
         </>
       )}
-      <p className="en-small mt-3">Both check that the server is <b>{c.serverName}</b>.</p>
+      {(nmWired || wpaWired) && (
+        <>
+          <h3 className="en-h2 mt-6 text-[15px]">Wired network ports (802.1X)</h3>
+          <p className="en-body mt-1">For computers plugged into a network port that asks for 802.1X. They use the same files in <span className="ee-mono">/etc/easyeap/</span>. On a port without 802.1X the NetworkManager connection still comes up.</p>
+          {nmWired && (
+            <>
+              <h3 className="en-h2 mt-4 text-[15px]">NetworkManager (wired)</h3>
+              <pre className="ee-code mt-2">{nmWired}</pre>
+              <div className="mt-2"><CopyButton text={nmWired} what="wired NetworkManager profile" /></div>
+            </>
+          )}
+          {wpaWired && (
+            <>
+              <h3 className="en-h2 mt-4 text-[15px]">wpa_supplicant (wired)</h3>
+              <pre className="ee-code mt-2">{wpaWired}</pre>
+              <div className="mt-2"><CopyButton text={wpaWired} what="wired wpa_supplicant file" /></div>
+            </>
+          )}
+        </>
+      )}
+      <p className="en-small mt-3">{[nm, wpa, nmWired, wpaWired].filter(Boolean).length > 1 ? 'Each one checks' : 'It checks'} that the server is <b>{c.serverName}</b>.</p>
     </Disclosure>
   )
 }

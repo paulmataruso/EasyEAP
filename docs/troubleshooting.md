@@ -17,6 +17,12 @@ once for `snapshot_stale`). This page lists every reason code and what to do abo
 | `snapshot_stale` | RADIUS's copy of the authorization data is older than the tenant's maximum age, so it denies everyone in the tenant (fail closed). | Check that the API and worker are running (System health) and that directory sync succeeds. RADIUS recovers by itself within about 15 seconds of a fresh snapshot. |
 | `tls_handshake` | The device and the server couldn't complete TLS. Usually the device doesn't trust the server certificate. | Install the tenant's Root CA on the device and make sure its Wi-Fi profile names the RADIUS server name (the tenant's RADIUS screen shows it). |
 | `client_timeout` | The device stopped answering midway. This often means it silently rejected the server certificate. | Same as `tls_handshake`. Also check the device's clock. |
+| `network_not_enabled` | The request came from a network (Wi-Fi or wired) the controller or switch isn't registered for. | Edit it on the RADIUS screen and turn that network on, or fix the switch or controller sending it. |
+| `network_unknown` | EasyEAP couldn't tell whether the request was wired or Wi-Fi: no port type, no SSID, and the client serves both. | Send `NAS-Port-Type` from the switch or controller, or register it for one network. |
+| `mab_unsupported` | A switch tried MAC Authentication Bypass. EasyEAP only accepts certificates. | Remove `mab` from the port, or leave devices without 802.1X on ports that aren't configured for it. |
+
+On a switch in **monitor mode**, a reject is logged but the port stays open: the device keeps its access until the
+switch enforces. Accepts in monitor mode show the VLAN EasyEAP would assign ("Not sent: monitor mode").
 
 ## Before an attempt reaches the log
 
@@ -27,6 +33,9 @@ Some failures never produce an authentication event:
   `docker compose logs easyeap-radius` for "unknown client" lines. Check firewalls and the VPN for UDP 1812.
 - **Bad shared secret.** FreeRADIUS drops the request because the Message-Authenticator doesn't verify. Rotate the
   secret in EasyEAP and paste the new one into the controller.
+- **The Add switch wizard explains both.** While it waits for a switch's first request, it reads FreeRADIUS's log
+  for requests dropped from an address near the switch's: an unregistered source address (with the address the
+  switch actually uses), or a wrong shared secret.
 - **Tenant not enforceable.** A tenant without a CA, a RADIUS server certificate and at least one controller isn't
   served. The dashboard lists exactly what's missing.
 - **"Requests weren't matched to a controller."** The RADIUS screen shows this when RADIUS answered requests that

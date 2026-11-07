@@ -1,5 +1,5 @@
-"""Platform Wi-Fi profiles for EAP-TLS. Every profile pins the RADIUS server name and the tenant Root CA so devices
-do not trust an impostor access point."""
+"""Platform Wi-Fi and wired 802.1X profiles for EAP-TLS. Every profile pins the RADIUS server name and the tenant Root CA
+so devices do not trust an impostor access point or switch."""
 from __future__ import annotations
 
 import base64
@@ -24,20 +24,9 @@ def _der(pem: str) -> bytes:
     return x509.load_pem_x509_certificate(pem.encode()).public_bytes(Encoding.DER)
 
 
-def windows_wlan_xml(ssid: str, server_name: str, root_pem: str, wpa3: bool = False) -> str:
-    auth = "WPA3ENT" if wpa3 else "WPA2"
-    hex_ssid = ssid.encode().hex().upper()
-    return f"""<?xml version="1.0"?>
-<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
-  <name>{escape(ssid)}</name>
-  <SSIDConfig><SSID><hex>{hex_ssid}</hex><name>{escape(ssid)}</name></SSID></SSIDConfig>
-  <connectionType>ESS</connectionType>
-  <connectionMode>auto</connectionMode>
-  <MSM><security>
-    <authEncryption><authentication>{auth}</authentication><encryption>AES</encryption><useOneX>true</useOneX></authEncryption>
-    <OneX xmlns="http://www.microsoft.com/networking/OneX/v1">
-      <authMode>user</authMode>
-      <EAPConfig><EapHostConfig xmlns="http://www.microsoft.com/provisioning/EapHostConfig">
+def _eap_config(server_name: str, root_pem: str) -> str:
+    """The EAP-TLS method configuration shared by the Wi-Fi (WLAN) and wired (LAN) profiles."""
+    return f"""      <EAPConfig><EapHostConfig xmlns="http://www.microsoft.com/provisioning/EapHostConfig">
         <EapMethod><Type xmlns="http://www.microsoft.com/provisioning/EapCommon">13</Type><VendorId xmlns="http://www.microsoft.com/provisioning/EapCommon">0</VendorId><VendorType xmlns="http://www.microsoft.com/provisioning/EapCommon">0</VendorType><AuthorId xmlns="http://www.microsoft.com/provisioning/EapCommon">0</AuthorId></EapMethod>
         <Config xmlns="http://www.microsoft.com/provisioning/EapHostConfig">
           <Eap xmlns="http://www.microsoft.com/provisioning/BaseEapConnectionPropertiesV1"><Type>13</Type>
@@ -53,10 +42,98 @@ def windows_wlan_xml(ssid: str, server_name: str, root_pem: str, wpa3: bool = Fa
           </Eap>
         </Config>
       </EapHostConfig></EAPConfig>
-    </OneX>
+"""
+
+
+def windows_wlan_xml(ssid: str, server_name: str, root_pem: str, wpa3: bool = False) -> str:
+    auth = "WPA3ENT" if wpa3 else "WPA2"
+    hex_ssid = ssid.encode().hex().upper()
+    return f"""<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+  <name>{escape(ssid)}</name>
+  <SSIDConfig><SSID><hex>{hex_ssid}</hex><name>{escape(ssid)}</name></SSID></SSIDConfig>
+  <connectionType>ESS</connectionType>
+  <connectionMode>auto</connectionMode>
+  <MSM><security>
+    <authEncryption><authentication>{auth}</authentication><encryption>AES</encryption><useOneX>true</useOneX></authEncryption>
+    <OneX xmlns="http://www.microsoft.com/networking/OneX/v1">
+      <authMode>user</authMode>
+{_eap_config(server_name, root_pem)}    </OneX>
   </security></MSM>
 </WLANProfile>
 """
+
+
+def windows_lan_xml(server_name: str, root_pem: str) -> str:
+    """Windows wired (LAN) profile: 802.1X with EAP-TLS and the user's certificate. OneXEnforced=false: on a port
+    without 802.1X the computer still connects normally."""
+    return f"""<?xml version="1.0"?>
+<LANProfile xmlns="http://www.microsoft.com/networking/LAN/profile/v1">
+  <MSM><security>
+    <OneXEnforced>false</OneXEnforced>
+    <OneXEnabled>true</OneXEnabled>
+    <OneX xmlns="http://www.microsoft.com/networking/OneX/v1">
+      <cacheUserData>true</cacheUserData>
+      <authMode>user</authMode>
+{_eap_config(server_name, root_pem)}    </OneX>
+  </security></MSM>
+</LANProfile>
+"""
+
+
+def windows_wired_script(server_name: str, root_pem: str, issuing_pem: str, org: str) -> str:
+    """IT-deployed wired setup for Windows (docs/plans/wired-8021x.md §7): needs administrator rights (the Wired
+    AutoConfig service and `netsh lan`), so it runs from an admin prompt, Intune, an RMM or a startup script as SYSTEM.
+    Uses each user's existing EasyEAP certificate; contains nothing secret."""
+    xml = windows_lan_xml(server_name, root_pem).replace("'", "''")
+    return f"""# EasyEAP wired 802.1X for Windows ({org}). Run as administrator or SYSTEM (Intune, RMM, startup script).
+# Uses the EasyEAP certificate each user already has from Wi-Fi enrollment; this script contains nothing secret.
+# Note: the profile signs in with the user's certificate, so wired 802.1X starts after a user signs in. At the sign-in
+# screen the port has no access, so domain-joined PCs need cached credentials (machine certificates come later).
+#Requires -RunAsAdministrator
+$ErrorActionPreference = 'Stop'
+$Work = Join-Path $env:TEMP ('easyeap-wired-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $Work | Out-Null
+try {{
+  # Wired AutoConfig is off by default on Windows.
+  Set-Service -Name dot3svc -StartupType Automatic
+  Start-Service -Name dot3svc
+@'
+{root_pem.strip()}
+'@ | Set-Content -Path "$Work\\root.pem" -Encoding ASCII
+@'
+{issuing_pem.strip()}
+'@ | Set-Content -Path "$Work\\issuing.pem" -Encoding ASCII
+  Import-Certificate -FilePath "$Work\\root.pem" -CertStoreLocation Cert:\\LocalMachine\\Root | Out-Null
+  Import-Certificate -FilePath "$Work\\issuing.pem" -CertStoreLocation Cert:\\LocalMachine\\CA | Out-Null
+@'
+{xml}
+'@ | Set-Content -Path "$Work\\lan.xml" -Encoding UTF8
+  $Adapters = Get-NetAdapter -Physical | Where-Object {{ $_.MediaType -eq '802.3' }}
+  if (-not $Adapters) {{ Write-Host 'No wired network adapter found; nothing to configure.'; return }}
+  foreach ($A in $Adapters) {{
+    netsh lan add profile filename="$Work\\lan.xml" interface="$($A.Name)" | Out-Null
+    Write-Host "Configured 802.1X on $($A.Name)"
+  }}
+  Write-Host 'Done. Users with an EasyEAP certificate connect on 802.1X ports after signing in.' -ForegroundColor Green
+}} catch {{
+  Write-Host "Setup did not finish: $($_.Exception.Message)" -ForegroundColor Red
+  exit 1
+}} finally {{
+  Remove-Item -Recurse -Force $Work -ErrorAction SilentlyContinue
+}}
+"""
+
+
+WINDOWS_GPO_STEPS = [
+    "Group Policy Management → a GPO linked to the computers → Computer Configuration → Policies → Windows Settings → "
+    "Security Settings → System Services → Wired AutoConfig: Automatic.",
+    "Same GPO → Security Settings → Wired Network (IEEE 802.3) Policies → Create A New Wired Network Policy for Windows Vista and Later Releases.",
+    "Security tab: Enable IEEE 802.1X authentication; method Microsoft: Smart Card or other certificate; Authentication Mode: User authentication; "
+    "Cache user information: on; Enforce use of IEEE 802.1X authentication: off.",
+    "Properties of the method: Verify the server's identity, connect to these servers: the RADIUS server name below; trusted root: the "
+    "tenant Root CA (deploy it under Trusted Root Certification Authorities in the same GPO).",
+]
 
 
 def windows_powershell(api_base: str, token: str, ssid: str, server_name: str, root_pem: str, issuing_pem: str, wpa3: bool = False) -> str:
@@ -132,10 +209,11 @@ Read-Host 'Press Enter to close' | Out-Null
 
 
 def apple_mobileconfig(*, ssid: str, server_name: str, root_pem: str, issuing_pem: str, org: str, tenant_slug: str,
-                       identity_label: str, wpa3: bool = False, pkcs12_b64: str | None = None) -> bytes:
+                       identity_label: str, wpa3: bool = False, pkcs12_b64: str | None = None, wired: bool = False) -> bytes:
     """Unsigned configuration profile. Without `pkcs12_b64` the identity payload carries PKCS12_MARKER for the
-    enrollment page to replace with the PKCS#12 it assembled locally."""
-    root_uuid, iss_uuid, p12_uuid, wifi_uuid = (str(uuid.uuid4()).upper() for _ in range(4))
+    enrollment page to replace with the PKCS#12 it assembled locally. `wired` (Macs only) adds an Ethernet payload
+    with the same identity and trust, so 802.1X switch ports work too."""
+    root_uuid, iss_uuid, p12_uuid, wifi_uuid, eth_uuid = (str(uuid.uuid4()).upper() for _ in range(5))
     ident = f"com.easyeap.{tenant_slug}.wifi"
     p12_data = base64.b64decode(pkcs12_b64) if pkcs12_b64 else PKCS12_MARKER.encode()
     payloads = [
@@ -151,9 +229,16 @@ def apple_mobileconfig(*, ssid: str, server_name: str, root_pem: str, issuing_pe
          "EAPClientConfiguration": {"AcceptEAPTypes": [13], "TLSTrustedServerNames": [server_name],
                                     "PayloadCertificateAnchorUUID": [root_uuid, iss_uuid], "TLSAllowTrustExceptions": False}},
     ]
+    if wired:
+        payloads.append({
+            "PayloadType": "com.apple.globalethernet.managed", "PayloadVersion": 1, "PayloadIdentifier": f"{ident}.ethernet", "PayloadUUID": eth_uuid,
+            "PayloadDisplayName": "Wired 802.1X", "PayloadCertificateUUID": p12_uuid,
+            "EAPClientConfiguration": {"AcceptEAPTypes": [13], "TLSTrustedServerNames": [server_name],
+                                       "PayloadCertificateAnchorUUID": [root_uuid, iss_uuid], "TLSAllowTrustExceptions": False}})
     profile = {"PayloadType": "Configuration", "PayloadVersion": 1, "PayloadIdentifier": ident, "PayloadUUID": str(uuid.uuid4()).upper(),
-               "PayloadDisplayName": f"{org} Wi-Fi ({ssid})", "PayloadOrganization": org,
-               "PayloadDescription": "Installs your Wi-Fi certificate and connects you to the network. Created by EasyEAP.",
+               "PayloadDisplayName": f"{org} Wi-Fi ({ssid})" + (" and wired" if wired else ""), "PayloadOrganization": org,
+               "PayloadDescription": "Installs your network certificate and connects you to " + ("Wi-Fi and wired network ports" if wired else "the network")
+               + ". Created by EasyEAP.",
                "PayloadRemovalDisallowed": False, "PayloadContent": payloads}
     out = plistlib.dumps(profile, fmt=plistlib.FMT_XML)
     if not pkcs12_b64:
@@ -192,6 +277,51 @@ method=auto
 """
 
 
+def networkmanager_wired(server_name: str, identity: str) -> str:
+    """Wired 802.1X for NetworkManager. optional=true: on a port without 802.1X the connection still comes up."""
+    return f"""# Save as /etc/NetworkManager/system-connections/wired-8021x.nmconnection (mode 600), then: nmcli connection reload
+[connection]
+id=Wired 802.1X
+type=ethernet
+autoconnect-priority=10
+
+[ethernet]
+
+[802-1x]
+eap=tls;
+identity={identity}
+ca-cert=/etc/easyeap/ca-chain.pem
+client-cert=/etc/easyeap/client.pem
+private-key=/etc/easyeap/client.key
+private-key-password-flags=4
+domain-suffix-match={server_name}
+optional=true
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+"""
+
+
+def wpa_supplicant_wired(server_name: str, identity: str) -> str:
+    return f"""# Wired 802.1X: wpa_supplicant -D wired -i <interface> -c /etc/wpa_supplicant/wired.conf
+ctrl_interface=/run/wpa_supplicant
+ap_scan=0
+network={{
+    key_mgmt=IEEE8021X
+    eap=TLS
+    eapol_flags=0
+    identity="{identity}"
+    ca_cert="/etc/easyeap/ca-chain.pem"
+    client_cert="/etc/easyeap/client.pem"
+    private_key="/etc/easyeap/client.key"
+    domain_suffix_match="{server_name}"
+}}
+"""
+
+
 def wpa_supplicant(ssid: str, server_name: str, identity: str) -> str:
     return f"""network={{
     ssid="{ssid}"
@@ -206,23 +336,33 @@ def wpa_supplicant(ssid: str, server_name: str, identity: str) -> str:
 """
 
 
-def instructions(platform: str, ssid: str, server_name: str) -> list[str]:
+def instructions(platform: str, ssid: str, server_name: str, wired: bool = False) -> list[str]:
     if platform == "windows":
-        return ["Download the enrollment helper and run it in PowerShell (right-click → Run with PowerShell).",
-                "Approve the prompt to trust your organization's Root CA.",
-                f"Connect to “{ssid}”. No password is needed."]
+        out = ["Download the enrollment helper and run it in PowerShell (right-click → Run with PowerShell).",
+               "Approve the prompt to trust your organization's Root CA.",
+               f"Connect to “{ssid}”. No password is needed."]
+        if wired:
+            out.append("Network ports with 802.1X: your IT team sets those up on this computer (it needs administrator rights). "
+                       "The certificate you get here is the one they use.")
+        return out
     if platform in ("macos", "ios"):
-        return ["Download the profile on this device.",
-                "iPhone/iPad: open Settings → Profile Downloaded → Install. "
-                "Mac: open System Settings → General → Device Management (Privacy & Security → Profiles before macOS 15).",
-                "When asked for the certificate password, enter the one shown on this page.",
-                f"Join “{ssid}”."]
+        out = ["Download the profile on this device.",
+               "iPhone/iPad: open Settings → Profile Downloaded → Install. "
+               "Mac: open System Settings → General → Device Management (Privacy & Security → Profiles before macOS 15).",
+               "When asked for the certificate password, enter the one shown on this page.",
+               f"Join “{ssid}”."]
+        if wired and platform == "macos":
+            out.append("Network ports with 802.1X work too: plug in, and the Mac uses the same certificate.")
+        return out
     if platform == "android":
         return ["Download the certificate file on this device.",
                 "Open Settings → Security → More security settings → Install from device storage → Wi-Fi certificate, and pick the file.",
                 f"Open Wi-Fi → “{ssid}”: EAP method TLS, CA certificate = the one you installed, Domain = {server_name}, "
                 "Identity = your sign-in name (shown on this page).",
                 "Save and connect."]
-    return ["Save the certificate, key and CA chain under /etc/easyeap/ (key mode 600).",
-            "Install the NetworkManager profile or add the wpa_supplicant block.",
-            f"Connect to “{ssid}”. The profile checks that the server name is {server_name}."]
+    out = ["Save the certificate, key and CA chain under /etc/easyeap/ (key mode 600).",
+           "Install the NetworkManager profile or add the wpa_supplicant block.",
+           f"Connect to “{ssid}”. The profile checks that the server name is {server_name}."]
+    if wired:
+        out.append("Network ports with 802.1X: also install the wired NetworkManager profile (or the wired wpa_supplicant file).")
+    return out

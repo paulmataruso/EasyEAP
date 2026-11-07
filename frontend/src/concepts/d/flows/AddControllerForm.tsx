@@ -27,7 +27,7 @@ export function generateSecret(): string {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-const DEFAULT_COA: Record<NasVendor, number> = { 'cisco-9800': 1700, 'cisco-aireos': 3799, unifi: 3799, other: 3799 }
+const DEFAULT_COA: Record<NasVendor, number> = { 'cisco-9800': 1700, 'cisco-aireos': 3799, 'cisco-switch': 1700, unifi: 3799, other: 3799 }
 
 export function AddControllerForm({ onCreated, onCancel }: { onCreated: (name: string, secret: string) => void; onCancel: () => void }) {
   const d = useTenantData()

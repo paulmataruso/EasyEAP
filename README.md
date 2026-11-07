@@ -6,8 +6,8 @@
 
 **Enterprise Wi-Fi authentication, simplified.**
 
-Certificate-based Wi-Fi (EAP-TLS) for MSPs and IT teams. EasyEAP bundles a certificate authority, Active Directory
-groups, dynamic VLANs and FreeRADIUS, and runs them all from one multi-tenant console.
+Certificate-based Wi-Fi and wired 802.1X (EAP-TLS) for MSPs and IT teams. EasyEAP bundles a certificate authority,
+Active Directory groups, dynamic VLANs and FreeRADIUS, and runs them all from one multi-tenant console.
 
 [![Release](https://img.shields.io/github/v/release/paulmataruso/EasyEAP?sort=semver&display_name=tag&style=flat-square&color=E2C477&labelColor=202326)](https://github.com/paulmataruso/EasyEAP/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/paulmataruso/EasyEAP/ci.yml?branch=main&style=flat-square&label=CI&labelColor=202326)](https://github.com/paulmataruso/EasyEAP/actions/workflows/ci.yml)
@@ -153,7 +153,7 @@ authentications and system log can forward to your SIEM over TLS.
 ```mermaid
 flowchart TB
   device["Laptop or phone<br/>with its own certificate"]
-  wlc["Wireless controller<br/>Catalyst 9800 · AireOS · UniFi"]
+  wlc["Wireless controller or switch<br/>Catalyst 9800 · AireOS · UniFi · Catalyst switches"]
   admin["MSP technician<br/>or enrolling user"]
   subgraph host["EasyEAP host"]
     radius["FreeRADIUS + agent<br/>local snapshot, fails closed"]
@@ -174,7 +174,8 @@ flowchart TB
   api -. "LDAPS, read-only" .-> ad
 ```
 
-1. The device presents its certificate to the controller, which relays the EAP-TLS exchange to EasyEAP's FreeRADIUS.
+1. The device presents its certificate to the controller (or the switch, on a wired port), which relays the EAP-TLS
+   exchange to EasyEAP's FreeRADIUS.
 2. FreeRADIUS checks the certificate against the tenant's issuing CA and revocation list. It then looks up the
    certificate in a local snapshot that already holds the account state, groups and policy decision.
 3. RADIUS accepts with the VLAN (`Tunnel-Private-Group-ID`) or rejects. Either way the reason appears in the
@@ -188,7 +189,7 @@ networks, PKI design, enrollment, policy precedence and data model.
 ## Quick start
 
 You need a Linux host with Docker Engine 24+ and Docker Compose v2 (2 vCPU, 4 GB RAM, 20 GB disk), a DNS name for
-the console, and a route from your wireless controllers to the host.
+the console, and a route from your wireless controllers and switches to the host.
 
 ```sh
 git clone https://github.com/paulmataruso/EasyEAP.git /opt/easyeap
@@ -208,17 +209,21 @@ There is no default account. To try EasyEAP without a customer network, run `./i
 AD domain controller and a simulated Wi-Fi client. [DEPLOYMENT.md](DEPLOYMENT.md) covers ports, TLS certificates,
 settings, upgrades, backups and operations.
 
-## Wireless controllers
+## Controllers and switches
 
 EasyEAP works with any controller that supports WPA2/WPA3-Enterprise with an external RADIUS server and VLAN
-assignment from RADIUS attributes. The console's RADIUS screen fills in each guide with the tenant's own address,
-ports, SSID and VLANs.
+assignment from RADIUS attributes, and with switches running 802.1X on their ports. The console's RADIUS screen fills
+in each guide with the tenant's own address, ports, SSID and VLANs.
 
-| Controller | Status | Guide |
+| Controller or switch | Status | Guide |
 |---|---|---|
 | Cisco Catalyst 9800 (IOS-XE 17.x) | Verified on a live controller, CoA on UDP 1700 | [cisco-catalyst-9800.md](docs/controllers/cisco-catalyst-9800.md) |
 | Cisco AireOS WLC 8.x | Guide and CLI snippet, CoA on UDP 3799 | [cisco-aireos.md](docs/controllers/cisco-aireos.md) |
-| UniFi Network | Step-by-step guide | [unifi.md](docs/controllers/unifi.md) |
+| UniFi Network | Step-by-step guide, Wi-Fi and switches | [unifi.md](docs/controllers/unifi.md) |
+| Cisco Catalyst switches (IBNS 2.0, classic IOS) | Wired 802.1X: Add switch wizard, monitor mode, then Enforce. Tested on real FreeRADIUS, not yet on switch hardware | [cisco-catalyst-switch.md](docs/controllers/cisco-catalyst-switch.md) |
+
+Switches start in monitor mode: ports stay open and EasyEAP logs what it would decide, without changing any VLAN,
+until you enforce.
 
 ## Security
 
@@ -248,7 +253,7 @@ issue.
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Requirements, network, install, first run, upgrades, backup and restore, remote syslog, operations |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Services, multi-tenancy, PKI, enrollment, the RADIUS flow, policy precedence, the data model |
 | [SECURITY.md](SECURITY.md) | Threat model, key custody, controls, the RBAC matrix, what revocation means in practice |
-| [docs/controllers/](docs/controllers/README.md) | Cisco Catalyst 9800, Cisco AireOS and UniFi configuration |
+| [docs/controllers/](docs/controllers/README.md) | Cisco Catalyst 9800, Cisco AireOS, UniFi and Catalyst switch configuration |
 | [docs/enrollment.md](docs/enrollment.md) | Issuing certificates and what users do on each platform |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Every failure reason and status, and how to fix it |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Repository layout, the development stack, tests, conventions |
@@ -264,6 +269,8 @@ and authenticated an enrolled iPhone through a live Cisco Catalyst 9800. Known l
 - No SCEP or MDM enrollment (Intune, Jamf) yet. Apple devices enroll with a configuration profile from the portal.
 - No RadSec yet. Route RADIUS between sites over a VPN.
 - One RADIUS node per deployment.
+- Wired 802.1X is tested on real FreeRADIUS with real EAP-TLS, but not yet on Catalyst or UniFi switch hardware. No
+  MAC Authentication Bypass: devices without 802.1X stay on ports EasyEAP doesn't configure.
 - The root CA's revocation list must be re-signed with the offline root key once a year. The dashboard warns 60 days
   ahead, but the console can't do the re-signing yet.
 

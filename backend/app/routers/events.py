@@ -22,12 +22,14 @@ def event_out(e: m.AuthEvent) -> dict:
             "username": e.username, "identity_id": str(e.identity_id) if e.identity_id else None, "device_id": str(e.device_id) if e.device_id else None,
             "cert_serial": e.cert_serial, "cert_issuer": e.cert_issuer, "calling_station_id": e.calling_station_id, "called_station_id": e.called_station_id,
             "ssid": e.ssid, "nas_ip": e.nas_ip, "nas_client_id": str(e.nas_client_id) if e.nas_client_id else None, "vlan_id": e.vlan_id,
+            "network": e.network, "nas_port_id": e.nas_port_id, "monitor": e.monitor,
             "rule_id": str(e.rule_id) if e.rule_id else None, "raw_message": e.raw_message}
 
 
 @router.get("/tenants/{tenant_id}/events")
 def list_events(ctx: TenantCtx = Depends(require("events:read")), result: str = "", reason: str = "", q: str = "", hours: int = Query(24, ge=1, le=24 * 90),
                 identity_id: uuid.UUID | None = None, nas_client_id: uuid.UUID | None = None, before_id: int | None = None,
+                network: str = Query("", pattern="^(|wireless|wired)$"),
                 page_size: int = Query(100, ge=1, le=500)) -> dict:
     s = ctx.session
     stmt = select(m.AuthEvent).where(m.AuthEvent.tenant_id == ctx.id, m.AuthEvent.at >= datetime.now(UTC) - timedelta(hours=hours))
@@ -39,10 +41,12 @@ def list_events(ctx: TenantCtx = Depends(require("events:read")), result: str = 
         stmt = stmt.where(m.AuthEvent.identity_id == identity_id)
     if nas_client_id:
         stmt = stmt.where(m.AuthEvent.nas_client_id == nas_client_id)
+    if network:
+        stmt = stmt.where(m.AuthEvent.network == network)
     if q:
         like = f"%{q.strip()}%"
         stmt = stmt.where(or_(m.AuthEvent.username.ilike(like), m.AuthEvent.calling_station_id.ilike(like), m.AuthEvent.cert_serial.ilike(like.replace(":", "")),
-                              m.AuthEvent.nas_ip.ilike(like)))
+                              m.AuthEvent.nas_ip.ilike(like), m.AuthEvent.nas_port_id.ilike(like)))
     if before_id:
         stmt = stmt.where(m.AuthEvent.id < before_id)
     rows = s.scalars(stmt.order_by(m.AuthEvent.id.desc()).limit(page_size)).all()
@@ -67,7 +71,7 @@ def get_event(event_id: int, ctx: TenantCtx = Depends(require("events:read"))) -
         # of this attempt: label it as such in the console.
         out["current_decision"] = {"outcome": dec.outcome, "reason_code": dec.reason_code,
                                    "deciding_rule_id": str(dec.deciding_rule_id) if dec.deciding_rule_id else None,
-                                   "vlan_id": dec.vlan_id, "attributes": dec.attributes or [], "steps": dec.steps or [],
+                                   "vlan_id": dec.vlan_id, "wired_vlan_id": dec.wired_vlan_id, "attributes": dec.attributes or [], "steps": dec.steps or [],
                                    "computed_at": dec.computed_at.isoformat()} if dec else None
     return out
 
@@ -79,7 +83,7 @@ def sessions(ctx: TenantCtx = Depends(require("events:read")), active: bool = Tr
         stmt = stmt.where(m.AccountingSession.stopped_at.is_(None), m.AccountingSession.updated_at >= datetime.now(UTC) - timedelta(hours=26))
     rows = ctx.session.scalars(stmt.order_by(m.AccountingSession.updated_at.desc()).limit(500)).all()
     return {"items": [{"id": str(r.id), "username": r.username, "calling_station_id": r.calling_station_id, "called_station_id": r.called_station_id,
-                       "nas_ip": r.nas_ip, "framed_ip": r.framed_ip, "vlan_id": r.vlan_id, "started_at": r.started_at.isoformat() if r.started_at else None,
+                       "nas_ip": r.nas_ip, "framed_ip": r.framed_ip, "vlan_id": r.vlan_id, "network": r.network, "nas_port_id": r.nas_port_id, "started_at": r.started_at.isoformat() if r.started_at else None,
                        "updated_at": r.updated_at.isoformat(), "stopped_at": r.stopped_at.isoformat() if r.stopped_at else None,
                        "input_octets": r.input_octets, "output_octets": r.output_octets} for r in rows]}
 

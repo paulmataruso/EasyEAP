@@ -35,7 +35,9 @@ def parse_address(address: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
 def check_address_unique(session: Session, tenant_id: uuid.UUID, address: str, exclude_id: uuid.UUID | None = None) -> None:
-    """Controller source addresses must not overlap across tenants that share the RADIUS ports (platform-scoped query)."""
+    """Source addresses must not overlap across tenants that share the RADIUS ports (platform-scoped query). Within a
+    tenant a range may contain a more specific one (a switch inside a UniFi range): FreeRADIUS and EasyEAP both pick
+    the longest prefix. The same range twice is refused."""
     net = parse_address(address)
     mine = session.get(m.RadiusSettings, tenant_id)
     my_ports = (mine.auth_port, mine.acct_port) if mine and mine.dedicated_ports else DEFAULT_PORTS
@@ -45,9 +47,12 @@ def check_address_unique(session: Session, tenant_id: uuid.UUID, address: str, e
         ports = (rs.auth_port, rs.acct_port) if rs and rs.dedicated_ports else DEFAULT_PORTS
         if ports != my_ports:
             continue
-        if parse_address(c.address).overlaps(net):
+        other = parse_address(c.address)
+        if other.overlaps(net):
             if c.tenant_id == tenant_id:
-                raise RadiusConfigError(f"This address overlaps the existing controller “{c.name}”.")
+                if other == net:
+                    raise RadiusConfigError(f"“{c.name}” is already registered with this address.")
+                continue
             raise RadiusConfigError("This address overlaps a controller that belongs to another tenant on the same RADIUS ports. "
                                     "Give this tenant dedicated RADIUS ports (RADIUS settings → Advanced) or use a unique source address.")
 
@@ -95,6 +100,9 @@ def desired_state(session: Session, bao: OpenBao) -> dict:
         clients = [{
             "id": str(c.id), "name": c.name, "vendor": c.vendor, "address": c.address,
             "secret": crypto.decrypt_str(t.id, c.secret_ct, bao), "coa": c.coa_enabled, "coa_port": c.coa_port,
+            "networks": [n for n in ("wireless", "wired") if n in (c.networks or [])] or ["wireless"],
+            # Monitor mode: wired requests are decided and logged, but no VLAN or attribute is sent (§5.3).
+            "monitor": "wired" in (c.networks or []) and (c.wired_profile or {}).get("mode") == "monitor",
         } for c in session.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == t.id))]
         tenants.append({
             "id": str(t.id), "slug": t.slug, "name": t.name,

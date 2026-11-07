@@ -5,7 +5,7 @@ import { CopyButton } from '../ui/CopyButton'
 import { Field, SelectBox } from '../ui/Field'
 import { Notice } from '../ui/Panel'
 
-type SnippetVendor = Exclude<NasVendor, 'other'>
+type SnippetVendor = Exclude<NasVendor, 'other' | 'cisco-switch'>
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
 
 interface Ctx {
@@ -102,7 +102,7 @@ export function ConfigSnippet({ controllers, selectedId, onSelect, settings, ten
   const selected = controllers.find((c) => c.id === selectedId) ?? controllers[0]
   const [vendorOverride, setVendorOverride] = useState<SnippetVendor | null>(null)
   const [ip, setIp] = useState('')
-  const vendor: SnippetVendor = vendorOverride ?? (selected && selected.vendor !== 'other' ? selected.vendor : 'cisco-9800')
+  const vendor: SnippetVendor = vendorOverride ?? (selected && selected.vendor !== 'other' && selected.vendor !== 'cisco-switch' ? selected.vendor : 'cisco-9800')
   const ipValid = IPV4.test(ip.trim())
   const ctx: Ctx = { ip: ipValid ? ip.trim() : '<easyeap-ip>', ssid, tenant, settings, coa: selected?.coaEnabled ?? true, coaPort: selected?.coaPort ?? (vendor === 'cisco-9800' ? 1700 : 3799) }
   const text = BUILDERS[vendor](ctx)

@@ -1,10 +1,11 @@
-// RADIUS: server settings and certificate, wireless controllers, agent status, CoA queue and controller guides.
-// Intent parameters: ?add=1 opens "Add controller"; ?rotate=<clientId> opens "Rotate shared secret". Both are cleared.
+// RADIUS: server settings and certificate, wireless controllers and switches, agent status, CoA queue and guides.
+// Intent parameters: ?add=1 opens "Add controller", ?add=switch "Add switch"; ?rotate=<clientId> opens "Rotate shared
+// secret"; ?client=<clientId> selects a controller or switch. All are cleared.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { DropdownMenu } from 'radix-ui'
-import { BookOpen, Ellipsis, Pencil, Plus, RotateCw, Router, Send, Trash2 } from 'lucide-react'
+import { BookOpen, ChevronDown, Ellipsis, EthernetPort, MonitorDown, Pencil, Plus, RotateCw, Router, Send, Trash2, Wifi } from 'lucide-react'
 import { cn } from '@/ui/lib'
 import { api } from '../api/client'
 import { qk } from '../api/keys'
@@ -18,6 +19,7 @@ import { paths } from '../routes'
 import { Btn, Callout, Chip, Empty, ErrorState, HealthDot, LoadingBlock, PageHeader, Panel, SectionHeader, Skeleton, toast, type Tone } from '../ui'
 import { AddControllerDialog, DeleteControllerDialog, EditControllerDialog, RotateSecretDialog } from './radius/Controllers'
 import { ControllerGuides } from './radius/Guide'
+import { AddSwitchDialog, ModeChip, ServesChips, SwitchPanel, WiredKitDialog } from './radius/Switches'
 import { RadiusSettingsForm, ServerCertificateCard, SettingsSummary } from './radius/Settings'
 
 export default function Radius() {
@@ -25,6 +27,8 @@ export default function Radius() {
   const q = useRadius(tid)
   const [params, setParams] = useSearchParams()
   const [adding, setAdding] = useState(false)
+  const [addingSwitch, setAddingSwitch] = useState(false)
+  const [kit, setKit] = useState(false)
   const [rotating, setRotating] = useState<RadiusClient | null>(null)
   const [editing, setEditing] = useState<RadiusClient | null>(null)
   const [deleting, setDeleting] = useState<RadiusClient | null>(null)
@@ -52,11 +56,17 @@ export default function Radius() {
     if (!data) return
     const add = params.get('add')
     const rot = params.get('rotate')
-    if (!add && !rot) return
+    const pick = params.get('client')
+    if (!add && !rot && !pick) return
     if (add) {
-      if (!can('radius:write')) toast('You can’t add controllers', 'Your role can view RADIUS but not change it. A Wi-Fi Administrator or Tenant Administrator can.', 'warn')
-      else if (!data.settings) toast('Save the RADIUS settings first', 'Controllers need the RADIUS server settings and certificate to exist.', 'warn')
+      if (!can('radius:write')) toast('You can’t add controllers or switches', 'Your role can view RADIUS but not change it. A Wi-Fi Administrator or Tenant Administrator can.', 'warn')
+      else if (!data.settings) toast('Save the RADIUS settings first', 'Controllers and switches need the RADIUS server settings and certificate to exist.', 'warn')
+      else if (add === 'switch') setAddingSwitch(true)
       else setAdding(true)
+    }
+    if (pick) {
+      const c = data.clients.find((x) => x.id === pick)
+      if (c) { setSelectedId(c.id); if (c.vendor !== 'cisco-switch') setVendor(c.vendor) }
     }
     if (rot) {
       const c = data.clients.find((x) => x.id === rot)
@@ -67,13 +77,14 @@ export default function Radius() {
     const next = new URLSearchParams(params)
     next.delete('add')
     next.delete('rotate')
+    next.delete('client')
     setParams(next, { replace: true })
   }, [params, data, can, setParams])
 
   const selected = data?.clients.find((c) => c.id === selectedId) ?? null
   const select = (c: RadiusClient) => {
     setSelectedId(c.id)
-    setVendor(c.vendor)
+    if (c.vendor !== 'cisco-switch') setVendor(c.vendor)
     pushRecent(tid, { kind: 'controller', id: c.id, label: c.name, sub: [c.address, c.site].filter(Boolean).join(' · ') })
   }
 
@@ -87,8 +98,8 @@ export default function Radius() {
         title="RADIUS"
         lede={s
           ? <>Devices validate <span className="ee-mono text-[13px]">{s.server_hostname}</span>. Controllers send requests to {s.radius_address ? <span className="ee-mono text-[13px]">{s.radius_address}</span> : 'this EasyEAP server’s address'} on UDP <span className="ee-num">{s.dedicated_ports ? s.auth_port : 1812}</span> and <span className="ee-num">{s.dedicated_ports ? s.acct_port : 1813}</span>.</>
-          : <>Set up the RADIUS server for {tenant.name}, then register each wireless controller that will send it requests.</>}
-        actions={s && can('radius:write') ? <Btn variant="primary" onClick={() => setAdding(true)}><Plus aria-hidden />Add controller</Btn> : undefined}
+          : <>Set up the RADIUS server for {tenant.name}, then register each wireless controller and switch that will send it requests.</>}
+        actions={s && can('radius:write') ? <AddMenu primary onController={() => setAdding(true)} onSwitch={() => setAddingSwitch(true)} /> : undefined}
       />
 
       <div className="space-y-6">
@@ -120,17 +131,26 @@ export default function Radius() {
         )}
 
         <Panel className="p-5 sm:p-6" aria-labelledby="rad-nas-h">
-          <SectionHeader id="rad-nas-h" title="Wireless controllers"
+          <SectionHeader id="rad-nas-h" title="Controllers and switches"
             meta={data.clients.length ? `${data.clients.length} registered` : undefined}
-            actions={s && can('radius:write') && data.clients.length > 0 ? <Btn size="sm" onClick={() => setAdding(true)}><Plus aria-hidden />Add controller</Btn> : undefined} />
+            actions={<>
+              {s && data.clients.some((c) => c.networks.includes('wired')) && <Btn size="sm" variant="ghost" onClick={() => setKit(true)}><MonitorDown aria-hidden />Windows wired kit</Btn>}
+              {s && can('radius:write') && data.clients.length > 0 && <AddMenu onController={() => setAdding(true)} onSwitch={() => setAddingSwitch(true)} />}
+            </>} />
           {data.clients.length === 0 ? (
-            <Empty icon={<Router />} title="No wireless controllers registered"
-              action={s && can('radius:write') ? <Btn variant="primary" onClick={() => setAdding(true)}><Plus aria-hidden />Add your first controller</Btn> : undefined}>
-              {s ? 'RADIUS ignores requests from addresses it doesn’t know. Register each Catalyst 9800, AireOS or UniFi controller to start authenticating.' : 'Save the RADIUS settings first. Controllers are registered against this tenant’s RADIUS server.'}
+            <Empty icon={<Router />} title="No controllers or switches registered"
+              action={s && can('radius:write') ? <AddMenu primary onController={() => setAdding(true)} onSwitch={() => setAddingSwitch(true)} /> : undefined}>
+              {s ? 'RADIUS ignores requests from addresses it doesn’t know. Register each Catalyst 9800, AireOS or UniFi controller, and each switch with 802.1X ports, to start authenticating.' : 'Save the RADIUS settings first. Controllers and switches are registered against this tenant’s RADIUS server.'}
             </Empty>
           ) : (
             <ControllerList clients={data.clients} selectedId={selectedId} onSelect={select} canWrite={can('radius:write')} canSecrets={can('radius:secrets') && !!s}
               onRotate={openRotate} onEdit={openEdit} onDelete={openDelete} unmatched={!!data.unattributed} />
+          )}
+          {s && selected && selected.networks.includes('wired') && (
+            <section aria-labelledby="rad-sw-h" className="mt-5 border-t border-[var(--ee-line)] pt-4">
+              <h3 id="rad-sw-h" className="ee-h3 mb-3 flex items-center gap-2"><EthernetPort className="size-4 ee-ink-3" aria-hidden />Wired 802.1X on {selected.name}</h3>
+              <SwitchPanel client={selected} settings={s} />
+            </section>
           )}
           {data.unattributed && <UnattributedNote u={data.unattributed} />}
           {data.clients.length > 0 && can('radius:write') && !can('radius:secrets') && (
@@ -140,7 +160,7 @@ export default function Radius() {
 
         {s && (
           <Panel className="p-5 sm:p-6" aria-labelledby="rad-guide-h">
-            <SectionHeader id="rad-guide-h" title="Controller setup guides" meta="Filled with this tenant’s RADIUS address, ports and SSID" />
+            <SectionHeader id="rad-guide-h" title="Wireless controller setup guides" meta="Filled with this tenant’s RADIUS address, ports and SSID. A switch’s configuration is in its panel above." />
             <ControllerGuides settings={s} vendor={vendor} onVendor={(v) => { setVendor(v); if (selected && selected.vendor !== v) setSelectedId(null) }} forName={selected?.vendor === vendor ? selected.name : null} />
           </Panel>
         )}
@@ -149,10 +169,29 @@ export default function Radius() {
       </div>
 
       {s && <AddControllerDialog open={adding} onOpenChange={setAdding} settings={s} clients={data.clients} onAdded={(c) => { setSelectedId(c.id); setVendor(c.vendor) }} />}
+      {s && <AddSwitchDialog open={addingSwitch} onOpenChange={setAddingSwitch} settings={s} clients={data.clients} onAdded={(c) => setSelectedId(c.id)} />}
+      <WiredKitDialog open={kit} onOpenChange={setKit} />
       {s && <RotateSecretDialog client={rotating} onClose={() => setRotating(null)} settings={s} returnFocus={focusTo} />}
       <EditControllerDialog client={editing} onClose={() => setEditing(null)} clients={data.clients} returnFocus={focusTo} />
       <DeleteControllerDialog client={deleting} onClose={() => { if (deleting?.id === selectedId) setSelectedId(null); setDeleting(null) }} returnFocus={focusTo} />
     </div>
+  )
+}
+
+/** "Add" menu: a wireless controller or a switch. */
+function AddMenu({ primary, onController, onSwitch }: { primary?: boolean; onController: () => void; onSwitch: () => void }) {
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <Btn variant={primary ? 'primary' : 'default'} size={primary ? 'md' : 'sm'}><Plus aria-hidden />Add<ChevronDown aria-hidden /></Btn>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content className="ee-menu" align="end" sideOffset={4}>
+          <DropdownMenu.Item className="ee-menu-item" onSelect={onController}><Wifi className="size-4 ee-ink-3" aria-hidden />Wireless controller</DropdownMenu.Item>
+          <DropdownMenu.Item className="ee-menu-item" onSelect={onSwitch}><EthernetPort className="size-4 ee-ink-3" aria-hidden />Switch (wired 802.1X)</DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   )
 }
 
@@ -240,7 +279,7 @@ function UnattributedNote({ u }: { u: Unattributed }) {
   const now = useNow()
   const addrs = u.nas_addresses
   return (
-    <Callout tone="warn" className="mt-4" title={`${u.count.toLocaleString()} ${u.count === 1 ? 'request wasn’t' : 'requests weren’t'} matched to a controller`}>
+    <Callout tone="warn" className="mt-4" title={`${u.count.toLocaleString()} ${u.count === 1 ? 'request wasn’t' : 'requests weren’t'} matched to a controller or switch`}>
       In the last {u.days} days RADIUS answered {u.count === 1 ? 'a request' : 'requests'} (latest {ago(u.last_at, now)}) that EasyEAP couldn’t tie to a registered controller.
       {addrs.length > 0 && <> {addrs.length === 1 ? 'It' : 'They'} reported NAS address{addrs.length === 1 ? '' : 'es'} {addrs.map((ip, i) => <span key={ip}>{i > 0 && ', '}<span className="ee-mono text-[12.5px]">{ip}</span></span>)}, which {addrs.length === 1 ? 'isn’t' : 'aren’t'} inside any controller’s source address.</>}
       {' '}If that’s one of your controllers, edit its source address to cover it. Until then EasyEAP can’t show when it last sent a request, or send it a CoA disconnect.
@@ -258,10 +297,10 @@ function RowActions({ c, ...p }: { c: RadiusClient } & Omit<ListProps, 'clients'
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal>
           <DropdownMenu.Content className="ee-menu" align="end" sideOffset={4} onClick={(e) => e.stopPropagation()}>
-            <DropdownMenu.Item className="ee-menu-item" onSelect={() => p.onSelect(c)}><BookOpen className="size-4 ee-ink-3" aria-hidden />Show setup guide</DropdownMenu.Item>
-            {p.canWrite && <DropdownMenu.Item className="ee-menu-item" onSelect={() => p.onEdit(c)}><Pencil className="size-4 ee-ink-3" aria-hidden />Edit controller</DropdownMenu.Item>}
+            <DropdownMenu.Item className="ee-menu-item" onSelect={() => p.onSelect(c)}><BookOpen className="size-4 ee-ink-3" aria-hidden />{c.networks.includes('wired') && !c.networks.includes('wireless') ? 'Show switch panel' : 'Show setup guide'}</DropdownMenu.Item>
+            {p.canWrite && <DropdownMenu.Item className="ee-menu-item" onSelect={() => p.onEdit(c)}><Pencil className="size-4 ee-ink-3" aria-hidden />Edit</DropdownMenu.Item>}
             {p.canWrite && <DropdownMenu.Separator className="ee-menu-sep" />}
-            {p.canWrite && <DropdownMenu.Item className="ee-menu-item text-[var(--ee-crit-ink)]" onSelect={() => p.onDelete(c)}><Trash2 className="size-4" aria-hidden />Delete controller</DropdownMenu.Item>}
+            {p.canWrite && <DropdownMenu.Item className="ee-menu-item text-[var(--ee-crit-ink)]" onSelect={() => p.onDelete(c)}><Trash2 className="size-4" aria-hidden />Delete</DropdownMenu.Item>}
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
@@ -276,10 +315,10 @@ function ControllerList(p: ListProps) {
     <>
       <div className="hidden md:block">
         <table className="ee-table">
-          <caption className="sr-only">Wireless controllers. Select one to show its setup guide.</caption>
+          <caption className="sr-only">Wireless controllers and switches. Select one to show its setup guide or switch panel.</caption>
           <thead>
             <tr>
-              <th>Controller</th><th>Type</th><th>Source address</th><th>CoA</th><th>Secret set</th><th>Last request</th><th><span className="sr-only">Actions</span></th>
+              <th>Name</th><th>Type</th><th>Serves</th><th>Source address</th><th>CoA</th><th>Secret set</th><th>Last request</th><th><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody>
@@ -290,6 +329,7 @@ function ControllerList(p: ListProps) {
                   <span className="ee-small ee-ink-3 block">{c.site || 'No site'}</span>
                 </td>
                 <td className="whitespace-nowrap ee-ink-2">{vendorLabels[c.vendor] ?? c.vendor}</td>
+                <td><span className="inline-flex flex-wrap items-center gap-1"><ServesChips c={c} /><ModeChip c={c} /></span></td>
                 <td className="ee-mono whitespace-nowrap text-[12.5px]">{c.address}</td>
                 <td className="whitespace-nowrap">{coa(c)}</td>
                 <td className="whitespace-nowrap ee-ink-2" title={fmtDateTime(c.secret_set_at)}>{c.secret_set_at ? ago(c.secret_set_at, now) : '—'}</td>
@@ -300,7 +340,7 @@ function ControllerList(p: ListProps) {
           </tbody>
         </table>
       </div>
-      <ul className="md:hidden divide-y divide-[var(--ee-line)] border-y border-[var(--ee-line)]" aria-label="Wireless controllers">
+      <ul className="md:hidden divide-y divide-[var(--ee-line)] border-y border-[var(--ee-line)]" aria-label="Wireless controllers and switches">
         {p.clients.map((c) => (
           <li key={c.id} className={cn('py-3', p.selectedId === c.id && 'bg-[var(--ee-select)]')}>
             <div className="flex items-start justify-between gap-3">
@@ -311,6 +351,7 @@ function ControllerList(p: ListProps) {
               <RowActions c={c} {...p} />
             </div>
             <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 text-[13px]">
+              <div className="col-span-2"><dt className="ee-label">Serves</dt><dd className="mt-0.5 inline-flex flex-wrap gap-1"><ServesChips c={c} /><ModeChip c={c} /></dd></div>
               <div className="col-span-2"><dt className="ee-label">Source address</dt><dd className="ee-mono text-[12.5px] break-all">{c.address}</dd></div>
               <div><dt className="ee-label">CoA</dt><dd>{coa(c)}</dd></div>
               <div><dt className="ee-label">Last request</dt><dd><LastRequest at={c.last_request_at} now={now} unmatched={p.unmatched} /></dd></div>

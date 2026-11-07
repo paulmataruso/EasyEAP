@@ -83,6 +83,7 @@ export function guideCtx(info: PendingInfo, platform: Platform, result: FlowResu
     ssid: csr?.network.ssid || info.network.ssid,
     serverName: csr?.network.server_name || info.network.server_name,
     wpa3: csr?.network.wpa3 ?? info.network.wpa3,
+    wired: csr?.network.wired ?? info.network.wired ?? false,
     identity: csr?.identity ?? info.user.upn,
     deviceName: info.device_name,
     profileName: result?.kind === 'browser' || result?.kind === 'package' ? result.profileName : null,

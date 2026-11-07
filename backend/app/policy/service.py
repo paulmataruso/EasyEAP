@@ -37,6 +37,23 @@ def load_rules(session: Session, tenant_id: uuid.UUID) -> list[RuleInput]:
             for r in rules]
 
 
+def wired_vlan_map(session: Session, tenant_id: uuid.UUID) -> dict[int, int | None]:
+    """VLAN ID → what a switch port gets instead (docs/plans/wired-8021x.md §4): the same VLAN, none (the port keeps
+    its own VLAN), or another VLAN."""
+    out: dict[int, int | None] = {}
+    for v in session.scalars(select(m.Vlan).where(m.Vlan.tenant_id == tenant_id)):
+        out[v.vlan_id] = None if v.wired_mode == "port" else v.wired_vlan_id if v.wired_mode == "vlan" else v.vlan_id
+    return out
+
+
+def wired_vlan(mapping: dict[int, int | None], outcome: str, vlan_id: int | None) -> int | None:
+    """The decision's VLAN on switch ports. A VLAN ID with no VLAN record (shouldn't happen) is passed through, as it
+    was before wired 802.1X."""
+    if outcome != "allow" or vlan_id is None:
+        return None
+    return mapping.get(vlan_id, vlan_id)
+
+
 def _default_vlan(session: Session, ps: m.PolicySettings) -> int | None:
     if not ps.default_vlan_ref:
         return None
@@ -68,6 +85,7 @@ def recompute_tenant(session: Session, tenant_id: uuid.UUID) -> int:
     ps = policy_settings(session, tenant_id)
     rules = load_rules(session, tenant_id)
     default_vlan = _default_vlan(session, ps)
+    wired = wired_vlan_map(session, tenant_id)
     now = datetime.now(UTC)
     identities = {i.id: i for i in session.scalars(select(m.Identity).where(m.Identity.tenant_id == tenant_id))}
     certs = session.scalars(select(m.Certificate).where(
@@ -84,7 +102,8 @@ def recompute_tenant(session: Session, tenant_id: uuid.UUID) -> int:
             out = evaluate(ident.account_state, groups, rules, ps.default_action, default_vlan, now, cin)
         session.add(m.Decision(certificate_id=c.id, tenant_id=tenant_id, identity_id=c.identity_id, outcome=out.outcome,
                                reason_code=out.reason_code, deciding_rule_id=uuid.UUID(out.deciding_rule_id) if out.deciding_rule_id else None,
-                               vlan_id=out.vlan_id, attributes=out.attributes, steps=out.steps, computed_at=now))
+                               vlan_id=out.vlan_id, wired_vlan_id=wired_vlan(wired, out.outcome, out.vlan_id),
+                               attributes=out.attributes, steps=out.steps, computed_at=now))
         count += 1
     rs = session.get(m.RadiusSettings, tenant_id)
     if rs is not None:
@@ -105,7 +124,7 @@ def snapshot(session: Session, tenant_id: uuid.UUID) -> dict:
     built = rs.snapshot_built_at if rs and rs.snapshot_built_at else datetime.now(UTC)
     rows = session.execute(
         select(m.Certificate.serial, m.Certificate.not_after, m.Certificate.identity_id, m.Identity.username, m.Decision.outcome,
-               m.Decision.reason_code, m.Decision.vlan_id, m.Decision.attributes, m.Decision.deciding_rule_id)
+               m.Decision.reason_code, m.Decision.vlan_id, m.Decision.wired_vlan_id, m.Decision.attributes, m.Decision.deciding_rule_id)
         .join(m.Decision, m.Decision.certificate_id == m.Certificate.id)
         .outerjoin(m.Identity, m.Identity.id == m.Certificate.identity_id)
         .where(m.Certificate.tenant_id == tenant_id)
@@ -117,6 +136,8 @@ def snapshot(session: Session, tenant_id: uuid.UUID) -> dict:
             continue  # keep the snapshot small; long-expired certs fail TLS validation anyway
         entries.append({
             "serial": r.serial, "outcome": r.outcome, "reason": r.reason_code, "vlan": r.vlan_id,
+            # On switch ports (None = assign none). Agents before wired 802.1X ignore it.
+            "wired_vlan": r.wired_vlan_id,
             "attributes": [a for a in (r.attributes or []) if a["name"] not in ("Tunnel-Type", "Tunnel-Medium-Type", "Tunnel-Private-Group-ID")],
             "rule_id": str(r.deciding_rule_id) if r.deciding_rule_id else None, "identity_id": str(r.identity_id) if r.identity_id else None,
             "username": r.username, "not_after": int(r.not_after.timestamp()),

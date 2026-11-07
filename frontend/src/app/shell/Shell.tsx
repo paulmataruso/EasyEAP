@@ -93,7 +93,7 @@ function TenantSwitcher({ onNavigated }: { onNavigated?: () => void }) {
 function hitPath(tid: string, h: Hit) {
   if (h.kind === 'user') return paths.user(tid, h.id)
   if (h.kind === 'certificate') return paths.certificate(tid, h.id)
-  if (h.kind === 'controller') return paths.radius(tid)
+  if (h.kind === 'controller') return paths.radius(tid, { client: h.id })
   return paths.policy(tid)
 }
 
@@ -176,7 +176,7 @@ function RecentList({ onNavigated }: { onNavigated?: () => void }) {
   // Nothing to show until something has been opened: no placeholder hint taking sidebar space.
   if (!tctx || recent.length === 0) return null
   const open = (r: RecentItem) => {
-    navigate(r.kind === 'identity' ? paths.user(tctx.tid, r.id) : r.kind === 'certificate' ? paths.certificate(tctx.tid, r.id) : paths.radius(tctx.tid))
+    navigate(r.kind === 'identity' ? paths.user(tctx.tid, r.id) : r.kind === 'certificate' ? paths.certificate(tctx.tid, r.id) : paths.radius(tctx.tid, { client: r.id }))
     onNavigated?.()
   }
   return (

@@ -11,6 +11,8 @@ export interface GuideCtx {
   ssid: string
   serverName: string
   wpa3: boolean
+  /** The tenant turned on wired 802.1X: Mac profiles also set up network ports; Linux gets wired files for IT staff. */
+  wired: boolean
   identity: string
   deviceName: string
   /** Name iOS/macOS shows for the configuration profile (from the API's profile). */
@@ -223,6 +225,7 @@ export function ConnectSteps({ platform, route, c, password }: { platform: Platf
           ]}
         />
         <p className="en-small">Some versions call it <b>User certificate password</b>. When you choose the certificate file, the private key field fills itself in.</p>
+        {c.wired && <p className="en-small">Using a network cable at work? Network ports that ask for 802.1X need a wired connection set up with the same certificate. The files for it are under <b>For IT staff</b>.</p>}
       </div>
     )
   }
@@ -251,6 +254,7 @@ export function ConnectSteps({ platform, route, c, password }: { platform: Platf
       <HowTo label="Connect on a Mac">
         <li>Click the <b>Wi-Fi</b> icon in the menu bar and choose <b>{c.ssid}</b>.</li>
         <li>If you’re asked which certificate to use, choose the one for <b>{c.identity}</b>. {trust}</li>
+        {c.wired && <li>Using a network cable at work? The profile also sets up network ports that ask for 802.1X, so your Mac signs in with the same certificate when you plug in.</li>}
       </HowTo>
     )
   }

@@ -16,8 +16,8 @@ EXPLANATIONS: dict[str, dict[str, str]] = {
     "cert_unknown": {"title": "Certificate not issued by EasyEAP",
                      "explanation": "The certificate chains to a trusted CA but EasyEAP has no record of issuing it, so it is treated as untrusted.",
                      "fix": "Check for certificates issued outside EasyEAP from the same CA, then re-enroll the device."},
-    "identity_unauthorized": {"title": "User is not authorized for Wi-Fi",
-                              "explanation": "The certificate is valid, but none of the user's directory groups grant Wi-Fi access.",
+    "identity_unauthorized": {"title": "User is not authorized for network access",
+                              "explanation": "The certificate is valid, but none of the user's directory groups grant network access.",
                               "fix": "Add the user to a group with an Allow rule, or add a rule for one of their groups."},
     "account_disabled": {"title": "Directory account is disabled or locked",
                          "explanation": "Active Directory reports this account as disabled, locked out or deleted, so access is denied.",
@@ -37,6 +37,15 @@ EXPLANATIONS: dict[str, dict[str, str]] = {
     "client_timeout": {"title": "Device stopped responding",
                        "explanation": "The device stopped answering midway through authentication. This often means it rejected the server certificate silently.",
                        "fix": "Check the device trusts the Root CA and the server name in its Wi-Fi profile matches."},
+    "network_not_enabled": {"title": "Network not enabled on this controller or switch",
+                           "explanation": "The request came from a network (Wi-Fi or wired) that this controller or switch isn't registered for in EasyEAP, so it was refused before the certificate was checked.",
+                           "fix": "If it should serve that network, edit it on the RADIUS page and turn the network on (for a switch, Add switch walks you through it)."},
+    "network_unknown": {"title": "Network couldn't be determined",
+                       "explanation": "EasyEAP couldn't tell whether this request came from Wi-Fi or a switch port, so it was refused.",
+                       "fix": "Register the controller or switch for one network only, or contact support with the event details."},
+    "mab_unsupported": {"title": "Switch tried MAC Authentication Bypass",
+                       "explanation": "The switch asked EasyEAP to admit a device by its MAC address. EasyEAP only accepts EAP-TLS certificates, so the device was refused.",
+                       "fix": "Remove “mab” from the switch's port configuration (EasyEAP's generated configuration doesn't use it), or leave devices without 802.1X on ports that aren't configured for it."},
 }
 
 # FreeRADIUS / OpenSSL messages → failure codes (first match wins).

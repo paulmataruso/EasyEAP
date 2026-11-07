@@ -101,6 +101,12 @@ docker compose build && docker compose up -d
 Migrations run automatically when the API starts (under an advisory lock). RADIUS keeps authenticating from its
 local snapshot while the API restarts.
 
+**Upgrading to wired 802.1X** (the release after 1.0.1) changes nothing that already works: every registered
+controller is allowed both Wi-Fi and wired requests (so a switch registered as "Other" keeps working and keeps
+receiving VLANs), every VLAN is the same VLAN on switch ports, and enrollment packages stay Wi-Fi only until you turn
+on "Wired settings in enrollment packages". Restrict a controller to Wi-Fi in its Edit dialog if it should never
+send wired requests.
+
 ## Backup and restore
 
 Everything happens in the console: **System health → Backup and restore** (Super Administrator).

@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models as m
+from app.radius.events import _match_client
 
 
 def disconnect_for_certificate(session: Session, cert: m.Certificate, reason: str) -> dict:
@@ -40,12 +41,11 @@ def _disconnect_macs(session: Session, tenant_id: uuid.UUID, macs: set[str], rea
         m.AccountingSession.stopped_at.is_(None))).all()
     tenant_clients = list(session.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == tenant_id)))
     by_id = {c.id: c for c in tenant_clients}
-    clients = {c.address: c for c in tenant_clients}
     queued = without = 0
     targets: list[tuple[m.RadiusClient | None, dict]] = []
     if sessions:
         for s in sessions:
-            nas = by_id.get(s.nas_client_id) if s.nas_client_id else _client_for(clients, s.nas_ip)
+            nas = by_id.get(s.nas_client_id) if s.nas_client_id else _match_client(tenant_clients, s.nas_ip)
             targets.append((nas, {"NAS-IP-Address": s.nas_ip, "Acct-Session-Id": s.acct_session_id,
                                   "Calling-Station-Id": s.calling_station_id or "", "User-Name": s.username or ""}))
     else:
@@ -64,18 +64,3 @@ def _disconnect_macs(session: Session, tenant_id: uuid.UUID, macs: set[str], rea
                                  reason=reason[:200], status="pending"))
         queued += 1
     return {"sessions": len(targets), "queued": queued, "without_coa": without}
-
-
-def _client_for(clients: dict[str, m.RadiusClient], ip: str) -> m.RadiusClient | None:
-    import ipaddress
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return None
-    for address, c in clients.items():
-        try:
-            if addr in ipaddress.ip_network(address, strict=False):
-                return c
-        except ValueError:
-            continue
-    return None

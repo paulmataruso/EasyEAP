@@ -29,11 +29,13 @@ export const notifyMaintenance = (state: unknown) => maintenanceListeners.forEac
 export const maintenanceFrom = (status: number, body: unknown): unknown =>
   status === 503 && body && typeof body === 'object' && 'maintenance' in body ? (body as { maintenance: unknown }).maintenance : null
 
-/** FastAPI errors: {"detail": "text"} or {"detail": [{"msg": …, "loc": […]}]} for validation. */
+/** FastAPI errors: {"detail": "text"}, {"detail": {"field": …, "message": …}} for one field of a form, or
+ * {"detail": [{"msg": …, "loc": […]}]} for validation. */
 export function messageFrom(body: unknown, status: number): string {
   if (body && typeof body === 'object' && 'detail' in body) {
     const d = (body as { detail: unknown }).detail
     if (typeof d === 'string') return d
+    if (d && typeof d === 'object' && !Array.isArray(d) && typeof (d as { message?: unknown }).message === 'string') return (d as { message: string }).message
     if (Array.isArray(d) && d.length) {
       return d.map((e) => {
         const field = Array.isArray(e?.loc) ? e.loc.filter((x: unknown) => x !== 'body').join('.') : ''
@@ -70,6 +72,13 @@ async function request<T>(method: string, path: string, body?: unknown, init?: {
   if (res.status === 204) return undefined as T
   const type = res.headers.get('content-type') ?? ''
   return (type.includes('application/json') ? await res.json() : await res.text()) as T
+}
+
+/** The form field an error is about, when the API names one ({"detail": {"field": …}}). */
+export function errorField(e: unknown): string | null {
+  const body = e instanceof ApiError ? e.detail : null
+  const d = body && typeof body === 'object' && 'detail' in body ? (body as { detail: unknown }).detail : null
+  return d && typeof d === 'object' && !Array.isArray(d) && typeof (d as { field?: unknown }).field === 'string' ? (d as { field: string }).field : null
 }
 
 export const api = {

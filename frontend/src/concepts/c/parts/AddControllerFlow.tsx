@@ -20,7 +20,7 @@ const STEPS: FlowStep[] = [
 ]
 
 const VENDORS: NasVendor[] = ['cisco-9800', 'cisco-aireos', 'unifi', 'other']
-const vendorIcon = { 'cisco-9800': Router, 'cisco-aireos': Router, unifi: Wifi, other: Server } as const
+const vendorIcon = { 'cisco-9800': Router, 'cisco-aireos': Router, 'cisco-switch': Server, unifi: Wifi, other: Server } as const
 
 interface Draft {
   name: string

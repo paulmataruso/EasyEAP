@@ -43,6 +43,9 @@ Status as of 2026-11-06 (release 1.0.1).
 - [x] Dynamic VLANs (Tunnel-Type 13, Tunnel-Medium-Type 6, Tunnel-Private-Group-ID)
 - [x] CoA Disconnect on revoke; Blast-RADIUS mitigations; dedicated port pairs for overlapping addresses
 - [x] Controller guides for Cisco Catalyst 9800, AireOS and UniFi (console and `docs/controllers/`)
+- [x] Wired 802.1X for Cisco Catalyst (IBNS 2.0 and classic) and UniFi switches: Add switch wizard, monitor mode,
+      readiness, Enforce, VLANs on switch ports, wired/Wi-Fi detection and refusal, MAB named, wrong-secret and
+      unregistered-address diagnosis, wired enrollment (macOS, Linux) and the Windows wired kit
 
 ### Enrollment
 - [x] One-time, device-bound links (72-hour default)
@@ -60,7 +63,9 @@ Status as of 2026-11-06 (release 1.0.1).
 ### Tests
 - [x] Backend unit tests; RLS and policy-draft integration tests; RADIUS renderer tests
 - [x] Shared policy fixtures for the backend and frontend engines
-- [x] End-to-end EAP-TLS through FreeRADIUS against a real domain controller (`tests/e2e/run.sh`)
+- [x] End-to-end EAP-TLS through FreeRADIUS against a real domain controller (`tests/e2e/run.sh`), including wired 802.1X
+- [x] RADIUS integration test on real FreeRADIUS without the API (`tests/radius/run.sh`), with 1.0.1 version skew; in CI
+- [x] Upgrade from 1.0.1 to wired 802.1X on the lab stack: migration, existing controllers, VLANs and decisions kept
 - [x] Frontend unit tests (formatting, routes, decision ledger)
 - [x] Console browser smoke test of every screen against the production build behind the proxy and CSP
 - [x] GitHub Actions CI: backend lint and unit tests, frontend checks and build, image builds
@@ -74,6 +79,14 @@ Status as of 2026-11-06 (release 1.0.1).
 - **Email delivery** of enrollment links is not built in. Administrators copy the one-time link and send it.
 - **High availability.** There is one RADIUS node per deployment. Running a second node against the same API is
   designed for (agent node IDs) but not tested.
+- **Wired 802.1X is not verified on switch hardware.** The generated Catalyst configuration has not been pasted onto a
+  real Catalyst switch, and nothing has run against a UniFi switch: the RADIUS side is tested on real FreeRADIUS
+  with real EAP-TLS, with the attributes Catalyst and UniFi switches document. Unverified on UniFi: CoA,
+  re-authentication timing and the port type it reports. Also unverified on real devices: the Windows wired kit
+  (`netsh lan`), and the macOS Ethernet payload.
+- **Wired 802.1X gaps.** No MAC Authentication Bypass (printers, phones and other devices without 802.1X stay on
+  ports that aren't configured), no machine certificates (Windows wired connects after sign-in), no IP-phone voice
+  domain, no merge with an existing 802.1X configuration on a switch.
 - **Directory sources** other than Active Directory over LDAPS (Entra ID, Google Workspace) are not supported.
 - **Real-device installs** are confirmed on an iPhone: it enrolled through the portal with its key made on the
   device, and authenticated through a live Cisco Catalyst 9800 onto its VLAN. Windows, macOS and Android packages are

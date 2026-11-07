@@ -92,7 +92,7 @@ def get_cert(cert_id: uuid.UUID, ctx: TenantCtx = Depends(require("certificates:
     dev = ctx.session.get(m.Device, c.device_id) if c.device_id else None
     dec = ctx.session.get(m.Decision, c.id)
     out = cert_out(c, warn, ident, dev)
-    out["decision"] = {"outcome": dec.outcome, "reason_code": dec.reason_code, "vlan_id": dec.vlan_id, "deciding_rule_id": str(dec.deciding_rule_id) if dec.deciding_rule_id else None,
+    out["decision"] = {"outcome": dec.outcome, "reason_code": dec.reason_code, "vlan_id": dec.vlan_id, "wired_vlan_id": dec.wired_vlan_id, "deciding_rule_id": str(dec.deciding_rule_id) if dec.deciding_rule_id else None,
                        "attributes": dec.attributes, "steps": dec.steps, "computed_at": dec.computed_at.isoformat()} if dec else None
     out["issuer"] = ctx.session.get(m.CertificateAuthority, c.issuer_ca_id).common_name if c.issuer_ca_id else None
     # The holder's current groups, so the decision ledger can say which membership matched.

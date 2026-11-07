@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -13,14 +14,15 @@ from app import models as m
 from app.deps import TenantCtx, require
 from app.policy import draft as policy_draft
 from app.policy.engine import ALLOWED_EXTRA_ATTRIBUTES
-from app.policy.service import evaluate_identity, policy_settings, recompute_tenant
+from app.policy.service import evaluate_identity, policy_settings, recompute_tenant, wired_vlan, wired_vlan_map
 from app.radius.state import bump
 
 router = APIRouter(prefix="/api/tenants/{tenant_id}/policy", tags=["policy"])
 
 
 def vlan_out(v: m.Vlan) -> dict:
-    return {"id": str(v.id), "vlan_id": v.vlan_id, "name": v.name, "description": v.description, "color": v.color}
+    return {"id": str(v.id), "vlan_id": v.vlan_id, "name": v.name, "description": v.description, "color": v.color,
+            "wired_mode": v.wired_mode, "wired_vlan_id": v.wired_vlan_id}
 
 
 def rule_out(r: m.AccessRule) -> dict:
@@ -61,6 +63,20 @@ class VlanIn(BaseModel):
     description: str = Field(default="", max_length=300)
     # None: a new VLAN gets the first colour no other VLAN in the tenant uses; an update keeps its colour.
     color: str | None = Field(default=None, pattern="^(" + "|".join(VLAN_COLORS) + ")$")
+    # On switch ports: "same" VLAN ID, the "port"'s own VLAN, or another "vlan" (wired_vlan_id). None on update: keep.
+    wired_mode: Literal["same", "port", "vlan"] | None = None
+    wired_vlan_id: int | None = Field(default=None, ge=1, le=4094)
+
+
+def _apply_wired(v: m.Vlan, body: VlanIn) -> None:
+    if body.wired_mode is None:
+        if body.wired_vlan_id is not None and v.wired_mode == "vlan":
+            v.wired_vlan_id = body.wired_vlan_id
+        return
+    if body.wired_mode == "vlan" and body.wired_vlan_id is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose the VLAN that switch ports get instead.")
+    v.wired_mode = body.wired_mode
+    v.wired_vlan_id = body.wired_vlan_id if body.wired_mode == "vlan" else None
 
 
 def _free_color(s, tenant_id: uuid.UUID) -> str:
@@ -72,7 +88,9 @@ def _free_color(s, tenant_id: uuid.UUID) -> str:
 def create_vlan(body: VlanIn, ctx: TenantCtx = Depends(require("policy:write"))) -> dict:
     if ctx.session.scalars(select(m.Vlan).where(m.Vlan.tenant_id == ctx.id, m.Vlan.vlan_id == body.vlan_id)).first():
         raise HTTPException(status.HTTP_409_CONFLICT, f"VLAN {body.vlan_id} already exists.")
-    v = m.Vlan(tenant_id=ctx.id, **{**body.model_dump(), "color": body.color or _free_color(ctx.session, ctx.id)})
+    v = m.Vlan(tenant_id=ctx.id, vlan_id=body.vlan_id, name=body.name, description=body.description,
+               color=body.color or _free_color(ctx.session, ctx.id), wired_mode="same", wired_vlan_id=None)
+    _apply_wired(v, body)
     ctx.session.add(v)
     ctx.session.flush()
     audit.record(ctx.session, ctx.actor, "vlan.created", tenant_id=ctx.id, target_type="vlan", target_id=v.id, target_label=f"{v.vlan_id} {v.name}")
@@ -84,8 +102,9 @@ def update_vlan(vlan_ref: uuid.UUID, body: VlanIn, ctx: TenantCtx = Depends(requ
     v = ctx.session.get(m.Vlan, vlan_ref)
     if v is None or v.tenant_id != ctx.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "VLAN not found.")
-    for k, val in body.model_dump(exclude_none=True).items():
+    for k, val in body.model_dump(exclude_none=True, exclude={"wired_mode", "wired_vlan_id"}).items():
         setattr(v, k, val)
+    _apply_wired(v, body)
     _changed(ctx)
     audit.record(ctx.session, ctx.actor, "vlan.updated", tenant_id=ctx.id, target_type="vlan", target_id=v.id, target_label=f"{v.vlan_id} {v.name}")
     return vlan_out(v)
@@ -245,7 +264,8 @@ def simulate(body: SimulateIn, ctx: TenantCtx = Depends(require("policy:read")))
     if i is None or i.tenant_id != ctx.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
     o = evaluate_identity(ctx.session, i, purpose=body.purpose)
-    return {"outcome": o.outcome, "reason_code": o.reason_code, "deciding_rule_id": o.deciding_rule_id, "vlan_id": o.vlan_id, "attributes": o.attributes, "steps": o.steps}
+    return {"outcome": o.outcome, "reason_code": o.reason_code, "deciding_rule_id": o.deciding_rule_id, "vlan_id": o.vlan_id,
+            "wired_vlan_id": wired_vlan(wired_vlan_map(ctx.session, ctx.id), o.outcome, o.vlan_id), "attributes": o.attributes, "steps": o.steps}
 
 
 # ── Staged changes: preview and atomic publish ───────────────────────────────

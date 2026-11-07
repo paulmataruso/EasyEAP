@@ -56,7 +56,7 @@ export function useEntitySearch(tid: string | null, query: string, kinds: HitKin
     const out: Hit[] = []
     if (kinds.includes('user')) for (const i of users.data ?? []) out.push({ key: `u:${i.id}`, kind: 'user', group: 'Users', id: i.id, label: i.display_name, sub: [i.upn ?? i.username, i.department].filter(Boolean).join(' · '), status: i.account_state })
     if (kinds.includes('certificate')) for (const c of certs.data ?? []) out.push({ key: `c:${c.id}`, kind: 'certificate', group: 'Certificates', id: c.id, label: `${fmtSerial(c.serial).slice(0, 19)}…`, sub: [c.identity?.display_name, c.device?.name ?? c.common_name].filter(Boolean).join(' · '), status: c.status })
-    if (kinds.includes('controller')) for (const c of radius.data?.clients ?? []) if (has(c.name, c.address, c.site)) out.push({ key: `n:${c.id}`, kind: 'controller', group: 'Controllers', id: c.id, label: c.name, sub: [c.address, c.site].filter(Boolean).join(' · ') })
+    if (kinds.includes('controller')) for (const c of radius.data?.clients ?? []) if (has(c.name, c.address, c.site)) out.push({ key: `n:${c.id}`, kind: 'controller', group: 'Controllers and switches', id: c.id, label: c.name, sub: [c.address, c.site].filter(Boolean).join(' · ') })
     if (kinds.includes('rule')) for (const r of policy.data?.rules ?? []) if (has(r.name)) out.push({ key: `r:${r.id}`, kind: 'rule', group: 'Access rules', id: r.id, label: r.name, sub: r.action === 'deny' ? 'Deny rule' : 'Allow rule' })
     if (kinds.includes('vlan')) for (const v of policy.data?.vlans ?? []) if (has(String(v.vlan_id), v.name)) out.push({ key: `v:${v.id}`, kind: 'vlan', group: 'VLANs', id: v.id, label: `VLAN ${v.vlan_id} · ${v.name}`, sub: v.description })
     return out

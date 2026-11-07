@@ -22,11 +22,13 @@ export const defaultSettings = (domain: string): SettingsIn => ({
   tls_min_version: '1.2',
   tls_session_cache: false,
   session_timeout_seconds: 28_800,
+  wired_enabled: false,
 })
 
 const fromSettings = (s: RadiusSettings): SettingsIn => ({
   server_hostname: s.server_hostname, ssid: s.ssid, wpa3: s.wpa3, dedicated_ports: s.dedicated_ports, auth_port: s.auth_port,
   acct_port: s.acct_port, tls_min_version: s.tls_min_version, tls_session_cache: s.tls_session_cache, session_timeout_seconds: s.session_timeout_seconds,
+  wired_enabled: s.wired_enabled,
 })
 
 function validate(v: SettingsIn) {
@@ -141,6 +143,12 @@ export function RadiusSettingsForm({ current, onSaved, onCancel, submitLabel }: 
           options={timeouts.map((s) => ({ value: String(s), label: duration(s) }))} className="min-w-[140px]" />
       </SettingRow>
 
+      <SettingRow label="Wired settings in enrollment packages" hint={v.wired_enabled
+        ? 'On: macOS and Linux packages also set up the Ethernet port for 802.1X with the same certificate. Devices enrolled before this was turned on don’t have it until they enroll again. Windows wired is set up by IT with the Windows wired kit.'
+        : 'Off: packages set up Wi-Fi only. Turn on once a switch is ready for 802.1X; adding a test switch doesn’t change what new devices get.'}>
+        <ESwitch checked={!!v.wired_enabled} onChange={(x) => set('wired_enabled', x)} label="Wired settings in enrollment packages" disabled={!editable} />
+      </SettingRow>
+
       {serverError && <Callout tone="crit" title="Settings weren’t saved">{serverError}</Callout>}
       {editable ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -176,6 +184,7 @@ export function SettingsSummary({ s }: { s: RadiusSettings }) {
     ['Minimum TLS', <span className="ee-num">TLS {s.tls_min_version}</span>],
     ['TLS session cache', s.tls_session_cache ? 'On' : 'Off · full handshake every time'],
     ['Session timeout', duration(s.session_timeout_seconds)],
+    ['Wired in packages', s.wired_enabled ? 'On · macOS and Linux packages set up Ethernet too' : 'Off · Wi-Fi only'],
   ]
   return (
     <dl className="ee-divide">

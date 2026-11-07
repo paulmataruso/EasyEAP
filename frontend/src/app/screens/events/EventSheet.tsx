@@ -5,7 +5,7 @@ import { Link } from 'react-router'
 import { Dialog } from 'radix-ui'
 import { ArrowRight, Check, ChevronDown, Minus, X } from 'lucide-react'
 import { cn } from '@/ui/lib'
-import { controllerFor, useEvent, type AuthEvent, type ClientLite, type RuleLite, type VlanLite } from '../../api/events'
+import { controllerFor, networkLabels, useEvent, type AuthEvent, type ClientLite, type RuleLite, type VlanLite } from '../../api/events'
 import type { DecisionStep } from '../../api/types'
 import { ago, fmtDateTime, fmtSerial } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
@@ -56,6 +56,9 @@ function fixAction(e: AuthEvent, tid: string, can: (p: string) => boolean): { to
       return { to: paths.dashboard(tid), label: 'Check enforcement on the dashboard' }
     case 'vlan_assignment':
       return can('radius:read') ? { to: paths.radius(tid), label: 'Review controllers' } : null
+    case 'network_not_enabled':
+    case 'mab_unsupported':
+      return can('radius:read') ? { to: paths.radius(tid), label: 'Review controllers and switches' } : null
     default:
       return null
   }
@@ -79,6 +82,7 @@ export function EventSheet({ tid, eventId, seed, open, onOpenChange, returnFocus
   const ctrl = e ? controllerFor(lookups.clients, e) : undefined
   const fix = e && e.result === 'reject' ? fixAction(e, tid, can) : null
   const certId = q.data?.certificate_id
+  const wired = e?.network === 'wired'
 
   let body: ReactNode
   if (!e) body = q.error ? <ErrorState error={q.error} onRetry={() => q.refetch()} title="This attempt couldn’t be loaded" /> : <LoadingBlock rows={6} label="Loading attempt" />
@@ -94,6 +98,9 @@ export function EventSheet({ tid, eventId, seed, open, onOpenChange, returnFocus
       <div className="space-y-6">
         {e.result === 'reject' ? (
           <Callout tone="crit" title={e.explanation?.title ?? (e.reason_code ? `Rejected (${e.reason_code})` : 'Rejected')}>
+            {e.monitor && (
+              <p className="mb-2.5">This switch is in monitor mode, so its port stayed open and the device still got on the network. Once the switch enforces, this device is refused.</p>
+            )}
             {e.explanation ? (
               <div className="space-y-2.5">
                 <p>{e.explanation.explanation}</p>
@@ -107,8 +114,15 @@ export function EventSheet({ tid, eventId, seed, open, onOpenChange, returnFocus
             )}
           </Callout>
         ) : (
-          <Callout tone="valid" title="Accepted">
-            RADIUS accepted this device{rule ? <> under the rule “{rule.name}”</> : ''}{e.vlan_id !== null ? <> and placed it on VLAN {e.vlan_id}{vlan ? ` (${vlan.name})` : ''}</> : ''}.
+          <Callout tone="valid" title={e.monitor ? 'Accepted (monitor mode)' : 'Accepted'}>
+            {e.monitor ? (
+              <>
+                RADIUS accepted this device{rule ? <> under the rule “{rule.name}”</> : ''}. The switch is in monitor mode, so EasyEAP decided but sent no VLAN: the device stayed on its port’s own VLAN.
+                {e.vlan_id !== null ? <> Once the switch enforces, it gets VLAN {e.vlan_id}{vlan ? ` (${vlan.name})` : ''}.</> : ' Once the switch enforces, it keeps its port’s VLAN.'}
+              </>
+            ) : (
+              <>RADIUS accepted this device{rule ? <> under the rule “{rule.name}”</> : ''}{e.vlan_id !== null ? <> and placed it on VLAN {e.vlan_id}{vlan ? ` (${vlan.name})` : ''}</> : wired ? ' on its port’s own VLAN' : ''}.</>
+            )}
           </Callout>
         )}
 
@@ -126,12 +140,20 @@ export function EventSheet({ tid, eventId, seed, open, onOpenChange, returnFocus
               </span>, 'wide'],
               ['Certificate issuer', e.cert_issuer ? <span className="ee-mono text-[12.5px] break-all">{e.cert_issuer}</span> : <span className="ee-ink-3">—</span>, 'wide'],
               ['Deciding rule', ruleText],
-              ['VLAN', e.vlan_id !== null ? <VlanTag vlanId={e.vlan_id} name={vlan?.name} color={vlan?.color} /> : <span className="ee-ink-3">None assigned</span>],
-              ['Controller', ctrl
+              ['VLAN', e.vlan_id !== null
+                ? <span className="flex flex-col gap-1">
+                  <VlanTag vlanId={e.vlan_id} name={vlan?.name} color={vlan?.color} />
+                  {e.monitor && <span className="ee-small ee-ink-3">Not sent: the switch is in monitor mode. This is the VLAN it gets once enforced.</span>}
+                </span>
+                : <span className="ee-ink-3">{wired ? 'None assigned (the port keeps its own VLAN)' : 'None assigned'}</span>],
+              ['Network', e.network ? networkLabels[e.network] : <span className="ee-ink-3">Not recorded</span>],
+              [wired ? 'Switch' : 'Controller', ctrl
                 ? (can('radius:read') ? <Link to={paths.radius(tid)} className={linkCls}>{ctrl.name}</Link> : ctrl.name)
-                : <span className="ee-ink-3">{e.nas_ip ? 'Not a registered controller' : 'Unknown'}</span>],
+                : <span className="ee-ink-3">{e.nas_ip ? (wired ? 'Not a registered switch' : 'Not a registered controller') : 'Unknown'}</span>],
               ['NAS address', e.nas_ip ? <span className="ee-mono text-[12.5px]">{e.nas_ip}</span> : <span className="ee-ink-3">—</span>],
-              ['SSID', e.ssid ?? <span className="ee-ink-3">Not reported</span>],
+              wired
+                ? ['Switch port', e.nas_port_id ? <span className="ee-mono text-[12.5px]">{e.nas_port_id}</span> : <span className="ee-ink-3">Not reported</span>]
+                : ['SSID', e.ssid ?? <span className="ee-ink-3">Not reported</span>],
               ['Called station', e.called_station_id ? <span className="ee-mono text-[12.5px] break-all">{e.called_station_id}</span> : <span className="ee-ink-3">—</span>],
               ['Reason code', e.reason_code ? <span className="ee-mono text-[12.5px]">{e.reason_code}</span> : <span className="ee-ink-3">—</span>],
               ['Event ID', <span className="ee-mono text-[12.5px]">{e.id}</span>],
@@ -184,7 +206,7 @@ export function EventSheet({ tid, eventId, seed, open, onOpenChange, returnFocus
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 {e && <OutcomeChip outcome={e.result} />}
-                <Dialog.Title className="ee-h2 text-[17px]">{!e ? 'Authentication attempt' : e.result === 'reject' ? (e.explanation?.title ?? 'Rejected') : `Accepted${e.vlan_id !== null ? ` to VLAN ${e.vlan_id}` : ''}`}</Dialog.Title>
+                <Dialog.Title className="ee-h2 text-[17px]">{!e ? 'Authentication attempt' : e.result === 'reject' ? (e.explanation?.title ?? 'Rejected') : e.monitor ? 'Accepted (monitor mode)' : `Accepted${e.vlan_id !== null ? ` to VLAN ${e.vlan_id}` : ''}`}</Dialog.Title>
               </div>
               {e && <p className="ee-small ee-ink-2 mt-1.5">{fmtDateTime(e.at)} · {ago(e.at, now)}</p>}
             </div>

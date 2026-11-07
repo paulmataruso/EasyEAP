@@ -125,7 +125,12 @@ export const TestUser = forwardRef<HTMLHeadingElement, {
             sim.isLoading ? <LoadingBlock rows={4} label="Evaluating" />
               : sim.error ? <ErrorState error={sim.error} onRetry={() => sim.refetch()} title="The test couldn’t run" />
               : sim.data ? (
-                <DecisionLedger outcome={sim.data} rules={ledgerRulesFromLive(live.rules)} identityGroups={i.groups} vlans={vlans} accountState={i.account_state} source={i.source} policyOnly />
+                <>
+                  <DecisionLedger outcome={sim.data} rules={ledgerRulesFromLive(live.rules)} identityGroups={i.groups} vlans={vlans} accountState={i.account_state} source={i.source} policyOnly />
+                  {sim.data.outcome === 'allow' && sim.data.vlan_id !== null && sim.data.wired_vlan_id !== undefined && sim.data.wired_vlan_id !== sim.data.vlan_id && (
+                    <p className="ee-small ee-ink-2">On wired 802.1X switch ports this user gets {sim.data.wired_vlan_id === null ? 'no VLAN from EasyEAP and stays on the port’s own VLAN' : `VLAN ${sim.data.wired_vlan_id}`} instead of VLAN {sim.data.vlan_id}.</p>
+                  )}
+                </>
               ) : null
           ) : !preview || !previewCurrent ? (
             <Callout tone="gold" title="Preview the draft to test against it" action={<Btn size="sm" variant="primary" busy={previewBusy} onClick={onPreview}>Preview impact</Btn>}>

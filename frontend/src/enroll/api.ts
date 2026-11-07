@@ -4,7 +4,8 @@
 export type Platform = 'windows' | 'macos' | 'ios' | 'android' | 'linux'
 export const PLATFORMS: Platform[] = ['ios', 'macos', 'android', 'windows', 'linux']
 
-export interface NetworkInfo { ssid: string; server_name: string; wpa3: boolean }
+/** `wired`: the tenant turned on wired 802.1X, so packages also set up network ports (Macs, Linux). */
+export interface NetworkInfo { ssid: string; server_name: string; wpa3: boolean; wired: boolean }
 
 /** GET /api/enroll/{token} while the link is usable. */
 export interface PendingInfo {
@@ -39,6 +40,9 @@ export interface CsrResult {
     mobileconfig_marker: string
     networkmanager: string | null
     wpa_supplicant: string | null
+    /** Wired 802.1X for Linux; null unless the tenant turned wired on. */
+    networkmanager_wired: string | null
+    wpa_supplicant_wired: string | null
   }
   identity: string
   instructions: string[]

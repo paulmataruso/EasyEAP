@@ -1,13 +1,18 @@
-# Wireless controller guides
+# Wireless controller and switch guides
 
 EasyEAP works with any controller that supports WPA2/WPA3-Enterprise with an external RADIUS server and dynamic
-VLAN assignment from RADIUS attributes. These guides cover the controllers MSPs meet most often:
+VLAN assignment from RADIUS attributes, and with switches that run 802.1X on their ports (wired). These guides cover
+the controllers and switches MSPs meet most often:
 
-| Controller | Guide | CoA port | CLI snippet in the console |
+| Controller or switch | Guide | CoA port | CLI in the console |
 |---|---|---|---|
 | Cisco Catalyst 9800 (IOS-XE 17.x) | [cisco-catalyst-9800.md](cisco-catalyst-9800.md) | UDP 1700 | Yes |
 | Cisco AireOS WLC 8.x | [cisco-aireos.md](cisco-aireos.md) | UDP 3799 | Yes |
-| UniFi Network | [unifi.md](unifi.md) | not used | Steps only |
+| UniFi Network (Wi-Fi and switches) | [unifi.md](unifi.md) | not used | Steps only |
+| Cisco Catalyst switches (wired 802.1X) | [cisco-catalyst-switch.md](cisco-catalyst-switch.md) | UDP 1700 | Yes, for that switch's ports |
+
+Switches start in **monitor mode**: ports stay open and EasyEAP sends them no VLAN until you enforce. See the
+Catalyst guide for the rollout.
 
 Each tenant's **RADIUS** screen shows the same guide filled with that tenant's values: the RADIUS address, ports,
 SSID, VLAN list and a name for the server entry. Prefer it over these pages; they exist for planning and change
@@ -15,7 +20,7 @@ records.
 
 ## What every controller needs
 
-1. **A RADIUS client in EasyEAP.** Add the controller on the tenant's RADIUS screen with the address its requests
+1. **A RADIUS client in EasyEAP.** Add the controller (or switch) on the tenant's RADIUS screen with the address its requests
    come from. EasyEAP generates a 32-character shared secret and shows it **once**. Paste it into the controller
    straight away. If it's lost, rotate it; it can't be displayed again.
 2. **An authentication server** at the EasyEAP RADIUS address, UDP 1812 (or the tenant's dedicated port), and an

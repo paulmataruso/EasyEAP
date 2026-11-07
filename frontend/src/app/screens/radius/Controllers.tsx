@@ -1,11 +1,12 @@
-// Wireless controller (RADIUS client) dialogs: add, edit, rotate shared secret, delete.
+// Wireless controller (RADIUS client) dialogs: add, edit, rotate shared secret, delete. Edit and delete also serve
+// switches; adding a switch is the wizard in Switches.tsx.
 // The shared secret is returned once by the API. It lives only in this component's state while the dialog is open,
 // the dialog can't be dismissed until it has been copied or acknowledged, and it is dropped when the dialog closes.
 import { useEffect, useId, useState, type FormEvent, type RefObject } from 'react'
 import { Plus, RotateCw, Trash2 } from 'lucide-react'
 import {
-  VENDORS, defaultCoaPort, useCreateClient, useDeleteClient, useRotateSecret, useUpdateClient, vendorLabels,
-  type ClientIn, type RadiusClient, type RadiusSettings,
+  SWITCH_VENDORS, VENDORS, defaultCoaPort, networkLabels, switchVendorLabels, useCreateClient, useDeleteClient, useRotateSecret, useUpdateClient, vendorLabels,
+  type ClientIn, type Network, type RadiusClient, type RadiusSettings,
 } from '../../api/radius'
 import { useTenant } from '../../api/tenant'
 import { Btn, Callout, EDialog, ESelect, ESwitch, Field, OneTimeSecret, errorMessage, toast } from '../../ui'
@@ -13,7 +14,7 @@ import { VendorGuide } from './Guide'
 
 const blank: ClientIn = { name: '', vendor: 'cisco-9800', address: '', site: '', coa_enabled: true, coa_port: 1700 }
 
-function addressProblem(a: string): string | null {
+export function addressProblem(a: string): string | null {
   const v = a.trim()
   if (!v) return 'Enter the source address of the controller’s RADIUS requests, for example 10.20.0.5 or 10.20.0.0/28.'
   const v4 = /^(\d{1,3})(\.\d{1,3}){3}(\/\d{1,2})?$/
@@ -28,7 +29,7 @@ function addressProblem(a: string): string | null {
   return 'Enter an IP address or CIDR range, for example 10.20.0.5 or 10.20.0.0/28.'
 }
 
-function ControllerForm({ value, onChange, touched, existing, formId, onSubmit }: { value: ClientIn; onChange: (v: ClientIn) => void; touched: boolean; existing: RadiusClient[]; formId: string; onSubmit: () => void }) {
+function ControllerForm({ value, onChange, touched, existing, formId, onSubmit, vendors }: { value: ClientIn; onChange: (v: ClientIn) => void; touched: boolean; existing: RadiusClient[]; formId: string; onSubmit: () => void; vendors?: Array<{ value: string; label: string }> }) {
   const id = useId()
   const set = <K extends keyof ClientIn>(k: K, v: ClientIn[K]) => onChange({ ...value, [k]: v })
   const errors = controllerErrors(value, existing)
@@ -40,10 +41,10 @@ function ControllerForm({ value, onChange, touched, existing, formId, onSubmit }
           <input id={`${id}-name`} className="ee-input" value={value.name} maxLength={120} onChange={(e) => set('name', e.target.value)} aria-invalid={!!err('name') || undefined} autoComplete="off" autoFocus />
         </Field>
       </div>
-      <Field label="Controller type" htmlFor={`${id}-vendor`} hint="Selects the configuration guide and the default CoA port.">
-        <ESelect id={`${id}-vendor`} label="Controller type" value={value.vendor} className="w-full"
+      <Field label="Type" htmlFor={`${id}-vendor`} hint="Selects the configuration guide and the default CoA port.">
+        <ESelect id={`${id}-vendor`} label="Type" value={value.vendor} className="w-full"
           onChange={(v) => onChange({ ...value, vendor: v, coa_port: defaultCoaPort(v), coa_enabled: v === 'unifi' ? false : value.coa_enabled })}
-          options={VENDORS.map((v) => ({ value: v, label: vendorLabels[v] }))} />
+          options={vendors ?? VENDORS.map((v) => ({ value: v, label: vendorLabels[v] }))} />
       </Field>
       <Field label="Source address or CIDR" htmlFor={`${id}-addr`} error={err('address')} hint="The address its RADIUS requests come from.">
         <input id={`${id}-addr`} className="ee-input ee-mono" value={value.address} onChange={(e) => set('address', e.target.value)} placeholder="10.20.0.5" inputMode="decimal"
@@ -72,7 +73,7 @@ function ControllerForm({ value, onChange, touched, existing, formId, onSubmit }
 
 function controllerErrors(v: ClientIn, existing: RadiusClient[]) {
   return {
-    name: !v.name.trim() ? 'Name the controller so you can recognise it in the log.' : existing.some((c) => c.name.toLowerCase() === v.name.trim().toLowerCase()) ? 'Another controller already has this name.' : null,
+    name: !v.name.trim() ? 'Name it so you can recognise it in the log.' : existing.some((c) => c.name.toLowerCase() === v.name.trim().toLowerCase()) ? 'Another controller or switch already has this name.' : null,
     address: addressProblem(v.address),
     coa_port: v.coa_enabled && !(Number.isInteger(v.coa_port) && (v.coa_port ?? 0) >= 1 && (v.coa_port ?? 0) <= 65535) ? 'Enter a UDP port from 1 to 65535. Catalyst 9800 listens on 1700, most others on 3799.' : null,
   }
@@ -159,7 +160,7 @@ export function EditControllerDialog({ client, onClose, clients, returnFocus }: 
   const formId = useId()
   useEffect(() => {
     if (client) {
-      setV({ name: client.name, vendor: client.vendor, address: client.address, site: client.site, coa_enabled: client.coa_enabled, coa_port: client.coa_port })
+      setV({ name: client.name, vendor: client.vendor, address: client.address, site: client.site, coa_enabled: client.coa_enabled, coa_port: client.coa_port, networks: client.networks })
       setTouched(false)
       setError(null)
     }
@@ -169,23 +170,58 @@ export function EditControllerDialog({ client, onClose, clients, returnFocus }: 
     if (!client) return
     setTouched(true)
     setError(null)
-    if (Object.values(controllerErrors(v, others)).some(Boolean)) return
-    update.mutate({ id: client.id, body: { ...v, name: v.name.trim(), address: v.address.trim(), site: v.site.trim() } }, {
-      onSuccess: () => { toast('Controller updated', `${v.name.trim()}. RADIUS applies the change with its next configuration refresh.`); onClose() },
+    const networks = fixedNetworks(v.vendor) ?? v.networks ?? client.networks
+    if (Object.values(controllerErrors(v, others)).some(Boolean) || !networks.length) return
+    update.mutate({ id: client.id, body: { ...v, networks, name: v.name.trim(), address: v.address.trim(), site: v.site.trim() } }, {
+      onSuccess: () => { toast('Changes saved', `${v.name.trim()}. RADIUS applies the change with its next configuration refresh.`); onClose() },
       onError: (e) => setError(errorMessage(e)),
     })
   }
   return (
-    <EDialog open={!!client} onOpenChange={(o) => !o && onClose()} returnFocus={returnFocus} wide title={`Edit ${client?.name ?? 'controller'}`} description="The shared secret doesn’t change. Use Rotate secret for that."
+    <EDialog open={!!client} onOpenChange={(o) => !o && onClose()} returnFocus={returnFocus} wide title={`Edit ${client?.name ?? 'controller'}`} description="The shared secret doesn’t change. Use Rotate secret for that. A switch’s port plan is edited from its panel."
       footer={<>
         <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
         <Btn variant="primary" type="submit" form={formId} busy={update.isPending}>Save changes</Btn>
       </>}>
       <div className="space-y-4">
-        <ControllerForm value={v} onChange={setV} touched={touched} existing={others} formId={formId} onSubmit={submit} />
+        <ControllerForm value={v} onChange={setV} touched={touched} existing={others} formId={formId} onSubmit={submit}
+          vendors={client?.vendor === 'cisco-switch' ? SWITCH_VENDORS.map((x) => ({ value: x, label: switchVendorLabels[x] })) : undefined} />
+        {client && <ServesField client={client} value={v.networks ?? client.networks} vendor={v.vendor} touched={touched} onChange={(n) => setV({ ...v, networks: n })} />}
         {error && <Callout tone="crit" title="Changes weren’t saved">{error}</Callout>}
       </div>
     </EDialog>
+  )
+}
+
+/** Networks a type always serves: Catalyst switches are wired only, 9800 and AireOS Wi-Fi only. UniFi and others choose. */
+const fixedNetworks = (vendor: string): Network[] | null =>
+  vendor === 'cisco-switch' ? ['wired'] : vendor === 'cisco-9800' || vendor === 'cisco-aireos' ? ['wireless'] : null
+
+function ServesField({ client, value, vendor, touched, onChange }: { client: RadiusClient; value: Network[]; vendor: string; touched: boolean; onChange: (n: Network[]) => void }) {
+  const fixed = fixedNetworks(vendor)
+  const serves = fixed ?? value
+  const toggle = (n: Network, on: boolean) => onChange((['wireless', 'wired'] as Network[]).filter((x) => (x === n ? on : value.includes(x))))
+  const dropping = client.networks.filter((n) => !serves.includes(n))
+  return (
+    <fieldset className="space-y-2">
+      {!fixed && <>
+        <legend className="text-[13px] font-semibold">Serves</legend>
+        <div className="flex flex-wrap gap-5">
+          {(['wireless', 'wired'] as Network[]).map((n) => (
+            <ESwitch key={n} checked={value.includes(n)} onChange={(on) => toggle(n, on)} label={n === 'wired' ? 'Wired 802.1X (switch ports)' : 'Wi-Fi'} />
+          ))}
+        </div>
+        {touched && !value.length && <p className="ee-field-error" role="alert">Choose Wi-Fi, wired or both.</p>}
+      </>}
+      {serves.includes('wired') && !client.networks.includes('wired') && (
+        <p className="ee-small ee-ink-3">Wired starts in monitor mode: devices on its 802.1X ports are checked and logged, but no port is closed. The switch panel shows the configuration to paste.</p>
+      )}
+      {dropping.length > 0 && serves.length > 0 && (
+        <Callout tone="warn" title={`${networkLabels[dropping[0]]} requests from ${client.name} will be rejected`}>
+          RADIUS rejects them as “not enabled for this network” once it applies the change.{dropping[0] === 'wired' && client.wired_mode === 'enforce' ? ' This switch is enforcing, so its 802.1X ports stop letting devices on.' : ''}
+        </Callout>
+      )}
+    </fieldset>
   )
 }
 
@@ -246,12 +282,12 @@ export function DeleteControllerDialog({ client, onClose, returnFocus }: { clien
       footer={<>
         <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
         <Btn variant="danger-solid" busy={del.isPending} onClick={() => c && del.mutate(c.id, {
-          onSuccess: () => { toast('Controller deleted', `RADIUS stops answering ${c.address} once it applies the change.`); onClose() },
+          onSuccess: () => { toast('Deleted', `${c.name}. RADIUS stops answering ${c.address} once it applies the change.`); onClose() },
           onError: (e) => toast('The controller wasn’t deleted', errorMessage(e), 'crit'),
-        })}><Trash2 aria-hidden />Delete controller</Btn>
+        })}><Trash2 aria-hidden />Delete</Btn>
       </>}>
       <div className="space-y-3 text-[13.5px] ee-ink-2">
-        <p>RADIUS stops answering requests from {c?.address} once it applies the change, usually within seconds. New connections through this controller then fail.</p>
+        <p>RADIUS stops answering requests from {c?.address} once it applies the change, usually within seconds. New connections through it then fail{c?.networks.includes('wired') ? '; switch ports with 802.1X follow the switch’s server-down setting' : ''}.</p>
         <p>Devices already connected stay connected until they next re-authenticate. Its shared secret is deleted and can’t be recovered; adding the controller again generates a new one.</p>
       </div>
     </EDialog>

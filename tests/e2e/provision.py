@@ -6,6 +6,8 @@ Commands (credentials come from E2E_EMAIL / E2E_PASSWORD; optional E2E_SETUP_TOK
   sync                        re-run directory sync and recompute decisions
   wait                        wait until the RADIUS agent has applied this tenant's latest snapshot
   events                      print recent authentication events as JSON
+  call <METHOD> <path> [json] call /api/tenants/<e2e tenant><path>; prints {"status": …, "body": …} whatever the status
+  enroll <user> <platform>    enroll a new device for that user from an on-device key; prints the CSR response
 All output is JSON on stdout. Private keys are generated here (the RA never sees them) and returned for the lab client.
 """
 import json
@@ -141,7 +143,8 @@ def wait(api):
     while time.time() < deadline:
         r = api("GET", f"/api/tenants/{T}/radius")
         a = r.get("agent") or {}
-        if a.get("tenant_in_sync") and a.get("config_ok") and a.get("radius_running"):
+        # tenant_config_in_sync: configuration-only changes (a switch's monitor/enforce) don't change the snapshot.
+        if a.get("tenant_in_sync") and a.get("tenant_config_in_sync") is not False and a.get("config_ok") and a.get("radius_running"):
             print(json.dumps({"in_sync": True, "snapshot": a.get("tenant_snapshot_applied")}))
             return
         time.sleep(2)
@@ -173,7 +176,24 @@ def main():
         T = api.tenant()
         ev = api("GET", f"/api/tenants/{T}/events", params={"hours": 2, "page_size": 50})["items"]
         print(json.dumps([{"at": e["at"], "result": e["result"], "reason": e["reason_code"], "vlan": e["vlan_id"], "user": e.get("username"),
-                           "title": (e.get("explanation") or {}).get("title")} for e in ev]))
+                           "title": (e.get("explanation") or {}).get("title"), "network": e.get("network"), "port": e.get("nas_port_id"),
+                           "monitor": e.get("monitor"), "mac": e.get("calling_station_id"), "client": e.get("nas_client_id")} for e in ev]))
+    elif cmd == "call":
+        api = Api()
+        T = api.tenant()
+        body = json.loads(sys.argv[4]) if len(sys.argv) > 4 else None
+        r = api.c.request(sys.argv[2], f"/api/tenants/{T}{sys.argv[3]}", json=body)
+        print(json.dumps({"status": r.status_code, "body": r.json() if r.content and r.headers.get("content-type", "").startswith("application/json") else r.text}))
+    elif cmd == "enroll":
+        api = Api()
+        T = api.tenant()
+        users = {i["username"]: i for i in api("GET", f"/api/tenants/{T}/identities", params={"page_size": 100})["items"]}
+        en = api("POST", f"/api/tenants/{T}/enrollments", json={"identity_id": users[sys.argv[2]]["id"], "device_name": f"{sys.argv[2]}-{sys.argv[3]}", "platform": sys.argv[3]})
+        token = en["link"].split("/t/")[1]
+        _, csr = csr_for(sys.argv[2])
+        info = api("GET", f"/api/enroll/{token}")
+        res = api("POST", f"/api/enroll/{token}/csr", json={"csr": csr, "key_origin": "csr"})
+        print(json.dumps({"info": info, "csr": res}))
     else:
         fail(f"unknown command {cmd}")
 
