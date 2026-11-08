@@ -164,6 +164,7 @@ class FakeSession:
     def __init__(self, cert, identity, tpl, tenant, device):
         self.cert, self.objs, self.renewal = cert, {}, None
         self.successor, self.successor_used, self.tries = None, None, 1  # an earlier renewal's certificate, for a re-issue
+        self.other_renewals = []  # more valid renewals, listed after self.renewal
         for o in (identity, tpl, tenant, device):
             if o is not None:
                 self.objs[o.id] = o
@@ -172,8 +173,9 @@ class FakeSession:
         sql = str(stmt.whereclause)
         if "renewal_of" in sql and "status !=" in sql:  # _replaceable_successor: the earlier renewal's, not revoked
             return SimpleNamespace(first=lambda: self.successor)
-        if "renewal_of" in sql:  # _earlier_renewal: the certificate an earlier renewal of it issued
-            return SimpleNamespace(first=lambda: self.renewal)
+        if "renewal_of" in sql:  # _earlier_renewal: the valid certificates earlier renewals of it issued
+            valid = [self.renewal] if self.renewal is not None and self.renewal.status == "active" and self.renewal.not_after > NOW else []
+            return SimpleNamespace(all=lambda: valid + self.other_renewals)
         # The row only matches the fingerprint the code really looks up, in the stored format.
         wanted = stmt.whereclause.right.value
         return SimpleNamespace(first=lambda: self.cert if self.cert is not None and wanted == self.cert.fingerprint_sha256 else None)
@@ -329,6 +331,18 @@ def test_a_lost_renewal_answer_is_sent_again(world):
     world.session.renewal.status = "revoked"
     with pytest.raises(enr.EnrollmentError, match="already renewed"):
         world.call(csr_key=k)
+
+
+def test_a_resend_finds_its_certificate_among_several(world):
+    """A replaced renewal and its replacement can expire in the same second: the key decides, not the order."""
+    k = ec.generate_private_key(ec.SECP256R1())
+    world.cert.status, world.cert.renewed_at = "superseded", NOW - timedelta(hours=3)
+    mine = SimpleNamespace(status="active", not_after=NOW + timedelta(days=300), certificate_pem=_pem(_cert("pc1.nina", k, ROOT_KEY, days=365)))
+    other = SimpleNamespace(status="active", not_after=NOW + timedelta(days=300),
+                            certificate_pem=_pem(_cert("pc1.nina", ec.generate_private_key(ec.SECP256R1()), ROOT_KEY, days=365)))
+    world.session.renewal, world.session.other_renewals = other, [mine]
+    _, again = world.call(csr_key=k)
+    assert again is mine and "names" not in world.issued
 
 
 def test_signature_time_and_key_checks(world):

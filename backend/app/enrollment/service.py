@@ -417,17 +417,21 @@ def _replaceable_successor(session: Session, old: m.Certificate, now: datetime, 
 
 
 def _earlier_renewal(session: Session, old: m.Certificate, csr_pem: str, now: datetime) -> m.Certificate | None:
-    """The certificate an earlier renewal of `old` issued for this request's key, still valid; else None. A client
-    whose renewal answer was lost (timeout, sleep, Wi-Fi drop) keeps its pending key and asks again with it."""
-    prev = session.scalars(select(m.Certificate).where(m.Certificate.renewal_of == old.id).order_by(m.Certificate.not_after.desc())).first()
-    if prev is None or prev.status != "active" or prev.not_after <= now:
-        return None
+    """The valid certificate an earlier renewal of `old` issued for this request's key; else None. A client whose
+    renewal answer was lost (timeout, sleep, Wi-Fi drop) keeps its pending key and asks again with it. Every valid
+    renewal is compared, not just the latest: a replaced one and its replacement can share an expiry to the second."""
     try:
-        csr, _ = crypto.csr_info(csr_pem)
-        issued = x509.load_pem_x509_certificate(prev.certificate_pem.encode())
+        want = _spki(crypto.csr_info(csr_pem)[0].public_key())
     except ValueError:
         return None
-    return prev if _spki(csr.public_key()) == _spki(issued.public_key()) else None
+    for prev in session.scalars(select(m.Certificate).where(m.Certificate.renewal_of == old.id, m.Certificate.status == "active",
+                                                            m.Certificate.not_after > now).order_by(m.Certificate.created_at.desc())).all():
+        try:
+            if _spki(x509.load_pem_x509_certificate(prev.certificate_pem.encode()).public_key()) == want:
+                return prev
+        except ValueError:
+            continue
+    return None
 
 
 def _csr_der(csr_pem: str) -> bytes:
