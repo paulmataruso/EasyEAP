@@ -26,6 +26,7 @@ def test_render_tree(tmp_path):
     s = render.short(TENANT["id"])
     clients = (tmp_path / "clients.conf").read_text()
     assert "require_message_authenticator = yes" in clients and "limit_proxy_state = yes" in clients and f"virtual_server = t_{s}" in clients
+    assert 'easyeap_send_vlan = "yes"' in clients, "an older API without send_vlan keeps sending VLANs"
     assert oct((tmp_path / "clients.conf").stat().st_mode)[-3:] == "600"
     assert oct((tmp_path / "tenants" / s / "server.key").stat().st_mode)[-3:] == "600"
     eap = (tmp_path / "mods-enabled" / f"eap_{s}").read_text()

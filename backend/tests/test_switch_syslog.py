@@ -202,13 +202,14 @@ def test_receiver_drops_unknown_sources():
 def test_config_block_with_syslog():
     block = service.config_block({"version": "v2c", "host": "192.0.2.10"}, "192.0.2.1", ("198.51.100.5", 5514))
     assert "logging discriminator EASYEAP facility includes SESSION_MGR|AUTHMGR|DOT1X|DOT1X_SWITCH|MAB|PM|RADIUS|SYS rate-limit 100" in block
-    assert "\nlogging host 198.51.100.5 discriminator EASYEAP transport udp port 5514\n" in block  # the documented order
-    assert "logging host 198.51.100.5 vrf Mgmt-vrf discriminator EASYEAP transport udp port 5514" in block
+    assert "\nlogging host 198.51.100.5 transport udp port 5514 discriminator EASYEAP\n" in block  # IOS-XE 16.6: discriminator last
+    assert "logging host 198.51.100.5 vrf Mgmt-vrf transport udp port 5514 discriminator EASYEAP" in block
+    assert "discriminator EASYEAP transport" not in block, "nothing may follow the discriminator name"
     assert "only keeps messages sent from 192.0.2.10" in block
     assert "logging trap" not in block and "service timestamps" not in block
     assert "logging" not in service.config_block({"version": "v2c", "host": "192.0.2.10"}, "192.0.2.1")
     rm = service.removal_block({"version": "v2c"}, syslog=("198.51.100.5", 5514))
-    assert rm.startswith("no logging host 198.51.100.5 discriminator EASYEAP transport udp port 5514\n")  # exactly as added
+    assert rm.startswith("no logging host 198.51.100.5 transport udp port 5514 discriminator EASYEAP\n")  # exactly as added
     assert "no logging discriminator EASYEAP" in rm
     assert "logging" not in service.removal_block({"version": "v2c"})
 

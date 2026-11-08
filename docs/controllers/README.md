@@ -9,10 +9,16 @@ the controllers and switches MSPs meet most often:
 | Cisco Catalyst 9800 (IOS-XE 17.x) | [cisco-catalyst-9800.md](cisco-catalyst-9800.md) | UDP 1700 | Yes |
 | Cisco AireOS WLC 8.x | [cisco-aireos.md](cisco-aireos.md) | UDP 3799 | Yes |
 | UniFi Network (Wi-Fi and switches) | [unifi.md](unifi.md) | not used | Steps only |
-| Cisco Catalyst switches (wired 802.1X) | [cisco-catalyst-switch.md](cisco-catalyst-switch.md) | UDP 1700 | Yes, for that switch's ports |
+| Cisco Catalyst switches, IOS-XE and classic IOS (wired 802.1X) | [cisco-catalyst-switch.md](cisco-catalyst-switch.md) | UDP 1700 | Yes, for that switch's ports |
+| Cisco Nexus switches, NX-OS (wired 802.1X) | [cisco-nexus.md](cisco-nexus.md) | UDP 1700 (Nexus 9000) | Yes |
+| Cisco Business: Catalyst 1200/1300, CBS, SG/SF (wired 802.1X) | [cisco-business.md](cisco-business.md) | UDP 1700 (Catalyst 1300) | Yes (SG200: web steps) |
+| Cisco Meraki MS (wired 802.1X) | [meraki-ms.md](meraki-ms.md) | not used | Dashboard steps |
 
-Switches start in **monitor mode**: ports stay open and EasyEAP sends them no VLAN until you enforce. See the
-Catalyst guide for the rollout.
+Switches start in **monitor mode**: EasyEAP sends them no VLAN until you enforce. Where the switch has an open mode,
+its ports stay open; Nexus, Meraki MS and classic IOS before 12.2(50)SE have none, and EasyEAP monitors from its side by
+accepting their MAC requests. Some Cisco Business models have no monitor mode at all and start with one test port.
+See the Catalyst guide for the rollout. **Paste `show version`** in Add switch and EasyEAP picks the family, model and
+release, and offers only what that switch can do.
 
 Each tenant's **RADIUS** screen shows the same guide filled with that tenant's values: the RADIUS address, ports,
 SSID, VLAN list and a name for the server entry. Prefer it over these pages; they exist for planning and change

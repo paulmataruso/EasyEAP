@@ -15,21 +15,54 @@ from app import models as m
 from app.config import get_settings
 from app.deps import TenantCtx, require
 from app.pki import crypto
+from app.radius import cisco_platforms as cp
 from app.security.ratelimit import limiter
-from app.switchaudit import service
+from app.switchaudit import platforms, service
 from app.switchaudit.service import MonitoringError, MonitoringIn
 
 router = APIRouter(prefix="/api/tenants/{tenant_id}/radius", tags=["switch-audit"])
 COLLECTOR_STALE = timedelta(minutes=3)
 
 
-def _switch(ctx: TenantCtx, client_id: uuid.UUID) -> m.RadiusClient:
+def unavailable(vendor: str, profile: dict | None) -> str | None:
+    """Why the switch audit can't run on this switch, or None when it can."""
+    if vendor != "cisco-switch":
+        return ("The switch audit reads Cisco switches over SNMP (Catalyst, Nexus, Cisco Business); this isn't one."
+                + (" Meraki MS has no 802.1X data over SNMP." if vendor == "meraki" else ""))
+    caps = cp.caps_for(vendor, profile)
+    if caps is None or caps.audit is not None:
+        return None
+    if caps.dialect == "web":
+        return ("The SG200 and SF200 have no command line for EasyEAP's SNMP settings: the switch audit isn't available for "
+                "them.")
+    if caps.dialect == "dot1x":
+        return ("IOS before 12.2(50)SE has no authentication manager for EasyEAP to read over SNMP: the switch audit needs "
+                "12.2(50)SE or later.")
+    return "The switch audit isn't available for this switch's family."
+
+
+def _switch(ctx: TenantCtx, client_id: uuid.UUID, read_only: bool = False) -> m.RadiusClient:
+    """The tenant's switch, for the switch audit. `read_only` (viewing, acknowledging, removing) also works on a switch
+    whose audit is no longer available, so what it found can still be read and the SNMP lines removed."""
     c = ctx.session.get(m.RadiusClient, client_id)
     if c is None or c.tenant_id != ctx.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Switch not found.")
-    if c.vendor != "cisco-switch":
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The switch audit reads Cisco Catalyst switches over SNMP; this isn't one.")
+    why = unavailable(c.vendor, getattr(c, "wired_profile", None))
+    if why and not (read_only and (c.monitoring or {}).get("host")):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, why)
     return c
+
+
+def removal_changes(c: m.RadiusClient, vendor: str, profile: dict | None) -> bool:
+    """Whether changing the switch's type or plan would change the lines that remove the audit's SNMP settings from it
+    (another family, series or release): those on the switch are the ones generated before."""
+    mon = c.monitoring or {}
+    if not mon.get("host"):
+        return False
+    if unavailable(vendor, profile):
+        return True
+    return _removal(mon, c) != service.removal_block(mon, syslog=_syslog_target(), source=_source_address(), profile=profile,
+                                                     vendor=vendor)
 
 
 def _source_address() -> str:
@@ -48,8 +81,8 @@ def _syslog_target() -> tuple[str, int] | None:
     return (dest or "<EasyEAP's address>", st.syslog_port)
 
 
-def _removal(mon: dict) -> str:
-    return service.removal_block(mon, syslog=_syslog_target(), source=_source_address())
+def _removal(mon: dict, c: m.RadiusClient) -> str:
+    return service.removal_block(mon, syslog=_syslog_target(), source=_source_address(), profile=c.wired_profile, vendor=c.vendor)
 
 
 def _heartbeat(s, key: str) -> dict:
@@ -82,7 +115,7 @@ def _bad(field: str, message: str) -> HTTPException:
 @router.get("/clients/{client_id}/monitoring")
 def get_monitoring(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius:read"))) -> dict:
     s = ctx.session
-    c = _switch(ctx, client_id)
+    c = _switch(ctx, client_id, read_only=True)
     mon = c.monitoring or {}
     st = s.get(m.SwitchState, c.id)
     rows = s.scalars(select(m.SwitchFinding).where(m.SwitchFinding.client_id == c.id, m.SwitchFinding.resolved_at.is_(None))
@@ -95,8 +128,8 @@ def get_monitoring(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radiu
     return {"monitoring": service.monitoring_out(c), "default_host": service.default_host(c), "state": service.state_out(st),
             "findings": [{**service.finding_out(f), "switch_says": service.says_about(said, f.port, f.mac)} for f in rows if f.opened_at is not None],
             "pending": sum(1 for f in rows if f.opened_at is None), "resolved": [service.finding_out(f) for f in resolved],
-            "config": service.config_block(mon or {"version": "v2c"}, _source_address(), target) if mon.get("host") else None,
-            "removal": _removal(mon) if mon.get("host") else None,
+            "config": service.config_block(mon or {"version": "v2c"}, _source_address(), target, c.wired_profile, c.vendor) if mon.get("host") else None,
+            "removal": _removal(mon, c) if mon.get("host") else None,
             "source_address": _source_address() or None, "collector": collector_status(s),
             "poll_requested_at": requested.isoformat() if requested else None,
             "syslog": {"receiving": target is not None, "listening": _heartbeat(s, "syslog_heartbeat")["alive"],
@@ -111,7 +144,7 @@ def switch_syslog(client_id: uuid.UUID, hours: int = Query(default=24, ge=1, le=
     """What the switch said over syslog (14 days at most), newest first; filtered by port or MAC."""
     from app.radius.wired import canonical_port
     from app.switchaudit.syslog import mac_of
-    c = _switch(ctx, client_id)
+    c = _switch(ctx, client_id, read_only=True)
     rows = service.recent_syslog(ctx.session, c.id, hours=hours, limit=500, port=canonical_port(port) if port else "",
                                  mac=mac_of(mac) or mac.replace(":", "").replace("-", "").replace(".", "").upper()[:12] if mac else "")
     return {"messages": [service.syslog_out(r) for r in rows], "truncated": len(rows) == 500}
@@ -129,6 +162,15 @@ def setup_monitoring(client_id: uuid.UUID, body: dict, ctx: TenantCtx = Depends(
         raise _bad(str(err["loc"][0]) if err.get("loc") else "host", str(err["msg"]).removeprefix("Value error, ")) from None
     except MonitoringError as exc:
         raise _bad(exc.field, str(exc)) from None
+    if cfg.version == "v3" and (c.wired_profile or {}).get("platform") == "nxos":
+        # NX-OS makes every SNMPv3 user a local login with the same name and password (research nxos.md §10).
+        raise _bad("version", "On NX-OS an SNMPv3 user is also a login account on the switch. Choose SNMPv2c: the community is "
+                   "limited to EasyEAP's address and a read-only role.")
+    fixed = platforms.v3_algorithms(c.wired_profile) if cfg.version == "v3" else None
+    if fixed and fixed[1] == "des":
+        raise _bad("version", "SG300 and SF300 switches encrypt SNMPv3 with DES only, which EasyEAP doesn't use. Choose SNMPv2c.")
+    if fixed:
+        cfg.auth, cfg.priv = fixed  # what this family's block configures (switchaudit/platforms.py)
     old = c.monitoring or {}
     old_community = None
     if c.snmp_secret_ct and old.get("version", "v2c") == "v2c":
@@ -146,11 +188,16 @@ def setup_monitoring(client_id: uuid.UUID, body: dict, ctx: TenantCtx = Depends(
                                               "rotated": bool(old.get("host"))})
     retire = None
     if old_community and old_community != creds.get("community"):
-        retire = f"no snmp-server community {old_community}\n"
+        # The family's own form (Cisco Business names the address the community was limited to).
+        retire = "".join(line + "\n" for line in service.removal_block(old, community=old_community, source=_source_address(),
+                                                                        profile=c.wired_profile, vendor=c.vendor).splitlines()
+                         if line.startswith("no snmp-server community"))
     elif old.get("version") == "v3" and (cfg.version != "v3" or (old.get("user") or "easyeap") != cfg.user):
-        retire = service.removal_block(old).split("no snmp-server view")[0]
+        # Only the old user and group: the view, ACL and logging host stay for the new credentials.
+        retire = "".join(line + "\n" for line in service.removal_block(old, profile=c.wired_profile, vendor=c.vendor).splitlines()
+                         if line.startswith(("no snmp-server user", "no snmp-server group")))
     return {"monitoring": service.monitoring_out(c), "credentials": {**creds, "user": cfg.user if cfg.version == "v3" else None},
-            "config": service.config_block(mon, _source_address(), _syslog_target()), "retire": retire}
+            "config": service.config_block(mon, _source_address(), _syslog_target(), c.wired_profile, c.vendor), "retire": retire}
 
 
 class MonitoringUpdate(BaseModel):
@@ -256,7 +303,7 @@ class AckIn(BaseModel):
 
 @router.post("/clients/{client_id}/monitoring/findings/{finding_id}/ack")
 def acknowledge(client_id: uuid.UUID, finding_id: uuid.UUID, body: AckIn, ctx: TenantCtx = Depends(require("radius:write"))) -> dict:
-    c = _switch(ctx, client_id)
+    c = _switch(ctx, client_id, read_only=True)
     f = ctx.session.get(m.SwitchFinding, finding_id)
     if f is None or f.client_id != c.id or f.tenant_id != ctx.id or f.resolved_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Finding not found, or already resolved.")
@@ -269,9 +316,9 @@ def acknowledge(client_id: uuid.UUID, finding_id: uuid.UUID, body: AckIn, ctx: T
 @router.delete("/clients/{client_id}/monitoring")
 def remove_monitoring(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius:write"))) -> dict:
     """Stop polling and forget the credentials. Returns the lines that remove EasyEAP's SNMP access from the switch."""
-    c = _switch(ctx, client_id)
+    c = _switch(ctx, client_id, read_only=True)
     old = c.monitoring or {}
-    removal = _removal(old) if old.get("host") else None
+    removal = _removal(old, c) if old.get("host") else None
     _resolve_open(ctx, c)
     st = ctx.session.get(m.SwitchState, c.id)
     if st is not None:

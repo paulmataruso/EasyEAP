@@ -18,9 +18,21 @@ this page and the console differ, the console is current.
 
 | Switch | Audit |
 |---|---|
-| Cisco Catalyst (IOS-XE, classic IOS) with CISCO-AUTH-FRAMEWORK-MIB | Every check below. |
-| Cisco Catalyst without it | Reachability, a replaced switch, err-disabled ports. |
+| Cisco Catalyst (IOS-XE, classic IOS 12.2(50)SE and later) with CISCO-AUTH-FRAMEWORK-MIB | Every check below. |
+| Cisco Catalyst without it | Reachability, a replaced switch, err-disabled ports (classic: from 12.2(52)SE). |
+| Cisco Nexus (NX-OS) | Reachability, a replaced switch, ports; err-disabled ports on the Nexus 9000. No 802.1X sessions (no CISCO-AUTH-FRAMEWORK-MIB). |
+| Cisco Business (Catalyst 1200/1300, CBS, SG/SF 250–550X, CBS220) | Reachability, a replaced switch, ports. |
+| Classic IOS before 12.2(50)SE, SG200, Meraki MS | No. |
 | UniFi, others | No. UniFi switches publish no 802.1X MIB; a UniFi Network API audit may come later. |
+
+The SNMP and syslog block follows the switch's family: a numbered ACL (98) and no logging discriminator on classic
+IOS (Cisco links the discriminator to a memory leak there; the block says how to remove one an earlier EasyEAP block
+added); an IPv4 ACL and the `network-operator` role on NX-OS, which has no SNMP views; the community limited to
+EasyEAP's address on Cisco Business. SNMPv3 algorithms are chosen on IOS-XE only: classic IOS uses SHA-1 and AES-128,
+Cisco Business SHA-256 and AES-128. Nexus switches (where an SNMPv3 user is also a login account) and the SG300/SF300
+(DES only) use SNMPv2c. Switches that send syslog only
+to UDP 514 (classic IOS before 15.2(1)E, Nexus 5000 and 3548, NX-OS before 9.3(3) on the Nexus 9000 and 3000) get the
+SNMP block with a note: the audit works without syslog.
 
 ## How it works
 
@@ -183,11 +195,11 @@ RADIUS request from that switch reaches EasyEAP, since not every switch logs the
 **Turn it on** on the EasyEAP server: set `EASYEAP_SYSLOG_BIND` in `.env` to the address switches reach EasyEAP on
 (normally the RADIUS address), and `EASYEAP_SYSLOG_PORT` if UDP 5514 is taken on the host; then `docker compose up -d`.
 The receiver runs in its own container, `easyeap-syslog`; until the bind is set its port is published on 127.0.0.1
-only. The switch configuration EasyEAP generates then includes:
+only. The switch configuration EasyEAP generates for IOS-XE then includes (other families: see "What's supported"):
 
 ```
 logging discriminator EASYEAP facility includes SESSION_MGR|AUTHMGR|DOT1X|DOT1X_SWITCH|MAB|PM|RADIUS|SYS rate-limit 100
-logging host <EasyEAP's address> discriminator EASYEAP transport udp port 5514
+logging host <EasyEAP's address> transport udp port 5514 discriminator EASYEAP
 ```
 
 with, as comments, `logging source-interface` and the `vrf Mgmt-vrf` form of the host line. Nothing global changes (no

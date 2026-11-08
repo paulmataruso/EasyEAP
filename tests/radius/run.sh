@@ -29,7 +29,7 @@ docker image inspect "$CLIENT_IMAGE" >/dev/null 2>&1 || docker build -q -t "$CLI
 WORK="$(mktemp -d)"
 chmod 755 "$WORK"
 cleanup() {
-  docker rm -f "$NET_NAME-fr" "$NET_NAME-fr101" "$NET_NAME-tac" "$NET_NAME-wlc" "$NET_NAME-switch" "$NET_NAME-plain" "$NET_NAME-unifi" "$NET_NAME-lab" "$NET_NAME-stranger" >/dev/null 2>&1
+  docker rm -f "$NET_NAME-fr" "$NET_NAME-fr101" "$NET_NAME-tac" "$NET_NAME-wlc" "$NET_NAME-switch" "$NET_NAME-plain" "$NET_NAME-unifi" "$NET_NAME-lab" "$NET_NAME-stranger" "$NET_NAME-nexus" "$NET_NAME-nexusenf" "$NET_NAME-nexus3k" >/dev/null 2>&1
   docker network rm "$NET_NAME" >/dev/null 2>&1
   docker run --rm -v "$WORK":/work --entrypoint sh "$CLIENT_IMAGE" -c 'rm -rf /work/*' >/dev/null 2>&1
   rm -rf "$WORK"
@@ -79,7 +79,7 @@ CHECK="$(docker run --rm --user root -v "$WORK":/work --entrypoint freeradius "$
 docker network create --subnet "$SUBNET.0/24" "$NET_NAME" >/dev/null || die "could not create the test network"
 docker run -d --name "$NET_NAME-fr" --network "$NET_NAME" --ip "$SUBNET.2" --user root -v "$WORK":/work \
   --entrypoint freeradius "$RADIUS_IMAGE" -f -l stdout -d /work/state/raddb/live >/dev/null || die "FreeRADIUS did not start"
-for n in wlc:10 switch:11 plain:12 unifi:17 lab:20 stranger:99; do
+for n in wlc:10 switch:11 plain:12 unifi:17 lab:20 nexus:21 nexusenf:22 nexus3k:23 stranger:99; do
   docker run -d --name "$NET_NAME-${n%%:*}" --network "$NET_NAME" --ip "$SUBNET.${n##*:}" -v "$WORK":/work:ro --entrypoint sleep "$CLIENT_IMAGE" 600 >/dev/null
 done
 for _ in $(seq 1 20); do docker logs "$NET_NAME-fr" 2>&1 | grep -q "Ready to process requests" && break; sleep 0.5; done
@@ -196,6 +196,29 @@ PY
 # what did arrive instead (no answered MAC request → no Enforce; docs/plans/mac-auth.md §6.5).
 [ "$NOMA" = "none" ] && ok "MAB request without Message-Authenticator: dropped (no answer)" || bad "a MAB request without Message-Authenticator was answered: $NOMA"
 
+step "7a. Nexus and Meraki (docs/plans/cisco-platforms.md §4, §5): PAP without Call-Check or Message-Authenticator"
+# pap <from> <user> <password> [pap_client options] → "accept <vlan|none> <session-timeout|->", "reject" or "none".
+pap() { local from="$1"; shift; docker exec -i "$NET_NAME-$from" python3 - "$SUBNET.2" "$SECRET" "$@" < "$ROOT/tests/radius/pap_client.py" 2>&1; }
+pexpect() { local got; got="$(pap "${@:3}")"; [ "$got" = "$2" ] && ok "$1 → $got" || bad "$1 → expected '$2', got '$got'"; }
+pexpect "monitor: device not on the allow list is let through (no VLAN, 30-minute session)" "accept none 1800" nexus 020000000a99 020000000a99
+pexpect "monitor: blocked device is let through too, logged as refused" "accept none 1800" nexus 020000000a02 020000000a02
+pexpect "monitor: allowed printer, VLAN withheld" "accept none 3600" nexus 020000000a01 020000000a01
+pexpect "monitor: Calling-Station-Id names another device: refused even in monitor" "reject" nexus 020000000a01 020000000a01 --csid 02-00-00-00-0A-06
+pexpect "monitor: password isn't the MAC: refused even in monitor" "reject" nexus 020000000a99 not-the-mac
+pexpect "monitor: a switch admin's RADIUS login (Service-Type Login) named like a MAC: refused" "reject" nexus 020000000a99 020000000a99 --service 1
+pexpect "monitor: Administrative login named like a MAC: refused" "reject" nexus 020000000a99 020000000a99 --service 6
+pexpect "monitor: NAS-Prompt login named like a MAC: refused" "reject" nexus 020000000a99 020000000a99 --service 7
+pexpect "monitor: a PAP login that isn't a MAC: refused" "reject" nexus admin 020000000a99
+pexpect "Proxy-State without Message-Authenticator: dropped (Blast-RADIUS)" "none" nexus 020000000a01 020000000a01 --proxy-state
+pexpect "Proxy-State with Message-Authenticator: answered" "accept none 3600" nexus 020000000a01 020000000a01 --proxy-state --ma
+pexpect "enforced: allowed printer gets its VLAN" "accept 120 3600" nexusenf 020000000a01 020000000a01 --csid 02:00:00:00:0a:01
+pexpect "enforced: not on the allow list: refused" "reject" nexusenf 020000000a99 020000000a99
+pexpect "enforced: Service-Type Call-Check (Meraki may send it): same decision" "accept 120 3600" nexusenf 020000000a01 020000000a01 --service 10
+pexpect "enforced, a switch that can't apply VLANs: allowed printer, no VLAN" "accept none 3600" nexus3k 020000000a01 020000000a01
+pexpect "port evidence: NAS-Port-Type Virtual (VPN, remote login) with a NAS-Port isn't a MAC request: refused" "reject" nexusenf 020000000a01 020000000a01 --port-type 5
+pexpect "port evidence: no NAS-Port-Type, a NAS-Port: a MAC request" "accept 120 3600" nexusenf 020000000a01 020000000a01 --port-type -1
+pexpect "a Catalyst switch's MAB request still needs Message-Authenticator" "none" switch 020000000a01 020000000a01 --service 10
+
 step "7b. MAC authentication (UniFi MAC-Based: EAP-MD5 with the MAC as identity and password)"
 md5() { # md5 <from> <identity> <password> [-N …] → accept <vlan> | accept none | reject
   local from="$1" ident="$2" pass="$3"; shift 3
@@ -251,6 +274,10 @@ for r in mac_unknown:020000000A99 mac_disabled:020000000A02 mac_expired:02000000
 done
 has '{"result": "reject", "method": "mab", "reason": "mab_not_enabled", "src_ip": "'"$SUBNET"'.12"}' && ok "MAB from a switch without it recorded as mab_not_enabled" || bad "no mab_not_enabled event"
 has '{"device_mac": "020000000A01", "result": "accept", "method": "mab", "monitor": "yes", "vlan": "120"}' && ok "monitor-mode MAB accept records the VLAN it withheld" || bad "monitor MAB event lacks monitor/vlan"
+has '{"device_mac": "020000000A99", "result": "accept", "method": "mab", "monitor": "accepted", "reason": "mac_unknown", "src_ip": "'"$SUBNET"'.21"}' \
+  && ok "server-side monitor accept records the refusal it stood in for (monitor = accepted, mac_unknown)" || bad "no monitor-accepted event"
+has '{"device_mac": "020000000A02", "result": "accept", "method": "mab", "monitor": "accepted", "reason": "mac_disabled"}' \
+  && ok "server-side monitor accept of a blocked device keeps its reason" || bad "monitor-accepted deny lacks its reason"
 has '{"device_mac": "020000000A01", "result": "accept", "method": "mab-eap", "vlan": "120"}' && ok "UniFi EAP-MD5 accept recorded as mab-eap" || bad "no mab-eap accept event"
 has '{"mac": "02-00-00-00-0A-01", "result": "accept", "method": "None", "device_mac": "None", "vlan": "110"}' && ok "certificate accept on a MAB switch: no MAC method, no device MAC" || bad "certificate event on a MAB switch looks like MAB"
 
@@ -323,6 +350,10 @@ texpect "exec authorization: the role's privilege level" "PASS_ADD priv-lvl=15" 
 texpect "exec authorization for a session nobody logged in through EasyEAP: ERROR (the switch's own list decides)" "ERROR" switch "$TKEY" author viewer
 texpect "read-only account login" "GETPASS PASS" switch "$TKEY" login viewer "$TPW"
 texpect "exec authorization, read-only role" "PASS_ADD priv-lvl=1" switch "$TKEY" author viewer
+texpect "Nexus login" "GETPASS PASS" nexus "$TKEY" login ops "$TPW"
+texpect "Nexus role request, level-15 role: network-admin, no priv-lvl" 'PASS_ADD shell:roles="network-admin"' nexus "$TKEY" author ops
+texpect "Nexus login, read-only account" "GETPASS PASS" nexus "$TKEY" login viewer "$TPW"
+texpect "Nexus role request, read-only role: network-operator" 'PASS_ADD shell:roles="network-operator"' nexus "$TKEY" author viewer
 texpect "exec authorization when the switch authenticated the session itself (local): ERROR" "ERROR" switch "$TKEY" --method 5 author ops
 texpect "accounting start" "SUCCESS" switch "$TKEY" acct ops start
 texpect "command accounting with a secret in it" "SUCCESS" switch "$TKEY" --cmd "username bob secret 0 Hunter2Hunter2 <cr>" acct ops stop
@@ -346,7 +377,7 @@ cmd = [e for e in ev if e["kind"] == "command"]
 assert cmd and cmd[0]["command"] == "username bob secret 0 ***** <cr>", cmd
 assert not any("Hunter2" in json.dumps(e) for e in ev)
 assert all(e["username"] != "mallory" for e in ev), "unknown names are logged as a keyed hash"
-assert {e["client_id"] for e in ev} == {"switch", "plain"}' && ok "admin log: every outcome spooled with its reason, secrets masked, unknown names hashed" \
+assert {e["client_id"] for e in ev} == {"switch", "plain", "nexus"}' && ok "admin log: every outcome spooled with its reason, secrets masked, unknown names hashed" \
   || bad "admin events: $(echo "$AEV" | head -c 600)"
 docker logs "$NET_NAME-tac" 2>&1 | grep -q "isn't a device with admin logins on" && ok "the unregistered address is logged once" || bad "no log line for the unregistered address"
 

@@ -16,11 +16,14 @@ page is the long form; where they differ, the console is current.
 
 | Device | Admin logins |
 |---|---|
-| Cisco Catalyst switches (IOS 15.2, IOS XE) | Yes. EasyEAP generates the configuration. Older IOS images without `tacacs server` get the `tacacs-server host` form. |
+| Cisco Catalyst switches (IOS 15.2, IOS XE) | Yes. EasyEAP generates the configuration. The switch's release decides the form: classic IOS before 15.2(7)E3 and IOS-XE 3.x get `tacacs-server host`. With no release in the port plan, the dialog offers the choice. |
+| Cisco Nexus (NX-OS) | Yes: `feature tacacs+`, a group with `use-vrf`, local logins on the console and as the fallback, a checkpoint to roll back. EasyEAP answers with `shell:roles` (`network-admin` for level 15, `network-operator` below; Nexus 7000 adds `vdc-admin` / `vdc-operator`). Usernames up to 28 characters. Not verified on Nexus hardware. |
+| Cisco Business (Catalyst 1300, CBS350, Sx350/550X, Sx300/500, CBS220) | Yes, with privilege levels 1, 7 and 15. Not verified on hardware. The Catalyst 1200, CBS250/SG250 and SG200 have no TACACS+. |
+| Cisco Meraki MS | No: Meraki switches have no TACACS+ login. |
 | Cisco Catalyst 9800 | Yes, CLI and (not yet verified) the web UI. |
 | Cisco AireOS | Not yet: it uses a different TACACS+ configuration. |
 | UniFi | No. UniFi switches and gateways have no TACACS+, RADIUS or LDAP login for administrators; they're managed from UniFi Network. |
-| Others (FortiGate, PAN-OS, Junos, NX-OS, Aruba) | Not yet. They need their own TACACS+ attributes. |
+| Others (FortiGate, PAN-OS, Junos, Aruba) | Not yet. They need their own TACACS+ attributes. |
 
 v1 has no command authorization: a role is a privilege level, and the device decides what each level may run.
 Logins use ASCII (SSH, telnet, console) or PAP; CHAP and MS-CHAP are refused because EasyEAP needs the password.

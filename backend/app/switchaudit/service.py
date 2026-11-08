@@ -23,8 +23,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models as m
+from app.radius import cisco_platforms as cp
 from app.radius.wired import planned_ports
-from app.switchaudit import collect, snmp
+from app.switchaudit import collect, platforms, snmp
 from app.switchaudit.findings import KINDS, TEXT, Context, Found, Key, Seen, detail_hash, evaluate, failure, family
 
 log = logging.getLogger("easyeap.switchaudit")
@@ -109,11 +110,27 @@ PRIV_PLACEHOLDER = "<privacy key>"
 SYSLOG_FACILITIES = "SESSION_MGR|AUTHMGR|DOT1X|DOT1X_SWITCH|MAB|PM|RADIUS|SYS"
 
 
-def config_block(mon: dict, source: str, syslog: tuple[str, int] | None = None) -> str:
+def _family(profile: dict | None, vendor: str) -> tuple[cp.Caps | None, dict]:
+    p = profile or {}
+    return cp.caps_for(vendor, p), p
+
+
+def config_block(mon: dict, source: str, syslog: tuple[str, int] | None = None, profile: dict | None = None,
+                 vendor: str = "cisco-switch") -> str:
     """The lines to paste on the switch: a read-only view of the six subtrees EasyEAP reads, an ACL that only lets
     EasyEAP in, and the community or SNMPv3 user; with `syslog` (the address and port switches send it to), a logging
-    host for the messages EasyEAP keeps. Nothing global changes (no logging levels, timestamps or AAA)."""
+    host for the messages EasyEAP keeps. Nothing global changes (no logging levels, timestamps or AAA). Classic IOS,
+    Nexus and Cisco Business get their own form (app/switchaudit/platforms.py)."""
     src = source or "<EasyEAP's address>"
+    caps, p = _family(profile, vendor)
+    if caps is not None and caps.dialect != "ibns2":
+        port_ok = platforms.syslog_port_ok(p, caps)
+        if caps.dialect in ("authmgr", "dot1x"):
+            return "\n".join(platforms.classic_block(mon, src, VIEW, syslog, port_ok)) + "\n"
+        if caps.dialect == "nxos":
+            return "\n".join(platforms.nxos_block(mon, src, p, syslog, port_ok)) + "\n"
+        if caps.dialect in ("sx", "cbs220"):
+            return "\n".join(platforms.cbs_block(mon, src, p, syslog)) + "\n"
     v6 = ":" in src
     acl = "EASYEAP-SNMP6" if v6 else "EASYEAP-SNMP"
     out = ["! EasyEAP switch audit: read-only SNMP for the 802.1X tables, from EasyEAP's address only.",
@@ -137,23 +154,33 @@ def config_block(mon: dict, source: str, syslog: tuple[str, int] | None = None) 
         mgmt = mon.get("host") or "the management address"
         out += ["!", "! Syslog: EasyEAP keeps the 802.1X, MAB, err-disable, RADIUS server and configuration messages.",
                 f"logging discriminator EASYEAP facility includes {SYSLOG_FACILITIES} rate-limit 100",
-                f"logging host {dest} discriminator EASYEAP transport udp port {port}",
+                f"logging host {dest} transport udp port {port} discriminator EASYEAP",
                 f"! EasyEAP only keeps messages sent from {mgmt}. If the switch would send them from another address, add:",
                 "!   logging source-interface <the interface with that address>",
                 "! From the management port of a Catalyst 9000 (Mgmt-vrf), use instead:",
-                f"!   logging host {dest} vrf Mgmt-vrf discriminator EASYEAP transport udp port {port}"]
+                f"!   logging host {dest} vrf Mgmt-vrf transport udp port {port} discriminator EASYEAP"]
     return "\n".join(out) + "\n"
 
 
-def removal_block(mon: dict, community: str | None = None, syslog: tuple[str, int] | None = None, source: str = "") -> str:
+def removal_block(mon: dict, community: str | None = None, syslog: tuple[str, int] | None = None, source: str = "",
+                  profile: dict | None = None, vendor: str = "cisco-switch") -> str:
     """Undo config_block (also how the old community is retired when credentials are regenerated). The logging host is
     removed with the line exactly as it was added: IOS keeps a host on another port as a separate entry. The view is
     removed one subtree at a time, numerically, as it was added (IOS XE 17.12 and 17.15 accept nothing else)."""
+    caps, p = _family(profile, vendor)
+    if caps is not None and caps.dialect != "ibns2":
+        port_ok = platforms.syslog_port_ok(p, caps)
+        if caps.dialect in ("authmgr", "dot1x"):
+            return "\n".join(platforms.classic_removal(mon, community, VIEW, syslog, port_ok)) + "\n"
+        if caps.dialect == "nxos":
+            return "\n".join(platforms.nxos_removal(mon, community, p, syslog, port_ok)) + "\n"
+        if caps.dialect in ("sx", "cbs220"):
+            return "\n".join(platforms.cbs_removal(mon, community, p, syslog, source or "<EasyEAP's address>")) + "\n"
     out = []
     if syslog:
         dest, port = syslog
-        out = [f"no logging host {dest} discriminator EASYEAP transport udp port {port}",
-               f"! or, if it was added in Mgmt-vrf: no logging host {dest} vrf Mgmt-vrf discriminator EASYEAP transport udp port {port}",
+        out = [f"no logging host {dest} transport udp port {port} discriminator EASYEAP",
+               f"! or, if it was added in Mgmt-vrf: no logging host {dest} vrf Mgmt-vrf transport udp port {port} discriminator EASYEAP",
                "no logging discriminator EASYEAP"]
     if mon.get("version") == "v3":
         out += [f"no snmp-server user {mon.get('user') or 'easyeap'} EASYEAP v3", "no snmp-server group EASYEAP v3 priv"]
@@ -216,8 +243,9 @@ def context(s: Session, c: m.RadiusClient, state: dict) -> Context:
     profile = c.wired_profile or {}
     mon = c.monitoring or {}
     macs = sorted({x["mac"] for x in state.get("sessions") or [] if x.get("mac") and x.get("authorized")})
+    caps = cp.caps_for(c.vendor, profile)
     ctx = Context(mode=profile.get("mode") or "enforce", planned=planned_ports(profile), mab=bool(profile.get("mab")),
-                  pinned=mon.get("pinned") or {}, version=mon.get("version") or "v2c")
+                  pinned=mon.get("pinned") or {}, version=mon.get("version") or "v2c", caf_expected=caps is None or caps.audit == "caf")
     since = datetime.now(UTC) - timedelta(days=180)
     accepts: dict[Key, m.AuthEvent] = {}
     for i in range(0, len(macs), 500):

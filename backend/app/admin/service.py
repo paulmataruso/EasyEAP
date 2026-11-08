@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models as m
+from app.admin import cisco
 from app.admin.mask import mask_command
 from app.pki import crypto
 
@@ -135,7 +136,7 @@ def build_part(s: Session, tenant_id: uuid.UUID, now: datetime | None = None) ->
         if prev_until:
             keys.append(crypto.decrypt_str(tenant_id, c.tacacs_prev_key_ct))
         clients.append({"id": str(c.id), "name": c.name, "address": c.address, "site": c.site or "", "vendor": c.vendor,
-                        "keys": keys, "prev_until": _ts(prev_until)})
+                        "keys": keys, "prev_until": _ts(prev_until), "os": cisco.os_of(c)})
     users = []
     for u in s.scalars(select(m.AdminUser).where(m.AdminUser.tenant_id == tenant_id)):
         role = roles.get(u.role_id)

@@ -185,7 +185,7 @@ export function EditControllerDialog({ client, onClose, clients, returnFocus }: 
       </>}>
       <div className="space-y-4">
         <ControllerForm value={v} onChange={setV} touched={touched} existing={others} formId={formId} onSubmit={submit}
-          vendors={client?.vendor === 'cisco-switch' ? SWITCH_VENDORS.map((x) => ({ value: x, label: switchVendorLabels[x] })) : undefined} />
+          vendors={client && SWITCH_ONLY.includes(client.vendor) ? SWITCH_VENDORS.filter((x) => x === client.vendor || !SWITCH_ONLY.includes(x)).map((x) => ({ value: x, label: switchVendorLabels[x] })) : undefined} />
         {client && <ServesField client={client} value={v.networks ?? client.networks} vendor={v.vendor} touched={touched} onChange={(n) => setV({ ...v, networks: n })} />}
         {error && <Callout tone="crit" title="Changes weren’t saved">{error}</Callout>}
       </div>
@@ -193,9 +193,13 @@ export function EditControllerDialog({ client, onClose, clients, returnFocus }: 
   )
 }
 
-/** Networks a type always serves: Catalyst switches are wired only, 9800 and AireOS Wi-Fi only. UniFi and others choose. */
+/** Switch-only types: Cisco and Meraki switches. One can become UniFi or Other, not the other switch type (its port plan
+ * describes a different switch). */
+const SWITCH_ONLY: string[] = ['cisco-switch', 'meraki']
+
+/** Networks a type always serves: Cisco and Meraki switches are wired only, 9800 and AireOS Wi-Fi only. UniFi and others choose. */
 const fixedNetworks = (vendor: string): Network[] | null =>
-  vendor === 'cisco-switch' ? ['wired'] : vendor === 'cisco-9800' || vendor === 'cisco-aireos' ? ['wireless'] : null
+  SWITCH_ONLY.includes(vendor) ? ['wired'] : vendor === 'cisco-9800' || vendor === 'cisco-aireos' ? ['wireless'] : null
 
 function ServesField({ client, value, vendor, touched, onChange }: { client: RadiusClient; value: Network[]; vendor: string; touched: boolean; onChange: (n: Network[]) => void }) {
   const fixed = fixedNetworks(vendor)

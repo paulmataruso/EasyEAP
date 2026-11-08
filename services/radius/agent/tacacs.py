@@ -292,6 +292,19 @@ class Device:
     site: str
     keys: list[bytes]
     prev_until: int | None
+    os: str = "ios"  # ios | nxos | nxos-n7k: how a shell authorization is answered (role_args)
+
+
+def role_args(os_name: str, priv: int) -> list[str]:
+    """The authorization reply's attributes. IOS: priv-lvl. NX-OS asks for the user's roles after each login and reads
+    shell:roles (docs/plans/cisco-platforms.md §7): network-admin for level 15, network-operator below, plus the VDC
+    roles on a Nexus 7000. No priv-lvl to NX-OS, so the two can never disagree."""
+    if os_name in ("nxos", "nxos-n7k"):
+        roles = "network-admin" if priv >= 15 else "network-operator"
+        if os_name == "nxos-n7k":
+            roles += " vdc-admin" if priv >= 15 else " vdc-operator"
+        return [f'shell:roles="{roles}"']
+    return [f"priv-lvl={priv}"]
 
 
 @dataclass
@@ -351,7 +364,8 @@ class Store:
                 except (KeyError, ValueError):
                     continue
                 nets.append((net, Device(tenant=tid, id=c["id"], name=c.get("name") or "", site=(c.get("site") or "").lower(),
-                                         keys=[k.encode() for k in c.get("keys") or [] if k], prev_until=c.get("prev_until"))))
+                                         keys=[k.encode() for k in c.get("keys") or [] if k], prev_until=c.get("prev_until"),
+                                         os=c.get("os") if c.get("os") in ("nxos", "nxos-n7k") else "ios")))
         nets.sort(key=lambda x: x[0].prefixlen, reverse=True)
         self.tenants, self.nets = tenants, nets
 
@@ -1060,7 +1074,7 @@ class Server:
             return author_reply({"pass": AUTHOR_PASS_ADD, "fail": AUTHOR_FAIL}.get(o.status, AUTHOR_ERROR))
         self.event(dev, ip, "authz", o.status, o, rem_addr=req.rem_addr, port=req.port)
         if o.status == "pass":
-            return author_reply(AUTHOR_PASS_ADD, [f"priv-lvl={o.priv}"])
+            return author_reply(AUTHOR_PASS_ADD, role_args(dev.os, o.priv or 0))
         return author_reply(AUTHOR_FAIL if o.status == "fail" else AUTHOR_ERROR)
 
     def acct(self, req: ArgsRequest, dev: Device, ip: str) -> bytes:

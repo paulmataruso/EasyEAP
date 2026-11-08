@@ -165,9 +165,13 @@ def test_ibns2_enforce_and_back():
     assert "no service-policy type control subscriber EASYEAP_MONITOR" in enf and "clear access-session" in enf
     assert "service-template EASYEAP_NO_8021X\n vlan 99" in enf and "service-template EASYEAP_CRITICAL\n vlan 98" in enf
     assert "dot1x critical eapol" in enf and "20 class DOT1X_NO_RESP do-until-failure" in enf
-    # The critical template exists only after Enforce defines it, so only then do the critical classes name it.
-    assert "EASYEAP_CRITICAL" not in g["cli"]
-    assert enf.index("service-template EASYEAP_CRITICAL") < enf.index("match activated-service-template EASYEAP_CRITICAL")
+    # The critical VLAN template exists only after Enforce defines it, so only then do the critical classes name it.
+    assert "EASYEAP_CRITICAL\n" not in g["cli"]
+    assert enf.index("service-template EASYEAP_CRITICAL\n") < enf.index("match activated-service-template EASYEAP_CRITICAL\n")
+    # "Allow on the port's VLAN" uses EasyEAP's own template, defined before the classes that match it; never Cisco's
+    # undocumented DEFAULT_CRITICAL_DATA_TEMPLATE.
+    assert "DEFAULT_CRITICAL" not in g["cli"] + enf + mon
+    assert g["cli"].index("service-template EASYEAP_CRITICAL_OPEN") < g["cli"].index("match activated-service-template EASYEAP_CRITICAL_OPEN")
     assert "no access-session closed" in mon and "service-policy type control subscriber EASYEAP_MONITOR" in mon
 
 

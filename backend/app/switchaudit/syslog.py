@@ -50,20 +50,28 @@ HINT_MIN_GAP, HINT_DELAY = timedelta(minutes=5), timedelta(seconds=30)
 KEEP: dict[str, set[str]] = {
     "SESSION_MGR": {"FAIL", "SECURITY_VIOLATION"},
     "AUTHMGR": {"FAIL", "SECURITY_VIOLATION"},
-    "DOT1X": {"FAIL"},
+    "DOT1X": {"FAIL", "SESSION_TERMINATION", "SECURITY_VIOLATION"},   # NX-OS: no FAIL; termination and violation
     "MAB": {"FAIL"},
     "DOT1X_SWITCH": {"ERR_"},
     "PM": {"ERR_DISABLE", "ERR_RECOVER"},
     "RADIUS": {"RADIUS_DEAD", "RADIUS_ALIVE", "ALLDEADSERVER"},
     "RADIUS_AUDIT_MESSAGE": {"RADIUS_DEAD", "RADIUS_ALIVE"},   # IOS-XE 17
     "SYS": {"CONFIG_I"},
+    # NX-OS (docs/plans/cisco-platforms.md §8; research nxos.md §11.3)
+    "ETHPORT": {"IF_DOWN_ERROR_DISABLED", "IF_ERRDIS_RECOVERY"},
+    "STP": {"BLOCK_BPDUGUARD"},
+    "VSHD": {"VSHD_SYSLOG_CONFIG_I"},
 }
-HINT_ON = {"ERR_DISABLE", "ERR_RECOVER", "SECURITY_VIOLATION", "CONFIG_I"}  # the SNMP evidence should follow soon
-PRIORITY = {"RADIUS_DEAD", "RADIUS_ALIVE", "ALLDEADSERVER", "ERR_DISABLE"}   # kept even past the tenant's byte quota
+HINT_ON = {"ERR_DISABLE", "ERR_RECOVER", "SECURITY_VIOLATION", "CONFIG_I",   # the SNMP evidence should follow soon
+           "IF_DOWN_ERROR_DISABLED", "IF_ERRDIS_RECOVERY", "VSHD_SYSLOG_CONFIG_I"}
+PRIORITY = {"RADIUS_DEAD", "RADIUS_ALIVE", "ALLDEADSERVER", "ERR_DISABLE",     # kept even past the tenant's byte quota
+            "IF_DOWN_ERROR_DISABLED"}
 RADIUS_FACILITIES = {"RADIUS", "RADIUS_AUDIT_MESSAGE"}
 
-# %FACILITY[-SUBFACILITY]-SEVERITY-MNEMONIC: (some platforms add a sub-facility, %PM-SP-4-ERR_DISABLE)
-_TAG = re.compile(rb"%([A-Z][A-Z0-9_]{0,31})(?:-[A-Z][A-Z0-9_]{0,15})?-([0-7])-([A-Z][A-Z0-9_]{0,47}):[ \t]?")
+# %FACILITY[-SUBFACILITY]-SEVERITY-MNEMONIC: (some platforms add a sub-facility, %PM-SP-4-ERR_DISABLE). Cisco Business
+# writes the severity as a letter (%LINK-W-Down, %SEC-I-PORTAUTHORIZED) and mnemonics in mixed case.
+_TAG = re.compile(rb"%([A-Z][A-Z0-9_]{0,31})(?:-[A-Z][A-Z0-9_]{0,15})?-([0-7]|[AFCEWNID])-([A-Z][A-Za-z0-9_]{0,47}):[ \t]?")
+LETTER_SEVERITY = {"F": 0, "A": 1, "C": 2, "E": 3, "W": 4, "N": 5, "I": 6, "D": 7}
 _ORIGIN = re.compile(r"^(?:(?:Switch|Chassis) ?\d+ )?R\d+/\d+: \w+: ")  # IOS-XE's "Switch 1 R0/0: sessmgrd: "
 _PORT = re.compile(r"\b([A-Za-z][A-Za-z-]*?) ?(\d{1,4}(?:/\d{1,4}){1,3})\b")
 _CLIENT_MAC = re.compile(r"\(([0-9a-fA-F]{4})\.([0-9a-fA-F]{4})\.([0-9a-fA-F]{4})\)")
@@ -73,6 +81,7 @@ _SESSION = re.compile(r"AuditSessionID:? ?([0-9A-Fa-f]{8,64})")
 _SERVER = re.compile(r"(?i)RADIUS server ([0-9A-Fa-f.:]+?)(?::(\d+)(?:,\d+)?)?(?: is|\s|$)")
 _CONFIG_BY = re.compile(r"Configured from (.{1,80})$")
 _CAUSE = re.compile(r"^(\S{1,40}) error detected")
+_NX_CAUSE = re.compile(r"Reason: ?([^)]{1,40})\)")  # NX-OS: "is down (Error disabled. Reason:BPDUGuard)"
 _REDACT = [
     (re.compile(r"(?i)\[user: [^\]]*\]"), "[user: <redacted>]"),
     (re.compile(r"(?i)\b(password|passwd|secret|key|community|user|username)(\s*[:=]\s*|\s+)([^\s,;\]]+)"), r"\1\2<redacted>"),
@@ -137,11 +146,11 @@ def server_of(text: str) -> str:
 def _subject(facility: str, mnemonic: str, body: str) -> str:
     if facility in RADIUS_FACILITIES:
         return server_of(body) or ("all" if mnemonic == "ALLDEADSERVER" else "")
-    if mnemonic == "CONFIG_I":
+    if mnemonic.endswith("CONFIG_I"):
         m = _CONFIG_BY.search(body)
         return m.group(1)[:64] if m else ""
-    if mnemonic in ("ERR_DISABLE", "ERR_RECOVER"):
-        m = _CAUSE.search(body)
+    if mnemonic in ("ERR_DISABLE", "ERR_RECOVER", "IF_DOWN_ERROR_DISABLED"):
+        m = _CAUSE.search(body) or _NX_CAUSE.search(body)
         return m.group(1)[:64] if m else ""
     return ""
 
@@ -153,7 +162,8 @@ def parse(data: bytes) -> Message | None:
     m = _TAG.search(data)
     if m is None:
         return None
-    facility, severity, mnemonic = m.group(1).decode(), int(m.group(2)), m.group(3).decode()
+    sev = m.group(2).decode()
+    facility, severity, mnemonic = m.group(1).decode(), int(sev) if sev.isdigit() else LETTER_SEVERITY[sev], m.group(3).decode()
     body = _ORIGIN.sub("", _clean(data[m.end():]))
     text = redact(body)[:MAX_TEXT]
     sid = _SESSION.search(body)

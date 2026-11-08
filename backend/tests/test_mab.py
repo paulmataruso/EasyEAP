@@ -199,7 +199,7 @@ def test_render_mab(tmp_path):
     main = (tmp_path / "sites-enabled" / f"t_{s}").read_text()
     assert "mab_unsupported" not in main and "mab_not_enabled" in main
     # MAB needs the client to allow it and evidence of a switch port.
-    assert '("%{client:easyeap_mab}" == "pap") && (&NAS-Port-Type == Ethernet)' in main
+    assert '("%{client:easyeap_mab}" == "pap") && &NAS-Port-Type && (&NAS-Port-Type == Ethernet)' in main
     assert '("%{client:easyeap_mab}" == "eap") && (&control:EasyEAP-Network == "wired")' in main
     # Every MAC lookup is keyed on the normalised identity only, for this tenant, current MAC version only.
     lookups = re.findall(r"%\{authz:SELECT[^\n]*authz_mac[^\n]*", main)

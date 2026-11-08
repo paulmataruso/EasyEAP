@@ -48,10 +48,10 @@ def serial(name: str) -> str:
     return out.strip().split("=", 1)[1].upper().lstrip("0") or "0"
 
 
-def client(n: str, name: str, vendor: str, networks: list[str], monitor: bool = False, mab: str = "no") -> dict:
+def client(n: str, name: str, vendor: str, networks: list[str], monitor: bool = False, mab: str = "no", **flags) -> dict:
     host = n.split("/")[0].split(".")[-1]
     return {"id": f"c0000000-0000-4000-8000-0000000000{int(host):02d}", "name": name, "vendor": vendor, "address": f"{NET}.{n}",
-            "secret": SECRET, "coa": False, "coa_port": 3799, "networks": networks, "monitor": monitor, "mab": mab}
+            "secret": SECRET, "coa": False, "coa_port": 3799, "networks": networks, "monitor": monitor, "mab": mab, **flags}
 
 
 def desired() -> dict:
@@ -68,6 +68,12 @@ def desired() -> dict:
             # A UniFi gateway range with a Catalyst switch registered inside it: FreeRADIUS takes the longest prefix.
             client("16/28", "HQ UniFi", "unifi", ["wireless", "wired"], mab="eap"),
             client("20", "Lab Access", "cisco-switch", ["wired"], monitor=True, mab="pap"),
+            # Nexus (docs/plans/cisco-platforms.md §4, §5): PAP without Call-Check or Message-Authenticator; server-side
+            # monitor on the first, enforced on the second.
+            client("21", "Core Nexus", "cisco-switch", ["wired"], monitor=True, mab="pap-wired", monitor_accept=True, message_authenticator="no"),
+            client("22", "Nexus enforced", "cisco-switch", ["wired"], mab="pap-wired", monitor_accept=True, message_authenticator="no"),
+            # A Nexus 3000 (no VLAN from RADIUS): the allowed printer is accepted without its VLAN.
+            client("23", "Nexus 3000", "cisco-switch", ["wired"], mab="pap-wired", monitor_accept=True, message_authenticator="no", send_vlan=False),
         ],
     }]}
 
@@ -197,7 +203,10 @@ def admin() -> None:
     user = {"hash": h, "totp": None, "sites": [], "enabled": True, "expires_at": None, "unlocked_at": None}
     state = {"tenants": {}}
     part = {"clients": [{"id": "switch", "name": "lab-switch", "address": f"{NET}.11", "site": "", "vendor": "cisco-switch",
-                         "keys": [TACACS_KEY], "prev_until": None}],
+                         "keys": [TACACS_KEY], "prev_until": None},
+                        # A Nexus (docs/plans/cisco-platforms.md §7): roles instead of priv-lvl.
+                        {"id": "nexus", "name": "lab-nexus", "address": f"{NET}.21", "site": "", "vendor": "cisco-switch",
+                         "keys": [TACACS_KEY], "prev_until": None, "os": "nxos"}],
             "users": [{**user, "id": "u-ops", "username": "ops", "priv": 15, "role": "Network administrator"},
                       {**user, "id": "u-ro", "username": "viewer", "priv": 1, "role": "Read-only"}],
             "maps": [], "candidates": [], "directory": None, "local_only": ["breakglass"], "role_cache_hours": 12}

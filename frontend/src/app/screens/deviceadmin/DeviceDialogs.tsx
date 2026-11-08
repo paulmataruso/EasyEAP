@@ -58,12 +58,20 @@ export function ConfigDialog({ device, secret, server, onClose }: {
             <input id={`${id}-addr`} className="ee-input ee-mono max-w-[260px]" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="10.0.0.10" autoComplete="off" spellCheck={false} />
           </Field>
         )}
-        <Seg label="IOS version" value={legacy ? 'legacy' : 'current'} onChange={(v) => setLegacy(v === 'legacy')}
-          options={[{ value: 'current', label: 'IOS-XE and IOS 15.2+' }, { value: 'legacy', label: 'Older IOS (tacacs-server host)' }]} />
+        {(device?.legacy_choice ?? true) && (
+          <Field label="IOS version" htmlFor={`${id}-ios`} hint="The switch’s port plan doesn’t give its release. Giving it there (Edit port plan) lets EasyEAP choose.">
+            <Seg label="IOS version" value={legacy ? 'legacy' : 'current'} onChange={(v) => setLegacy(v === 'legacy')}
+              options={[{ value: 'current', label: 'IOS-XE and IOS 15.2+' }, { value: 'legacy', label: 'Older IOS (tacacs-server host)' }]} />
+          </Field>
+        )}
         {q.error ? <ErrorState error={q.error} onRetry={() => q.refetch()} title="The configuration couldn’t be loaded" /> : !guide ? <LoadingBlock rows={6} label="Loading the configuration" /> : (
           <>
             <Callout tone="warn" title="Not yet verified on Cisco hardware">
-              EasyEAP’s TACACS+ service is tested against a client that follows IOS’s login sequence. Keep a session open and use <code className="ee-mono text-[12.5px]">reload in 15</code> as the steps say.
+              EasyEAP’s TACACS+ service is tested against a client that follows IOS’s login sequence. Keep a session open and {device?.form === 'nxos'
+                ? <>make the checkpoint the steps give (<code className="ee-mono text-[12.5px]">checkpoint</code>): NX-OS has no <code className="ee-mono text-[12.5px]">reload in</code>.</>
+                : device?.form === 'sx' || device?.form === 'sx-old' || device?.form === 'cbs220'
+                  ? 'don’t save until it works: the saved configuration is the way back.'
+                  : <>use <code className="ee-mono text-[12.5px]">reload in 15</code> as the steps say.</>}
             </Callout>
             <section aria-label="Check the device first">
               <p className="text-[13px] font-semibold mb-2">1. Check the device first</p>

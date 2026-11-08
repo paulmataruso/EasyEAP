@@ -44,6 +44,11 @@ def ingest_auth(session: Session, events: list[dict[str, Any]]) -> int:
         serial = normalize_serial(e["serial"]) if _clean(e.get("serial"), 64) else None
         cert = session.scalars(select(m.Certificate).where(m.Certificate.tenant_id == tenant_id, m.Certificate.serial == serial)).first() if serial else None
         result = "accept" if e.get("result") == "accept" else "reject"
+        # Server-side monitor (docs/plans/cisco-platforms.md §4): the switch got an Accept so the device keeps working,
+        # but EasyEAP refused it; it's logged as the refusal it will be once the switch is enforced.
+        monitor = e.get("monitor") in ("yes", "accepted")
+        if e.get("monitor") == "accepted":
+            result = "reject"
         reason = _clean(e.get("reason"), 32)
         message = _clean(e.get("message"), 2000)
         if result == "reject" and not reason:
@@ -74,7 +79,7 @@ def ingest_auth(session: Session, events: list[dict[str, Any]]) -> int:
             cert_serial=serial, cert_issuer=_clean(e.get("issuer"), 300), calling_station_id=_clean(e.get("mac"), 64),
             called_station_id=_clean(e.get("called"), 128), nas_ip=nas_ip, nas_client_id=nas.id if nas else None,
             ssid=_ssid(_clean(e.get("called"), 128)), vlan_id=int(vlan) if vlan and vlan.isdigit() else None,
-            network=_network(e.get("network")), nas_port_id=_clean(e.get("port_id"), 64), monitor=e.get("monitor") == "yes",
+            network=_network(e.get("network")), nas_port_id=_clean(e.get("port_id"), 64), monitor=monitor,
             rule_id=uuid.UUID(rule) if rule and _is_uuid(rule) else None, raw_message=message,
             mac=mac, method=method or ("eap-tls" if serial else None),
             mac_device_id=uuid.UUID(mac_device) if mac_device and _is_uuid(mac_device) else None,

@@ -87,6 +87,9 @@ class Context:
     denied_now: dict[Key, str] = field(default_factory=dict)      # why EasyEAP would refuse that accept's device now
     pinned: dict = field(default_factory=dict)  # {"engine_id", "serial"} from the first successful poll
     version: str = "v2c"
+    # The platform has CISCO-AUTH-FRAMEWORK-MIB (Catalyst with the authentication manager). Nexus, Cisco Business and
+    # IOS before 12.2(50)SE don't: their audit is ports and err-disable only, with no caf_missing warning.
+    caf_expected: bool = True
 
 
 def evaluate(state: dict, ctx: Context) -> tuple[list[Found], set[str]]:
@@ -109,8 +112,9 @@ def evaluate(state: dict, ctx: Context) -> tuple[list[Found], set[str]]:
         out.append(Found("switch_changed", WARNING, detail=changed))
 
     if not caps.get("caf"):
-        if ctx.planned:
+        if ctx.planned and ctx.caf_expected:
             out.append(Found("caf_missing", WARNING, detail={"version": facts.get("version") or ""}))
+        out += _errdisable(caps, ports, ctx)
         return out, evaluated
 
     for name in sorted(ctx.planned):
@@ -155,12 +159,19 @@ def evaluate(state: dict, ctx: Context) -> tuple[list[Found], set[str]]:
         if enforce and not acc.monitor and acc.vlan_id is not None and sess.get("domain") != "voice" and sess.get("vlan") != acc.vlan_id:
             out.append(Found("vlan_mismatch", WARNING, port=port, mac=mac, detail={**base, "sent": acc.vlan_id}))
 
+    out += _errdisable(caps, ports, ctx)
+    return out, evaluated
+
+
+def _errdisable(caps: dict, ports: dict, ctx: Context) -> list[Found]:
+    """Err-disabled ports in the plan (or for a violation): from CISCO-ERR-DISABLE-MIB, with or without the 802.1X MIB."""
+    out = []
     if caps.get("errdisable"):
         for name, p in sorted(ports.items()):
             cause = p.get("err_disabled")
             if cause and (name in ctx.planned or "violation" in cause):
                 out.append(Found("err_disabled", WARNING, port=name, detail={"cause": cause}))
-    return out, evaluated
+    return out
 
 
 def failure(error_kind: str, message: str) -> list[Found]:

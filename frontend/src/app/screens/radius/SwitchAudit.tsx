@@ -38,9 +38,15 @@ function detailText(f: Finding): string | null {
       return parts.join('; ')
     }
     case 'snmp_unreachable': case 'snmp_auth': return typeof d.error === 'string' ? d.error : null
-    case 'caf_missing': return d.version ? `IOS-XE ${d.version}.` : null
+    case 'caf_missing': return d.version ? `Release ${d.version}.` : null
     default: return null
   }
+}
+
+/** The SNMPv3 algorithms each non-IOS-XE family's block uses; IOS-XE lets the admin choose. */
+const V3_FIXED: Record<string, string | undefined> = {
+  classic: 'SHA-1 and AES-128: what classic IOS offers.',
+  cbs: 'SHA-256 and AES-128.',
 }
 
 export function SwitchAuditPanel({ client }: { client: RadiusClient }) {
@@ -78,9 +84,11 @@ export function SwitchAuditPanel({ client }: { client: RadiusClient }) {
           </p>
           <p className="ee-small ee-ink-3 mt-0.5">
             {!mon.set_up
-              ? 'EasyEAP can read this switch’s 802.1X sessions over SNMP (read-only) and compare them with its own answers: unprotected ports, devices it never accepted, VLANs that don’t match.'
+              ? (client.capabilities?.audit === 'ports'
+                ? 'EasyEAP can read this switch’s ports over SNMP (read-only): whether it answers, and ports that are down or err-disabled. This switch doesn’t report its 802.1X sessions over SNMP.'
+                : 'EasyEAP can read this switch’s 802.1X sessions over SNMP (read-only) and compare them with its own answers: unprotected ports, devices it never accepted, VLANs that don’t match.')
               : <>
-                {st ? <>Polled {ago(st.polled_at, now)}{st.ok && st.facts.model ? ` · ${st.facts.model}` : ''}{st.ok && st.facts.version ? ` · IOS-XE ${st.facts.version}` : ''}. </> : 'Not polled yet. '}
+                {st ? <>Polled {ago(st.polled_at, now)}{st.ok && st.facts.model ? ` · ${st.facts.model}` : ''}{st.ok && st.facts.version ? ` · ${st.facts.version}` : ''}. </> : 'Not polled yet. '}
                 SNMP{mon.version === 'v3' ? 'v3' : 'v2c'} to <span className="ee-mono">{mon.host}</span> every {mon.interval_minutes} minutes{mon.enabled ? '' : ' (turned off)'}.
                 {st?.slow && ' Polls take a long time on this switch, so it’s polled half as often.'}
               </>}
@@ -295,16 +303,24 @@ function SetupDialog({ client, data, open, onClose }: { client: RadiusClient; da
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
   const config = result ? fillCredentials(result.config, result.credentials) : data.config ?? ''
   const secretValue = result ? (result.credentials.community ?? `${result.credentials.auth_key}  ${result.credentials.priv_key}`) : ''
-  const submit = () => setupM.mutate(form, {
+  const submit = () => setupM.mutate(v2cOnly ? { ...form, version: 'v2c' } : form, {
     onSuccess: (r) => { setResult(r); setMode('test'); setFieldErr(null) },
     onError: (e) => { const f = errorField(e); if (f) setFieldErr({ field: f, message: errorMessage(e) }); else toast('Monitoring wasn’t set up', errorMessage(e), 'crit') },
   })
   const runTest = () => test.mutate(undefined, { onSuccess: (r) => setTested(r), onError: (e) => toast('The test didn’t run', errorMessage(e), 'crit') })
   const err = (f: string) => (fieldErr?.field === f ? fieldErr.message : null)
+  // Only IOS-XE offers a choice of SNMPv3 algorithms; other families' blocks fix them (switchaudit/platforms.py).
+  const v3Fixed = V3_FIXED[client.wired_profile?.platform ?? 'ibns2']
+  // Families where EasyEAP uses SNMPv2c only, and why.
+  const v2cOnly = client.wired_profile?.platform === 'cbs' && client.wired_profile?.series === 'sx300'
+    ? 'SG300 and SF300 switches encrypt SNMPv3 with DES only, which EasyEAP doesn’t use.'
+    : client.wired_profile?.platform === 'nxos'
+      ? 'On NX-OS an SNMPv3 user is also a login account on the switch, so EasyEAP uses a community limited to its address.'
+      : null
   return (
     <EDialog open={open} onOpenChange={(o) => !o && onClose()} wide risk={result ? 'gold' : undefined}
       title={mode === 'form' ? `Set up monitoring for ${client.name}` : `Configure SNMP on ${client.name}`}
-      description={mode === 'form' ? 'Read-only SNMP from EasyEAP’s address to the six tables the audit reads. EasyEAP generates the credentials.' : 'Paste the block on the switch, then test the connection. Monitoring turns on when the test reaches the switch.'}
+      description={mode === 'form' ? 'Read-only SNMP from EasyEAP’s address to the tables the audit reads. EasyEAP generates the credentials.' : 'Paste the block on the switch, then test the connection. Monitoring turns on when the test reaches the switch.'}
       footer={mode === 'form' ? (
         <>
           <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
@@ -325,15 +341,22 @@ function SetupDialog({ client, data, open, onClose }: { client: RadiusClient; da
           </Field>
           <div className="space-y-1.5">
             <p className="ee-label">SNMP version</p>
-            <Seg<SnmpVersion> label="SNMP version" value={form.version} onChange={(v) => setForm({ ...form, version: v })}
-              options={[{ value: 'v2c', label: 'SNMPv2c' }, { value: 'v3', label: 'SNMPv3 (encrypted)' }]} />
+            {v2cOnly ? <p className="text-[13px] ee-ink-2">SNMPv2c. ({v2cOnly})</p> : (
+              <Seg<SnmpVersion> label="SNMP version" value={form.version} onChange={(v) => setForm({ ...form, version: v })}
+                options={[{ value: 'v2c', label: 'SNMPv2c' }, { value: 'v3', label: 'SNMPv3 (encrypted)' }]} />
+            )}
             <p className="ee-small ee-ink-3">
               {form.version === 'v2c'
                 ? 'The community travels in clear text, so EasyEAP generates a long random one, and the configuration limits it to a read-only view and to EasyEAP’s address.'
                 : 'Requests are authenticated and encrypted, and no community crosses the network. The user’s keys aren’t stored in the switch’s running configuration.'}
             </p>
           </div>
-          {form.version === 'v3' && (
+          {form.version === 'v3' && v3Fixed && (
+            <Field label="User" htmlFor={`${id}-user`} error={err('user')} hint={v3Fixed}>
+              <input id={`${id}-user`} className="ee-input ee-mono max-w-[260px]" value={form.user ?? 'easyeap'} onChange={(e) => setForm({ ...form, user: e.target.value })} autoComplete="off" spellCheck={false} />
+            </Field>
+          )}
+          {form.version === 'v3' && !v3Fixed && (
             <div className="grid gap-4 sm:grid-cols-3">
               <Field label="User" htmlFor={`${id}-user`} error={err('user')}>
                 <input id={`${id}-user`} className="ee-input ee-mono" value={form.user ?? 'easyeap'} onChange={(e) => setForm({ ...form, user: e.target.value })} autoComplete="off" spellCheck={false} />
@@ -387,8 +410,8 @@ function SetupDialog({ client, data, open, onClose }: { client: RadiusClient; da
           )}
           {tested && (tested.ok ? (
             <Callout tone="valid" title="EasyEAP reached the switch: monitoring is on">
-              {[tested.facts?.model, tested.facts?.version ? `IOS-XE ${tested.facts.version}` : null, tested.facts?.serial ? `serial ${tested.facts.serial}` : null].filter(Boolean).join(' · ')}.
-              {tested.capabilities?.caf ? ' It reports its 802.1X sessions, so every check runs.' : ' It doesn’t report its 802.1X sessions over SNMP: only reachability and err-disabled ports can be checked.'}
+              {[tested.facts?.model, tested.facts?.version ?? null, tested.facts?.serial ? `serial ${tested.facts.serial}` : null].filter(Boolean).join(' · ')}.
+              {tested.capabilities?.caf ? ' It reports its 802.1X sessions, so every check runs.' : ` It doesn’t report its 802.1X sessions over SNMP: only reachability${client.capabilities?.errdisable === false ? ' and ports' : ' and err-disabled ports'} can be checked.`}
               {' '}The first poll runs within a minute.
             </Callout>
           ) : (

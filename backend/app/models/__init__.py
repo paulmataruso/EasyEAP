@@ -401,7 +401,7 @@ class RadiusClient(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
     name: Mapped[str] = mapped_column(String(120))
-    vendor: Mapped[str] = mapped_column(String(16))  # cisco-9800 | cisco-aireos | cisco-switch | unifi | other
+    vendor: Mapped[str] = mapped_column(String(16))  # cisco-9800 | cisco-aireos | cisco-switch | meraki | unifi | other
     networks: Mapped[list[str]] = mapped_column(ARRAY(String), default=lambda: ["wireless"])  # wireless | wired: what it may authenticate
     wired_profile: Mapped[dict] = mapped_column(JSONB, default=dict)  # the switch port plan and rollout mode (app/radius/wired.py); no secrets
     address: Mapped[str] = mapped_column(String(64), index=True)  # IP or CIDR; uniqueness across shared-port tenants enforced in service

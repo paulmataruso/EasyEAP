@@ -91,7 +91,7 @@ export default function MacAllowList() {
           {data.switches_with_mab.length === 0 ? (
             <Callout tone="neutral" className="mb-4" title="No switch checks this list yet"
               action={can('radius:read') ? <Link to={paths.radius(tid)} className="ee-btn ee-btn-sm">Open RADIUS</Link> : undefined}>
-              Turn on MAC authentication for a Cisco Catalyst or UniFi switch (open it on the RADIUS page while it’s in monitor mode). Wi-Fi doesn’t use this list.
+              Turn on MAC authentication for a Cisco, Meraki or UniFi switch (open it on the RADIUS page while it’s in monitor mode). Wi-Fi doesn’t use this list.
             </Callout>
           ) : (
             <p className="ee-small ee-ink-2 mb-4">

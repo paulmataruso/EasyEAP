@@ -5,14 +5,39 @@ port without enrolling again. Add the switch from the tenant's **RADIUS** screen
 generates the configuration for that switch's own ports, with the tenant's RADIUS address and ports filled in. Use the
 wizard. This page explains what it generates and why, for change records and reviews.
 
-| Configuration style | Platforms | Monitor mode | Enforce |
+| Family | Platforms | Monitor mode | Enforce |
 |---|---|---|---|
 | **IOS-XE (IBNS 2.0)** | Catalyst 9200, 9300, 9400, 9500 (IOS-XE 16.x, 17.x, 26.x); 3650/3850 on IOS-XE 16.x, or on 3.x | policy map `EASYEAP_MONITOR` (ports open by default) | policy map `EASYEAP_CLOSED` and `access-session closed` |
-| **Classic** | Classic IOS 12.2 and 15.x: 2960, 2960-X, 2960-XR, 3560, 3560-CX, 3750 | `authentication open` | `no authentication open` |
+| **Classic IOS** (12.2(50)SE and later) | 2960, 2960-X, 2960-XR, 2960-L, 3560, 3560-CX, 3750, IE 2000 | `authentication open` | `no authentication open` |
+| **Classic IOS** before 12.2(50)SE | the same switches on older releases (no authentication manager) | EasyEAP accepts their MAC requests (below) | `dot1x` fallback actions, then `dot1x re-authenticate` per port |
 
-Run `show version | include IOS` to choose. `Cisco IOS XE Software, Version 16.…` (or 17., 26.) and IOS-XE 3.x
-(`Version 03.…E` on a 3650, 3850 or 4500E) use IBNS 2.0; a version without "IOS XE" or "IOS-XE", such as
-`Version 15.2(7)E`, is classic IOS.
+Nexus, Cisco Business and Meraki switches have guides of their own: [Nexus](cisco-nexus.md),
+[Cisco Business](cisco-business.md), [Meraki MS](meraki-ms.md).
+
+In Add switch, **Paste show version**: EasyEAP reads the family, model and release (and LAN Lite images) and generates
+for that release. The release decides which form each command takes, for example:
+
+| Release | What changes |
+|---|---|
+| Classic before 15.2(3)E (2960-X: 15.0(2)EX) | `radius-server host … key …` instead of the named `radius server` |
+| Classic before 12.2(55)SE | no `radius-server dead-criteria`; critical access uses `dot1x critical`; multi-auth ports don't apply RADIUS VLANs |
+| Classic before 12.2(52)SE | no CoA; the switch audit doesn't read err-disabled ports |
+| Classic before 15.2(7)E | no VLAN for devices without 802.1X on multi-auth ports (single-host or multi-host only) |
+| Classic before 15.2(7)E3 | admin logins (TACACS+) use `tacacs-server host` |
+| Classic LAN Lite | no critical access, CoA or violation modes |
+| IOS-XE 3.x | no `radius-server attribute 31`; admin logins use `tacacs-server host`; before 3.6: `radius-server host` |
+
+Without a release, EasyEAP assumes a recent one (IOS 15.2(3)E or later, IOS-XE 16 or later) and says so above the
+configuration. A classic release from a train Catalyst access switches don't run (SX, SY, SG…) is treated as unknown.
+
+### Classic IOS before 12.2(50)SE
+
+These releases have no authentication manager: no open mode, no multi-auth, no CoA. The ports use the older `dot1x`
+commands (`dot1x port-control auto`, `dot1x mac-auth-bypass`, `dot1x guest-vlan`, `dot1x critical`), and EasyEAP
+monitors from its side: it accepts every MAC request from the switch with no VLAN while it's in monitor mode, and logs
+what it would decide. A device that tries 802.1X and fails is refused even in monitor mode, so start with one test
+port. The session list is `show dot1x all summary`. Before 12.2(25)SEE there's no MAC authentication bypass: EasyEAP
+asks you to upgrade the switch.
 
 ## The rollout: monitor first, then enforce
 
@@ -29,8 +54,8 @@ Leave it there for a few days. Then open the switch's panel on the RADIUS screen
 
 1. **Readiness**: what EasyEAP saw from this switch, by port: accepted devices, refused devices and the VLANs
    enforcing would assign. Devices that never try 802.1X don't appear here.
-2. **Check the switch's own sessions**: paste the output of `show access-session` (IBNS 2.0) or
-   `show authentication sessions` (classic). EasyEAP lists every session that isn't authorized. Each one
+2. **Check the switch's own sessions**: paste the output of `show access-session` (IBNS 2.0),
+   `show authentication sessions` (classic) or `show dot1x all summary` (classic before 12.2(50)SE). EasyEAP lists every session that isn't authorized. Each one
    **loses access** when you enforce.
 3. **Enforce**: EasyEAP asks you to confirm you've checked, starts sending VLANs to the switch, and shows the change
    to paste **once RADIUS is running it** (usually within 15 seconds). Pasted any earlier, `clear access-session`
@@ -45,7 +70,7 @@ The wizard lists these commands and what to look for in each answer:
 
 | Command | Look for |
 |---|---|
-| `show version \| include IOS` | The configuration style (above). |
+| `show version \| include IOS` | The family and release EasyEAP built the configuration for (above). |
 | `show running-config \| include ^aaa new-model` | `aaa new-model`: tick **Already uses AAA**, and EasyEAP leaves the login and exec method lists alone. Nothing, or `no aaa new-model`: AAA is off, leave it unticked. Either way the configuration starts with `aaa new-model`, which `radius server` and every `aaa` command need (IOS-XE says “radius server” isn't a command without it). |
 | `show running-config \| include dot1x\|access-session\|authentication port-control\|policy-map type control` | **Must print nothing.** If it prints anything, the switch already has 802.1X: stop and merge by hand (below). |
 | `show interfaces trunk` | Uplinks and AP ports. Put them in **Ports to leave alone**. |
@@ -60,9 +85,13 @@ configures `GigabitEthernet1/0/1 - 47`. The configuration lists them in a commen
 
 1. In exec mode: `reload in 15`. If the paste cuts you off, the switch reboots into its saved configuration in
    15 minutes.
-2. `configure terminal`, paste, `end`.
-3. Open a **new** SSH session to the switch. If you can log in: `reload cancel`.
-4. `write memory`.
+2. IOS-XE only: `authentication convert-to new-style`, and answer `yes` (releases without it: `authentication display
+   new-style`). IOS-XE asks this yes/no question once, before it takes its first control policy, and the switch keeps
+   the new-style (IBNS 2.0) configuration from then on. Answered now, the question can't take a line of the paste as
+   its answer. If the switch offers neither command, it already uses the new style.
+3. `configure terminal`, paste, `end`.
+4. Open a **new** SSH session to the switch. If you can log in: `reload cancel`.
+5. `write memory`.
 
 ## What the configuration contains
 

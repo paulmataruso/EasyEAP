@@ -15,6 +15,7 @@ from app import models as m
 from app.pki import crypto
 from app.pki import service as pki
 from app.pki.openbao import OpenBao
+from app.radius import cisco_platforms as cp
 
 DEFAULT_PORTS = (1812, 1813)
 log = logging.getLogger("easyeap.radius")
@@ -77,11 +78,25 @@ def ensure_server_certificate(session: Session, bao: OpenBao, tenant: m.Tenant, 
 
 
 def mab_mode(c: m.RadiusClient) -> str:
-    """"pap" for a Cisco switch with MAC authentication on (Cisco sends PAP with Service-Type Call-Check), "eap" for
-    UniFi (its MAC-Based mode uses EAP-MD5), otherwise "no"."""
+    """How this switch sends MAC authentication, when it's on: "pap" (Catalyst, Cisco Business: PAP with Service-Type
+    Call-Check), "pap-wired" (Nexus, Meraki: PAP without it), "eap" (UniFi MAC-Based, SG300: EAP-MD5); otherwise "no"."""
     if "wired" not in (c.networks or []) or not (c.wired_profile or {}).get("mab"):
         return "no"
-    return {"cisco-switch": "pap", "unifi": "eap"}.get(c.vendor, "no")
+    caps = cp.caps_for(c.vendor, c.wired_profile)
+    if caps is not None:
+        return caps.mab or "no"
+    return {"unifi": "eap"}.get(c.vendor, "no")
+
+
+def client_flags(c: m.RadiusClient) -> dict:
+    """Per-switch RADIUS behaviour from its platform (docs/plans/cisco-platforms.md §4, §5): whether MAC refusals become
+    monitor accepts while it's in monitor mode, whether its requests must carry Message-Authenticator, and whether it can
+    apply a VLAN from RADIUS (one that can't fails the port when it gets one)."""
+    caps = cp.caps_for(c.vendor, c.wired_profile) if "wired" in (c.networks or []) else None
+    if caps is None:
+        return {"monitor_accept": False, "message_authenticator": "yes", "send_vlan": True}
+    return {"monitor_accept": caps.monitor == "server", "message_authenticator": caps.message_authenticator,
+            "send_vlan": caps.radius_vlan}
 
 
 def bump(session: Session, tenant_id: uuid.UUID) -> None:
@@ -113,6 +128,7 @@ def desired_state(session: Session, bao: OpenBao) -> dict:
             "monitor": "wired" in (c.networks or []) and (c.wired_profile or {}).get("mode") == "monitor",
             # MAC authentication (docs/plans/mac-auth.md §5.1): how this switch asks, or "no".
             "mab": mab_mode(c),
+            **client_flags(c),
         } for c in session.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == t.id))]
         tenants.append({
             "id": str(t.id), "slug": t.slug, "name": t.name,

@@ -7,6 +7,31 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Every Cisco switch family** for wired 802.1X, with the configuration for the switch's own release
+  ([plan and critique](docs/plans/cisco-platforms.md)). Not verified on Cisco hardware; every guide says so.
+  - **Paste `show version`** in Add switch: EasyEAP reads the family, model, release and LAN Lite images, and the port
+    plan offers only what that switch can do (host modes, VLAN for devices without 802.1X, what happens while EasyEAP
+    is unreachable), with what it can't do and what EasyEAP assumed shown above the plan.
+  - **Classic IOS by release**: `radius-server host` before 15.2(3)E, `dot1x critical` before 12.2(55)SE, no CoA before
+    12.2(52)SE, LAN Lite limits, and the pre-12.2(50)SE `dot1x` dialect (`show dot1x all summary`,
+    `dot1x re-authenticate interface`). An unknown release keeps the named RADIUS server already deployed.
+  - **Nexus (NX-OS)**: Nexus 9000, 3000, 3548, 5000/6000 and 7000, by model and release
+    ([docs/controllers/cisco-nexus.md](docs/controllers/cisco-nexus.md)). The Nexus 3600 is refused (no 802.1X).
+  - **Cisco Business**: Catalyst 1200/1300, CBS220/250/350 and the SG/SF 200–550X
+    ([docs/controllers/cisco-business.md](docs/controllers/cisco-business.md)). Models without an open mode start
+    with one test port; the SG200 gets web interface steps.
+  - **Meraki MS** as its own switch type, with Dashboard steps ([docs/controllers/meraki-ms.md](docs/controllers/meraki-ms.md)).
+  - **Monitor mode from EasyEAP's side** for switches without an open mode (Nexus, Meraki MS other than MS130/MS150,
+    classic IOS before 12.2(50)SE): EasyEAP accepts their MAC requests with no VLAN and a 30-minute session, and logs
+    what it would decide. MAC authentication requests sent as plain PAP (Nexus, Meraki) are recognised only with port
+    evidence and never when they look like an admin login.
+  - **Message-Authenticator per switch**: not required from Nexus, Cisco Business, Meraki and pre-12.2(50)SE switches,
+    which send MAC requests without it; Proxy-State without it is still dropped.
+  - **Admin logins (TACACS+)** on NX-OS (`shell:roles` network-admin / network-operator, VDC roles on the Nexus 7000)
+    and Cisco Business; the release picks the IOS form, and the "older IOS" choice appears only when it's unknown.
+  - **Switch audit** on NX-OS and Cisco Business (ports, and err-disabled ports where the switch reports them), with
+    each family's own SNMP and syslog block; NX-OS and Cisco Business syslog (letter severities) is parsed.
+
 - **Linux setup script.** Linux enrollment links now offer `EasyEAP-WiFi-Setup.sh`: one command in Terminal finds
   NetworkManager, iwd, or wpa_supplicant with systemd-networkd or dhcpcd, creates the key on the computer, adds the
   Wi-Fi network (and wired 802.1X with NetworkManager, keeping each existing wired profile's own settings) for all
@@ -150,6 +175,21 @@ versions follow [Semantic Versioning](https://semver.org/).
   and EasyEAP accounts) and Group Policy autoenrollment (a Kerberos client written from the specifications against
   Samba AD, through the proxy, then EAP-TLS with the issued computer certificate) end to end, and can drive another
   deployment (`E2E_DEPLOY_DIR`). `tests/autoenroll/kerberos.sh` checks Kerberos acceptance against a real MIT KDC.
+
+### Fixed
+
+- **IOS-XE 16.6.1 and other releases rejected parts of the classic and IOS-XE configuration**: commands now follow
+  the switch's release (see above). `DEFAULT_CRITICAL_DATA_TEMPLATE` is replaced by EasyEAP's own critical template,
+  except on switches already enforcing with it, whose policy name stays the same.
+- **The switch audit's syslog line was refused on IOS-XE** (`% Invalid input` at `transport`): the discriminator now
+  ends the line, `logging host <EasyEAP> transport udp port 5514 discriminator EASYEAP`, as IOS-XE 16.6 requires.
+  A switch that refused it needs only that line; the rest of the block was accepted.
+- **IOS-XE asks a yes/no question before its first control policy** (converting to the new-style configuration), and
+  inside a paste it took the next pasted line as the answer. The safe-paste steps now run
+  `authentication convert-to new-style` first.
+- **Switches that can't apply a VLAN from RADIUS** (Nexus 3000 and 7000, some Cisco Business models) no longer get
+  one, whatever the method. A plan or type change that would orphan the switch audit's SNMP lines is refused until
+  the audit is removed, and a switch's family can't keep a release number from another family.
 
 ### Changed
 

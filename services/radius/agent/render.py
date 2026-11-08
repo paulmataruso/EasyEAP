@@ -261,7 +261,12 @@ MAC_RE = r"([0-9A-Fa-f]{2}[-:.]?){5}[0-9A-Fa-f]{2}"
 # octets captured so "%{toupper:%{1}%{2}%{3}%{4}%{5}%{6}}" is EasyEAP's canonical form (app/mac.py).
 MAC_CAPTURE = r"^([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})$"
 MAC_JOINED = "%{toupper:%{1}%{2}%{3}%{4}%{5}%{6}}"
-MAB_MODES = ("pap", "eap", "no")
+# pap: Service-Type Call-Check (Catalyst, Cisco Business); pap-wired: PAP with a MAC as name and password on a wired
+# request, without Call-Check (Nexus, Meraki); eap: EAP-MD5 (UniFi MAC-Based, SG300). docs/plans/cisco-platforms.md §5.
+MAB_MODES = ("pap", "pap-wired", "eap", "no")
+# Refusals that a switch in server-side monitor (§4) turns into an Accept without VLAN, logged as what EasyEAP would do.
+MONITOR_ACCEPTABLE = ("mac_unknown", "mac_expired", "snapshot_stale", "deny")
+MONITOR_SESSION_TIMEOUT = 1800  # monitor-accepted devices re-authenticate soon after the switch is enforced
 
 
 def network_block(indent: str = "\t\t") -> str:
@@ -326,25 +331,56 @@ def _reject(reason: str, indent: str, extra: str = "") -> str:
 {i}reject"""
 
 
+def _refuse(reason: str | None, indent: str) -> str:
+    """A MAC refusal that a switch in server-side monitor (docs/plans/cisco-platforms.md §4) turns into an Accept with no
+    VLAN and a short session: the reason is kept and EasyEAP-Monitor becomes "accepted", so the log shows what EasyEAP
+    would have done. Only PAP MAC requests from a client marked easyeap_monitor_accept, through a switch in monitor mode."""
+    i = indent
+    why = f'{chr(10)}{i}		&EasyEAP-Reason := "{reason}"' if reason else ""
+    return f"""{i}if (("%{{client:easyeap_monitor_accept}}" == "yes") && &control:EasyEAP-Monitor && (&control:EasyEAP-Monitor == "yes") && (&control:EasyEAP-Method == "mab")) {{
+{i}	update control {{{why}
+{i}		&EasyEAP-Monitor := "accepted"
+{i}		&Auth-Type := Accept
+{i}	}}
+{i}	update reply {{
+{i}		&Session-Timeout := {MONITOR_SESSION_TIMEOUT}
+{i}		&Termination-Action := RADIUS-Request
+{i}	}}
+{i}	return
+{i}}}
+{_reject(reason, i) if reason else i + "reject"}"""
+
+
 def mab_detect(indent: str = "\t\t") -> str:
     """Which requests are MAC authentication (docs/plans/mac-auth.md §5.1), in control:EasyEAP-Method:
     - "mab": PAP with Service-Type Call-Check and no EAP, from a switch with MAC authentication on and positive
       evidence of a switch port (Cisco: NAS-Port-Type Ethernet; UniFi: a wired request);
     - "mab-eap": EAP with a MAC as identity, from a UniFi switch with MAC authentication on, on a wired request.
+    - "mab" too: PAP without Call-Check from a switch whose MAC requests carry none ("pap-wired": Nexus, Meraki), only
+      on a wired request with a port (NAS-Port-Type Ethernet, NAS-Port-Id or NAS-Port), never with a login Service-Type
+      (Login, Administrative, NAS-Prompt), and only when the name is a MAC. A switch admin's RADIUS login is never MAB.
     A Call-Check request from anything else is refused as mab_not_enabled. Everything else takes the certificate path
     unchanged, so a certificate whose identity looks like a MAC still works on Wi-Fi and on switches without MAB.
     control:EasyEAP-Mac is the identity in canonical form; it's set only for these requests, and it's the only value
     the MAC lookups use."""
     i = indent
-    return f"""{i}if (((&Service-Type == Call-Check) && !&EAP-Message) || (&EAP-Message && ("%{{client:easyeap_mab}}" == "eap") && (&control:EasyEAP-Network == "wired"))) {{
+    return f"""{i}if ((&Service-Type && (&Service-Type == Call-Check) && !&EAP-Message) || (&EAP-Message && ("%{{client:easyeap_mab}}" == "eap") && (&control:EasyEAP-Network == "wired"))) {{
 {i}	if (&User-Name =~ /{MAC_CAPTURE}/) {{
 {i}		update control {{
 {i}			&EasyEAP-Mac := "{MAC_JOINED}"
 {i}		}}
 {i}	}}
 {i}}}
-{i}if ((&Service-Type == Call-Check) && !&EAP-Message) {{
-{i}	if (&control:EasyEAP-Mac && ((("%{{client:easyeap_mab}}" == "pap") && (&NAS-Port-Type == Ethernet)) || (("%{{client:easyeap_mab}}" == "eap") && (&control:EasyEAP-Network == "wired")))) {{
+{i}if (!&EAP-Message && !(&Service-Type && (&Service-Type == Call-Check)) && ("%{{client:easyeap_mab}}" == "pap-wired") && (&control:EasyEAP-Network == "wired") && &User-Password && ((&NAS-Port-Type && (&NAS-Port-Type == Ethernet)) || (!&NAS-Port-Type && (&NAS-Port-Id || &NAS-Port))) && !(&Service-Type && ((&Service-Type == Login-User) || (&Service-Type == Administrative-User) || (&Service-Type == NAS-Prompt-User)))) {{
+{i}	if (&User-Name =~ /{MAC_CAPTURE}/) {{
+{i}		update control {{
+{i}			&EasyEAP-Mac := "{MAC_JOINED}"
+{i}			&EasyEAP-Method := "mab"
+{i}		}}
+{i}	}}
+{i}}}
+{i}elsif (&Service-Type && (&Service-Type == Call-Check) && !&EAP-Message) {{
+{i}	if (&control:EasyEAP-Mac && ((("%{{client:easyeap_mab}}" == "pap") && &NAS-Port-Type && (&NAS-Port-Type == Ethernet)) || (("%{{client:easyeap_mab}}" =~ /^(eap|pap-wired)$/) && (&control:EasyEAP-Network == "wired")))) {{
 {i}		update control {{
 {i}			&EasyEAP-Method := "mab"
 {i}		}}
@@ -368,8 +404,11 @@ def mab_decide(tid: str, s: str, indent: str = "\t\t\t") -> str:
               "CASE WHEN a.expires_at IS NOT NULL AND a.expires_at <= %l THEN 'expired' ELSE 'current' END || '|' || "
               "COALESCE(a.device_id, '') || '|' || COALESCE(a.group_id, '') FROM authz_mac a JOIN meta_mac m ON m.tenant = a.tenant "
               f"AND m.version = a.version WHERE a.tenant = '{tid}' AND a.mac = '%{{control:EasyEAP-Mac}}'}}")
-    return f"""{i}# Cisco: the device address the switch reports must be the one it asks about.
-{i}if ("%{{client:easyeap_mab}}" == "pap") {{
+    return f"""{i}# Cisco: the device address the switch reports must be the one it asks about (Nexus, Meraki: when they report one).
+{i}if (("%{{client:easyeap_mab}}" == "pap-wired") && &Calling-Station-Id && !(&Calling-Station-Id =~ /{MAC_CAPTURE}/)) {{
+{_reject("mab_mismatch", i + chr(9))}
+{i}}}
+{i}if (("%{{client:easyeap_mab}}" == "pap") || (("%{{client:easyeap_mab}}" == "pap-wired") && &Calling-Station-Id)) {{
 {i}	if (&Calling-Station-Id && (&Calling-Station-Id =~ /{MAC_CAPTURE}/)) {{
 {i}		if ("{MAC_JOINED}" != "%{{control:EasyEAP-Mac}}") {{
 {_reject("mab_mismatch", i + chr(9) * 3)}
@@ -395,7 +434,7 @@ def mab_decide(tid: str, s: str, indent: str = "\t\t\t") -> str:
 {i}	&EasyEAP-Lookup := "%{{authz:SELECT CASE WHEN valid_until > %l THEN 'fresh' ELSE 'stale' END FROM meta WHERE tenant = '{tid}'}}"
 {i}}}
 {i}if (&control:EasyEAP-Lookup != "fresh") {{
-{_reject("snapshot_stale", i + chr(9))}
+{_refuse("snapshot_stale", i + chr(9))}
 {i}}}
 {i}# The allow list: outcome|reason|vlan|expiry|device|group, rows of the current MAC version only.
 {i}update control {{
@@ -413,7 +452,7 @@ def mab_decide(tid: str, s: str, indent: str = "\t\t\t") -> str:
 {i}		&EasyEAP-MacDevice := "%{{1}}"
 {i}		&EasyEAP-MacGroup := "%{{2}}"
 {i}	}}
-{_reject("mac_expired", i + chr(9))}
+{_refuse("mac_expired", i + chr(9))}
 {i}}}
 {i}elsif (&control:EasyEAP-Lookup =~ /^deny\\|([a-z_]+)\\|[0-9]*\\|current\\|([^|]*)\\|(.*)$/) {{
 {i}	update control {{
@@ -421,10 +460,10 @@ def mab_decide(tid: str, s: str, indent: str = "\t\t\t") -> str:
 {i}		&EasyEAP-MacDevice := "%{{2}}"
 {i}		&EasyEAP-MacGroup := "%{{3}}"
 {i}	}}
-{i}	reject
+{_refuse(None, i + chr(9))}
 {i}}}
 {i}else {{
-{_reject("mac_unknown", i + chr(9))}
+{_refuse("mac_unknown", i + chr(9))}
 {i}}}
 {i}if (&control:EasyEAP-Method == "mab") {{
 {i}	update control {{
@@ -525,6 +564,15 @@ server t_{s} {{{listen}
 				&Tunnel-Type := VLAN
 				&Tunnel-Medium-Type := IEEE-802
 				&Tunnel-Private-Group-Id := "%{{control:EasyEAP-Vlan}}"
+			}}
+		}}
+		# A switch that can't apply a VLAN from RADIUS (Nexus 3000/7000, some Cisco Business models) fails the port when
+		# it receives one: no VLAN to it, whatever the method (the EAP-TLS check above writes the outer reply directly).
+		if ("%{{client:easyeap_send_vlan}}" == "no") {{
+			update reply {{
+				&Tunnel-Type !* ANY
+				&Tunnel-Medium-Type !* ANY
+				&Tunnel-Private-Group-Id !* ANY
 			}}
 		}}
 		if (!&reply:Session-Timeout) {{
@@ -683,9 +731,16 @@ def clients_conf(tenants: list[dict]) -> str:
 	# read by the tenant server as %{{client:easyeap_networks}} and %{{client:easyeap_monitor}}.
 	easyeap_networks = "{networks}"
 	easyeap_monitor = "{'yes' if c.get('monitor') else 'no'}"
-	# MAC authentication: "pap" (Cisco), "eap" (UniFi MAC-Based) or "no"; %{{client:easyeap_mab}}.
+	# MAC authentication: "pap" (Catalyst, Cisco Business), "pap-wired" (Nexus, Meraki), "eap" (UniFi MAC-Based, SG300)
+	# or "no"; %{{client:easyeap_mab}}.
 	easyeap_mab = "{c.get('mab') if c.get('mab') in MAB_MODES else 'no'}"
-	require_message_authenticator = yes
+	# Server-side monitor: MAC refusals become Accepts without VLAN while the switch is in monitor mode.
+	easyeap_monitor_accept = "{'yes' if c.get('monitor_accept') else 'no'}"
+	# "no" for a switch that can't apply a VLAN from RADIUS; %{{client:easyeap_send_vlan}}.
+	easyeap_send_vlan = "{'no' if c.get('send_vlan') is False else 'yes'}"
+	# "no" only for switches whose MAC requests come without Message-Authenticator (Cisco Business, Nexus, Meraki, old
+	# IOS); limit_proxy_state still drops a request with Proxy-State and no Message-Authenticator (Blast-RADIUS).
+	require_message_authenticator = {'no' if c.get('message_authenticator') == 'no' else 'yes'}
 	limit_proxy_state = yes
 	virtual_server = t_{s}
 }}""")

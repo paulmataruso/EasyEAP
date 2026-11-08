@@ -50,7 +50,9 @@ SPOOL = STATE / "spool"
 ADMIN_FILE = STATE / "admin.json"
 
 # What this agent's renderer supports beyond 1.0.1, reported in its status so the console offers only what RADIUS runs.
-FEATURES = ["wired", "mab", "coa-request", "tacacs"]
+# pap-wired, monitor-accept, send-vlan, client-message-authenticator and nxos-roles: the Cisco families beyond IOS-XE
+# (docs/plans/cisco-platforms.md), which the console offers only once an agent reports them.
+FEATURES = ["wired", "mab", "coa-request", "tacacs", "pap-wired", "monitor-accept", "send-vlan", "client-message-authenticator", "nxos-roles"]
 
 log = logging.getLogger("radius-agent")
 _stop = threading.Event()

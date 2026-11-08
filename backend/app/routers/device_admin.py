@@ -21,6 +21,7 @@ from app.admin import service as svc
 from app.db import set_platform, set_tenant
 from app.deps import TenantCtx, require
 from app.pki import crypto
+from app.radius import cisco_platforms as cp
 from app.routers.radius import agent_features, agent_out, controller_address
 
 router = APIRouter(prefix="/api/tenants/{tenant_id}/device-admin", tags=["device-admin"])
@@ -76,10 +77,13 @@ def _locks(ctx: TenantCtx) -> dict[uuid.UUID, datetime]:
 def device_out(c: m.RadiusClient, last: dict[uuid.UUID, datetime]) -> dict:
     now = datetime.now(UTC)
     return {"id": str(c.id), "name": c.name, "vendor": c.vendor, "address": c.address, "site": c.site,
-            "admin_enabled": c.admin_enabled, "supported": c.vendor in cisco.SUPPORTED, "not_supported": cisco.NOT_SUPPORTED.get(c.vendor),
+            "admin_enabled": c.admin_enabled, "supported": cisco.unsupported(c) is None, "not_supported": cisco.unsupported(c),
             "key_set_at": c.tacacs_key_set_at.isoformat() if c.tacacs_key_set_at else None,
             "previous_key_until": c.tacacs_prev_until.isoformat() if c.tacacs_prev_key_ct and c.tacacs_prev_until and c.tacacs_prev_until > now else None,
             "classic": (c.wired_profile or {}).get("platform") == "classic",
+            # The "older IOS" choice is offered only where the release doesn't decide the form (classic IOS, version unknown).
+            "legacy_choice": c.vendor == "cisco-switch" and (cp.caps_for(c.vendor, c.wired_profile) or cp.caps("ibns2")).tacacs == "toggle",
+            "form": cisco.form_of(c), "os": cisco.os_of(c),
             "last_login_at": last[c.id].isoformat() if c.id in last else None}
 
 
@@ -186,9 +190,9 @@ def set_enabled(client_id: uuid.UUID, body: EnableIn, ctx: TenantCtx = Depends(r
         raise _bad("enabled", "Save the RADIUS settings first.")
     key = None
     if body.enabled and not c.admin_enabled:
-        if c.vendor not in cisco.SUPPORTED:
-            raise _bad("enabled", cisco.NOT_SUPPORTED.get(c.vendor) or "Not supported for this device.", "not_supported")
-        if "tacacs" not in agent_features(s):
+        if (why := cisco.unsupported(c)) is not None:
+            raise _bad("enabled", why, "not_supported")
+        if "tacacs" not in agent_features(s) or (cisco.os_of(c).startswith("nxos") and "nxos-roles" not in agent_features(s)):
             raise _bad("enabled", "RADIUS needs updating before admin logins can be turned on (System health shows its version).", "agent_too_old",
                        status.HTTP_409_CONFLICT)
         set_platform(s)
@@ -230,8 +234,8 @@ def rotate_key(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("admin:wri
 @router.get("/devices/{client_id}/config")
 def device_config(client_id: uuid.UUID, legacy: bool = False, ctx: TenantCtx = Depends(require("admin:read"))) -> dict:
     c = _client(ctx, client_id)
-    if c.vendor not in cisco.SUPPORTED:
-        raise _bad("vendor", cisco.NOT_SUPPORTED.get(c.vendor) or "Not supported for this device.", "not_supported")
+    if (why := cisco.unsupported(c)) is not None:
+        raise _bad("vendor", why, "not_supported")
     return cisco.guide(cisco.ctx_for(c, ctx.tenant, controller_address()["radius_address"], legacy=legacy))
 
 

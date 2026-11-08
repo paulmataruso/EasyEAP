@@ -62,7 +62,7 @@ request) was critiqued before release; the table at the end of this section list
 
   ```
   logging discriminator EASYEAP facility includes SESSION_MGR|AUTHMGR|DOT1X|DOT1X_SWITCH|MAB|PM|RADIUS|SYS rate-limit 100
-  logging host <address> discriminator EASYEAP transport udp port 5514
+  logging host <address> transport udp port 5514 discriminator EASYEAP
   ```
 
   plus, as comments, `logging source-interface` (the receiver only keeps messages from the polled address) and the
@@ -83,6 +83,7 @@ request) was critiqued before release; the table at the end of this section list
 | "RADIUS is down" from one latest line: a second server's `ALIVE` cleared it, and a switch that never logs `ALIVE` showed it forever | major | Per server; EasyEAP's own address is a warning, cleared by `ALIVE` or a RADIUS request from the switch since. |
 | One failing row lost the whole batch for every tenant | major | Per-tenant sessions, a savepoint per row, five retries per entry. |
 | The generated lines: `logging host … transport udp port … discriminator …` has the discriminator after the transport (Cisco's reference puts it before), the removal didn't name the port, and the destination was the SNMP source address | major | `logging host <address> [vrf Mgmt-vrf] discriminator EASYEAP transport udp port <port>`, removed with the same line; `rate-limit 100` on the discriminator; the destination is `EASYEAP_SYSLOG_BIND` (or the RADIUS address when it binds everything). |
+| Correction, from a Catalyst on IOS-XE 16.6.1: `logging host <address> discriminator EASYEAP transport …` is refused with “% Invalid input” at `transport`, and `logging host <address> discriminator X ?` offers only `<cr>`. The discriminator ends the line | major | `logging host <address> [vrf Mgmt-vrf] transport udp port <port> discriminator EASYEAP`, and the same line with `no` to remove it. The row above had it backwards. |
 | `AUTHMGR-5-VLANASSIGN` is logged with every successful authentication: volume without information | minor | Not kept. |
 | A burst of one repeated message used up the bucket and dropped distinct messages behind it | minor | Repeats of a kept message only count. |
 | 514 is often the host's own syslog | minor | 5514 by default. |

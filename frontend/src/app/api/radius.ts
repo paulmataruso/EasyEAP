@@ -3,7 +3,7 @@
 // Shapes mirror backend/app/routers/radius.py exactly. Shared secrets are returned once by create/rotate and are never
 // written to the query cache: callers keep them in component state and drop them when the dialog closes.
 import { useCallback } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import { useOneTimeCall } from './oneTime'
 import { qk } from './keys'
@@ -12,21 +12,23 @@ import { agentPoll, type AgentStatus } from './types'
 /** Wireless controller types (Add controller). Switches are added with Add switch (SWITCH_VENDORS). */
 export const VENDORS = ['cisco-9800', 'cisco-aireos', 'unifi', 'other'] as const
 export type Vendor = (typeof VENDORS)[number] | 'cisco-switch'
-export const SWITCH_VENDORS = ['cisco-switch', 'unifi', 'other'] as const
+export const SWITCH_VENDORS = ['cisco-switch', 'meraki', 'unifi', 'other'] as const
 export const vendorLabels: Record<string, string> = {
   'cisco-9800': 'Cisco Catalyst 9800',
   'cisco-aireos': 'Cisco AireOS WLC',
-  'cisco-switch': 'Cisco Catalyst switch',
+  'cisco-switch': 'Cisco switch',
+  meraki: 'Cisco Meraki MS',
   unifi: 'UniFi Network',
   other: 'Other',
 }
 export const switchVendorLabels: Record<string, string> = {
-  'cisco-switch': 'Cisco Catalyst (IOS / IOS-XE)',
-  unifi: 'UniFi switches',
-  other: 'Other switch',
+  'cisco-switch': 'Cisco',
+  meraki: 'Meraki MS',
+  unifi: 'UniFi',
+  other: 'Other',
 }
 /** CoA port the backend assigns when none is given (radius.py create_client). */
-export const defaultCoaPort = (v: string) => (v === 'cisco-9800' || v === 'cisco-switch' ? 1700 : 3799)
+export const defaultCoaPort = (v: string) => (v === 'cisco-9800' || v === 'cisco-switch' || v === 'meraki' ? 1700 : 3799)
 
 export type Network = 'wireless' | 'wired'
 export const networkLabels: Record<Network, string> = { wireless: 'Wi-Fi', wired: 'Wired' }
@@ -54,9 +56,60 @@ export interface RadiusSettings {
   wired_enabled: boolean
 }
 
+/** Cisco switch families (backend app/radius/cisco_platforms.py): IOS-XE (IBNS 2.0), classic IOS, NX-OS, Cisco Business. */
+export type CiscoPlatform = 'ibns2' | 'classic' | 'nxos' | 'cbs'
+export const ciscoPlatformLabels: Record<CiscoPlatform, string> = {
+  ibns2: 'IOS-XE',
+  classic: 'Classic IOS',
+  nxos: 'Nexus',
+  cbs: 'Cisco Business',
+}
+
+/** What a Cisco or Meraki switch can do (cisco_platforms.Caps): the port-plan form offers only these choices. */
+export interface SwitchCaps {
+  dialect: 'ibns2' | 'authmgr' | 'dot1x' | 'nxos' | 'sx' | 'cbs220' | 'web' | 'meraki'
+  /** switch: the switch's own open mode; server: EasyEAP accepts its MAC requests until enforced; none: start with a test port. */
+  monitor: 'switch' | 'server' | 'none'
+  mab: 'pap' | 'pap-wired' | 'eap' | null
+  host_modes: WiredProfile['host_mode'][]
+  radius_vlan: boolean
+  no_supplicant_vlan: boolean
+  server_down: WiredProfile['server_down'][]
+  coa: 'full' | 'no-bounce' | null
+  accounting: boolean
+  tacacs: string | null
+  /** caf: ports and 802.1X sessions; ports: ports only; null: no switch audit. */
+  audit: 'caf' | 'ports' | null
+  session_command: string | null
+  /** Err-disabled ports over SNMP (CISCO-ERR-DISABLE-MIB). */
+  errdisable: boolean
+  notes: string[]
+  warnings: string[]
+}
+
+/** POST /cisco/detect: what a pasted `show version` says the switch is. */
+export interface CiscoDetected {
+  platform: CiscoPlatform | null
+  series: string
+  version: string
+  lan_lite: boolean
+  model: string
+  family: string
+  evidence: string
+  /** Why EasyEAP can't configure 802.1X on it; empty when it can. */
+  unsupported: string
+}
+export interface CiscoPlatforms { platforms: CiscoPlatform[]; series: Record<string, string[]>; series_labels: Record<string, string>; capabilities: SwitchCaps }
+
 /** A switch's port plan (backend app/radius/wired.py WiredProfile). No secrets. */
 export interface WiredProfile {
-  platform: 'ibns2' | 'classic'
+  platform: CiscoPlatform
+  /** Nexus and Cisco Business: the model family; Meraki: ms or ms-open. Empty otherwise. */
+  series?: string
+  /** The release as the switch shows it; empty when unknown. */
+  version?: string
+  /** Classic IOS LAN Lite image. */
+  lan_lite?: boolean
   mode: 'monitor' | 'enforce'
   interfaces: string
   exclude: string
@@ -70,7 +123,7 @@ export interface WiredProfile {
   source_interface: string
   vrf: string
   fallback_vlan: number | null
-  /** MAC authentication for devices without 802.1X (Cisco Catalyst and UniFi). Set when the switch is added, then
+  /** MAC authentication for devices without 802.1X (Cisco, Meraki and UniFi). Set when the switch is added, then
    * changed only with its own change (POST …/mab) in monitor mode. */
   mab?: boolean
   mode_set_at?: string | null
@@ -82,7 +135,7 @@ export interface WiredProfile {
 }
 
 export const defaultWiredProfile: WiredProfile = {
-  platform: 'ibns2', mode: 'monitor', interfaces: '', exclude: '', has_aaa: false, host_mode: 'multi-auth', no_supplicant: 'block',
+  platform: 'ibns2', series: '', version: '', lan_lite: false, mode: 'monitor', interfaces: '', exclude: '', has_aaa: false, host_mode: 'multi-auth', no_supplicant: 'block',
   no_supplicant_vlan: null, server_down: 'wait', server_down_vlan: null, access_vlan: null, source_interface: '', vrf: '', fallback_vlan: null, mab: false,
 }
 
@@ -102,12 +155,15 @@ export interface RadiusClient {
   /** Rollout mode EasyEAP was told (it can't read the switch); null when not registered for wired. Clients from
    * before wired 802.1X have no port plan and are "enforce": EasyEAP sends VLANs on wired requests as it always did. */
   wired_mode: 'monitor' | 'enforce' | null
-  /** Switch audit over SNMP (Cisco Catalyst): credentials stored, and polling on. Absent from older API versions. */
+  /** Switch audit over SNMP (Cisco): credentials stored, and polling on. Absent from older API versions. */
   monitoring?: { set_up: boolean; enabled: boolean }
+  /** Cisco and Meraki switches with a port plan: what the switch can do, and what it is in words. */
+  capabilities?: SwitchCaps | null
+  switch_family?: string | null
 }
 
 /** A switch or controller registered for wired 802.1X. */
-export const isSwitch = (c: RadiusClient) => c.vendor === 'cisco-switch' || (c.networks.includes('wired') && !!c.wired_profile)
+export const isSwitch = (c: RadiusClient) => c.vendor === 'cisco-switch' || c.vendor === 'meraki' || (c.networks.includes('wired') && !!c.wired_profile)
 
 export interface RadiusAgent extends AgentStatus {
   /** Present only once this tenant has RADIUS settings. */
@@ -124,7 +180,7 @@ export interface RadiusAgent extends AgentStatus {
 /** RADIUS answers MAC authentication (an agent from before it refuses every MAC request). */
 export const supportsMab = (a: RadiusAgent | null | undefined) => !!a?.features?.includes('mab')
 /** Switches that can admit devices by MAC address. */
-export const MAB_VENDORS = ['cisco-switch', 'unifi']
+export const MAB_VENDORS = ['cisco-switch', 'meraki', 'unifi']
 
 /** Recent requests that couldn't be tied to a registered controller (their source and NAS address are in no range). */
 export interface Unattributed { count: number; last_at: string; nas_addresses: string[]; days: number }
@@ -169,6 +225,11 @@ export interface WiredGuide extends Guide {
   mab_cli?: string | null
   /** UniFi: the steps for the same. */
   mab_steps?: string[] | null
+  /** Cisco and Meraki: what the switch can do, what it can't (notes) and what EasyEAP assumed (warnings). */
+  capabilities?: SwitchCaps
+  notes?: string[]
+  warnings?: string[]
+  monitor_style?: SwitchCaps['monitor']
 }
 
 export interface ReadinessDevice { mac: string | null; username: string | null; result: 'accept' | 'reject'; reason_code: string | null; vlan_id: number | null; monitor: boolean; at: string
@@ -179,7 +240,7 @@ export interface MabHealth { enabled: boolean; answered: number; accepted: numbe
 export interface ReadinessPort { port: string; devices: ReadinessDevice[]; accepted: number; rejected: number }
 export interface SwitchSession { interface: string; mac: string; method: string; domain: string; status: string; authorized: boolean }
 export interface SessionsCheck { sessions: number; authorized: number; would_lose_access: SwitchSession[]; parsed: boolean }
-export interface Readiness { hours: number; ports: ReadinessPort[]; events: number; would_assign_vlans: number[]; rejected_devices: number; session_command: string; mab?: MabHealth | null
+export interface Readiness { hours: number; ports: ReadinessPort[]; events: number; would_assign_vlans: number[]; rejected_devices: number; session_command: string | null; mab?: MabHealth | null
   /** The switch's own session list from the switch audit's latest poll (when monitoring is on and recent). */
   switch_sessions?: (Omit<SessionsCheck, 'parsed'> & { at: string }) | null }
 
@@ -262,6 +323,23 @@ export function useUpdateClient(tid: string) {
 }
 
 export const wiredGuideKey = (tid: string, id: string) => [...qk.radius(tid), 'wired-guide', id] as const
+
+/** What a pasted `show version` says the switch is. Nothing is stored. */
+export function useCiscoDetect(tid: string) {
+  return useMutation({ mutationFn: (text: string) => api.post<{ detected: CiscoDetected; capabilities: SwitchCaps | null }>(`${base(tid)}/cisco/detect`, { text }) })
+}
+
+/** The families and series, and what this switch can do. */
+export function useCiscoPlatforms(tid: string, vendor: string, p: Pick<WiredProfile, 'platform' | 'series' | 'version' | 'lan_lite'>, enabled = true) {
+  const q = new URLSearchParams({ vendor, platform: p.platform, series: p.series ?? '', version: p.version ?? '', lan_lite: String(!!p.lan_lite) })
+  return useQuery({
+    queryKey: [...qk.radius(tid), 'cisco-platforms', q.toString()] as const,
+    queryFn: ({ signal }) => api.get<CiscoPlatforms>(`${base(tid)}/cisco/platforms?${q}`, signal),
+    enabled,
+    staleTime: 5 * 60_000,
+    placeholderData: keepPreviousData,
+  })
+}
 
 export function useWiredGuide(tid: string, clientId: string | null, enabled = true) {
   return useQuery({

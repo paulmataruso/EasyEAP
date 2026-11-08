@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app import models as m
 from app.mac import try_mac
 from app.policy.service import wired_vlan_map
+from app.radius import cisco_platforms as cp
 
 MAX_DEVICES = 20_000
 MAX_GROUPS = 100
@@ -164,13 +165,15 @@ def coa_for_mac(session: Session, tenant_id: uuid.UUID, mac: str, kind: str, rea
             without += 1
             continue
         attrs = {k: v for k, v in attrs.items() if v}
+        caps = cp.caps_for(nas.vendor, nas.wired_profile) if nas.vendor == "cisco-switch" else None
         if kind in ("reauthenticate", "bounce"):
-            if nas.vendor != "cisco-switch":
-                # Only Cisco documents these commands; elsewhere a disconnect makes the switch authenticate again.
+            if caps is None or caps.dialect not in ("ibns2", "authmgr", "nxos"):
+                # Only Catalyst and Nexus document these commands; elsewhere a disconnect makes the switch authenticate again.
                 kind_here = "disconnect"
             else:
-                kind_here = kind
-                attrs["Cisco-AVPair"] = "subscriber:command=reauthenticate" if kind == "reauthenticate" else "subscriber:command=bounce-host-port"
+                # NX-OS can re-authenticate a session but not bounce its port (docs/plans/cisco-platforms.md §3).
+                kind_here = "reauthenticate" if kind == "reauthenticate" or caps.coa == "no-bounce" else kind
+                attrs["Cisco-AVPair"] = "subscriber:command=reauthenticate" if kind_here == "reauthenticate" else "subscriber:command=bounce-host-port"
         else:
             kind_here = "disconnect"
         session.add(m.CoaRequest(tenant_id=tenant_id, nas_client_id=nas.id, kind=kind_here, attributes=attrs, reason=reason[:200], status="pending"))

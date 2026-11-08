@@ -18,12 +18,14 @@ from app.db import set_platform, set_tenant
 from app.deps import TenantCtx, require
 from app.pki import crypto
 from app.pki.openbao import OpenBao
+from app.radius import cisco_platforms as cp
 from app.radius import guides, wired
 from app.radius.state import RadiusConfigError, bump, check_address_unique, ensure_server_certificate, parse_address
 from app.security.tokens import new_shared_secret
 
 router = APIRouter(prefix="/api/tenants/{tenant_id}/radius", tags=["radius"])
-VENDORS = ("cisco-9800", "cisco-aireos", "cisco-switch", "unifi", "other")
+VENDORS = ("cisco-9800", "cisco-aireos", "cisco-switch", "meraki", "unifi", "other")
+SWITCH_VENDORS = ("cisco-switch", "meraki", "unifi", "other")  # vendors with a wired port plan
 NETWORKS = ("wireless", "wired")
 # A switch left in monitor mode longer than this becomes a needs-action item (app/posture.py).
 MONITOR_NUDGE = timedelta(days=14)
@@ -61,6 +63,7 @@ def controller_address() -> dict:
 def client_out(c: m.RadiusClient) -> dict:
     networks = [n for n in NETWORKS if n in (c.networks or [])]
     profile = c.wired_profile or {}
+    caps = cp.caps_for(c.vendor, profile) if profile else None
     return {"id": str(c.id), "name": c.name, "vendor": c.vendor, "address": c.address, "site": c.site, "coa_enabled": c.coa_enabled,
             "coa_port": c.coa_port, "secret_set_at": c.secret_set_at.isoformat() if c.secret_set_at else None,
             "last_request_at": c.last_request_at.isoformat() if c.last_request_at else None,
@@ -69,7 +72,9 @@ def client_out(c: m.RadiusClient) -> dict:
             # before wired 802.1X) EasyEAP sends VLANs on wired requests as it always did: "enforce".
             "wired_mode": (profile.get("mode") or "enforce") if "wired" in networks else None,
             # Switch audit (SNMP): set up, and polling.
-            "monitoring": {"set_up": bool((c.monitoring or {}).get("host") and c.snmp_secret_ct), "enabled": bool((c.monitoring or {}).get("enabled"))}}
+            "monitoring": {"set_up": bool((c.monitoring or {}).get("host") and c.snmp_secret_ct), "enabled": bool((c.monitoring or {}).get("enabled"))},
+            # Cisco and Meraki: what this switch is and can do (app/radius/cisco_platforms.py), for the console's panel.
+            "capabilities": caps.out() if caps else None, "switch_family": cp.describe(c.vendor, profile) if caps else None}
 
 
 # The agent polls every 15 s and FreeRADIUS starts in seconds, so a tenant activated longer ago than this should be served.
@@ -103,6 +108,17 @@ def agent_features(s) -> set[str]:
         if isinstance(feats, list):
             out |= {str(f) for f in feats}
     return out
+
+
+AGENT_TOO_OLD = ("RADIUS needs updating before it can answer this kind of switch. Update the EasyEAP RADIUS container (System "
+                 "health shows its version), then save again.")
+
+
+def _check_agent_answers(s, vendor: str, profile: dict | None) -> None:
+    """Refuse a switch plan the RADIUS agents can't answer yet (cp.agent_needs)."""
+    caps = cp.caps_for(vendor, profile) if profile else None
+    if cp.agent_needs(caps) - agent_features(s):
+        raise HTTPException(status.HTTP_409_CONFLICT, AGENT_TOO_OLD)
 
 
 def agent_out(s) -> dict | None:
@@ -246,7 +262,7 @@ def _bad(field: str, message: str) -> HTTPException:
 
 def _networks(vendor: str, networks: list[str] | None) -> list[str]:
     if networks is None:
-        return ["wired"] if vendor == "cisco-switch" else ["wireless"]
+        return ["wired"] if vendor in ("cisco-switch", "meraki") else ["wireless"]
     out = [n for n in NETWORKS if n in networks]
     if not out or len(set(networks)) != len(out):
         raise _bad("networks", "Choose Wi-Fi, wired or both.")
@@ -289,6 +305,11 @@ def _profile(vendor: str, networks: list[str], data: dict | None, current: dict 
         cisco_ibns2 = vendor == "cisco-switch" and out.get("platform", "ibns2") == "ibns2"
         out["policy"] = wired.monitor_policy(wired.WiredProfile.model_validate(out)) if cisco_ibns2 else None
         out["last_change"] = "created"
+    elif vendor == "cisco-switch" and (cur.get("platform") or "ibns2") != out.get("platform"):
+        # Another platform (a corrected family): EasyEAP's configuration starts again, in monitor mode.
+        ibns2 = out.get("platform") == "ibns2"
+        out["policy"] = wired.monitor_policy(wired.WiredProfile.model_validate(out)) if ibns2 else None
+        out["policy_prev"], out["last_change"] = None, "created"
     else:
         for k in ("policy", "policy_prev", "last_change"):
             out[k] = cur.get(k)
@@ -337,12 +358,13 @@ def create_client(body: ClientIn, ctx: TenantCtx = Depends(require("radius:write
     s = ctx.session
     networks = _networks(body.vendor, body.networks)
     profile = _profile(body.vendor, networks, body.wired_profile if body.wired_profile is not None else ({} if "wired" in networks else None),
-                       None, ctx.actor.label) if body.vendor in ("cisco-switch", "unifi", "other") else {}
+                       None, ctx.actor.label) if body.vendor in SWITCH_VENDORS else {}
+    _check_agent_answers(s, body.vendor, profile)
     net = _check_address(s, ctx.id, body.address)
     secret = new_shared_secret()
     c = m.RadiusClient(tenant_id=ctx.id, name=body.name, vendor=body.vendor, address=_norm(net), networks=networks, wired_profile=profile,
                        site=body.site, secret_ct=crypto.encrypt(ctx.id, secret), coa_enabled=body.coa_enabled,
-                       coa_port=body.coa_port or (1700 if body.vendor in ("cisco-9800", "cisco-switch") else 3799))
+                       coa_port=body.coa_port or (1700 if body.vendor in ("cisco-9800", "cisco-switch", "meraki") else 3799))
     s.add(c)
     s.flush()
     bump(s, ctx.id)
@@ -372,11 +394,22 @@ def update_client(client_id: uuid.UUID, body: ClientUpdate, ctx: TenantCtx = Dep
         # The address decides which connections get TACACS+ answers and the site which administrators may log in.
         raise HTTPException(status.HTTP_403_FORBIDDEN, _ADMIN_DEVICE)
     networks = _networks(vendor, body.networks) if "networks" in given else list(c.networks or ["wireless"])
-    if "wired" in networks and vendor in ("cisco-switch", "unifi", "other"):
-        plan = body.wired_profile if "wired_profile" in given else (None if c.wired_profile else {})
+    if "wired" in networks and vendor in SWITCH_VENDORS:
+        # A new vendor re-checks the plan it keeps (a Catalyst plan says nothing a Meraki switch can do, and back).
+        plan = body.wired_profile if "wired_profile" in given else (dict(c.wired_profile) if c.wired_profile and vendor != c.vendor
+                                                                     else None if c.wired_profile else {})
         profile = _profile(vendor, networks, plan, c.wired_profile, ctx.actor.label)
     else:
         profile = c.wired_profile or {}
+    if vendor != c.vendor or profile != (c.wired_profile or {}):
+        _check_agent_answers(s, vendor, profile)
+        from app.routers.switch_audit import removal_changes
+        if removal_changes(c, vendor, profile):
+            # The switch audit's SNMP lines on the switch are the ones for its current family: removing them later must
+            # use those, so the audit goes first (its Remove shows the lines).
+            raise HTTPException(status.HTTP_409_CONFLICT, "This switch has the switch audit set up for its current type and "
+                                "release. Remove the switch audit first (it shows the lines to take off the switch), then "
+                                "change the switch, then set the audit up again.")
     was_admin = c.admin_enabled
     if "address" in given and body.address:
         c.address = _norm(_check_address(s, ctx.id, body.address, exclude_id=c.id))
@@ -386,8 +419,8 @@ def update_client(client_id: uuid.UUID, body: ClientUpdate, ctx: TenantCtx = Dep
         if k in given and given[k] is not None:
             setattr(c, k, given[k])
     c.vendor, c.networks, c.wired_profile = vendor, networks, profile
-    if c.admin_enabled and vendor not in admin_cisco.SUPPORTED:
-        c.admin_enabled = False  # admin logins are generated for Cisco IOS and IOS-XE only
+    if c.admin_enabled and admin_cisco.unsupported(c) is not None:
+        c.admin_enabled = False  # the device (type, or platform after a plan change) has no TACACS+ EasyEAP generates
     if was_admin:
         admin_service.bump(s, ctx.id)
     bump(s, ctx.id)
@@ -417,6 +450,14 @@ def set_wired_mode(client_id: uuid.UUID, body: WiredModeIn, ctx: TenantCtx = Dep
     profile = dict(c.wired_profile or {})
     if body.mode == "enforce" and before == "monitor" and profile.get("mab"):
         _check_mab_answered(s, ctx.id, c)
+    if c.vendor in ("cisco-switch", "meraki") and body.mode == "enforce" and before != "enforce":
+        # A plan saved before EasyEAP knew the platform's limits must still be one the switch can carry out.
+        try:
+            wired.check_capabilities(c.vendor, wired.WiredProfile.model_validate(profile))
+        except wired.WiredConfigError as exc:
+            raise _bad(exc.field, f"{exc} Edit the switch's port plan first.") from exc
+        except ValidationError:
+            pass
     if c.vendor == "cisco-switch" and profile.get("interfaces"):
         try:
             p = wired.WiredProfile.model_validate(profile)
@@ -449,6 +490,30 @@ def _check_mab_answered(s, tenant_id: uuid.UUID, c: m.RadiusClient) -> None:
             "debug radius on the switch.")})
 
 
+class DetectIn(BaseModel):
+    text: str = Field(max_length=20000)
+
+
+@router.post("/cisco/detect")
+def detect_cisco(body: DetectIn, ctx: TenantCtx = Depends(require("radius:read"))) -> dict:
+    """What a pasted `show version` (or Cisco Business `show system`) says the switch is, and what that switch can do.
+    Pure: the text isn't stored."""
+    d = cp.detect(body.text)
+    caps = cp.caps(d.platform, d.series, d.version, d.lan_lite) if d.platform and not d.unsupported else None
+    return {"detected": d.out(), "capabilities": caps.out() if caps else None}
+
+
+@router.get("/cisco/platforms")
+def cisco_platforms(platform: str = "ibns2", series: str = "", version: str = "", lan_lite: bool = False, vendor: str = "cisco-switch",
+                    ctx: TenantCtx = Depends(require("radius:read"))) -> dict:
+    """The families, series and what a given switch can do: the console's port-plan form offers only these choices."""
+    if platform not in cp.PLATFORMS or vendor not in ("cisco-switch", "meraki"):
+        raise _bad("platform", "Unknown switch family.")
+    caps = cp.caps(platform, series, cp.clean_version(version), lan_lite, vendor)
+    return {"platforms": list(cp.PLATFORMS), "series": {k: list(v) for k, v in cp.SERIES.items()}, "series_labels": cp.SERIES_LABELS,
+            "capabilities": caps.out()}
+
+
 class MabIn(BaseModel):
     enabled: bool
 
@@ -461,9 +526,15 @@ def set_mab(client_id: uuid.UUID, body: MabIn, ctx: TenantCtx = Depends(require(
     c = s.get(m.RadiusClient, client_id)
     if c is None or c.tenant_id != ctx.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Switch not found.")
-    if "wired" not in (c.networks or []) or c.vendor not in ("cisco-switch", "unifi") or not c.wired_profile:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "MAC authentication is available for Cisco Catalyst and UniFi switches with a port plan.")
+    if "wired" not in (c.networks or []) or c.vendor not in ("cisco-switch", "meraki", "unifi") or not c.wired_profile:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "MAC authentication is available for Cisco and UniFi switches with a port plan.")
     profile = dict(c.wired_profile)
+    caps = cp.caps_for(c.vendor, profile)
+    if caps is not None and caps.mab is None and body.enabled:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This switch can't do MAC authentication: " + " ".join(caps.notes[:1]))
+    if caps is not None and caps.monitor == "server" and not body.enabled:
+        raise HTTPException(status.HTTP_409_CONFLICT, "MAC authentication stays on for this switch: it has no open (monitor) mode, so "
+                            "EasyEAP's monitor mode accepts its MAC requests, and that's how devices without 802.1X keep working.")
     if profile.get("mode") != "monitor":
         raise HTTPException(status.HTTP_409_CONFLICT, "Move this switch back to monitor mode first: MAC authentication is turned on or off "
                             "while its ports are open, and proves itself there before you enforce again.")
@@ -500,7 +571,7 @@ def wired_guide(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius:r
     c = ctx.session.get(m.RadiusClient, client_id)
     if c is None or c.tenant_id != ctx.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Switch not found.")
-    if "wired" not in (c.networks or []) or c.vendor not in ("cisco-switch", "unifi", "other"):
+    if "wired" not in (c.networks or []) or c.vendor not in SWITCH_VENDORS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This client isn't a switch registered for wired 802.1X.")
     return _wired_guide(ctx, c)
 
@@ -541,7 +612,7 @@ def readiness(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius:rea
     mab_rows = [e for e in rows if e.method in ("mab", "mab-eap") and e.reason_code != "mab_not_enabled"]
     from app.switchaudit.service import polled_sessions
     return {"hours": hours, "ports": out, "events": len(rows), "would_assign_vlans": vlans,
-            "rejected_devices": sum(p["rejected"] for p in out), "session_command": wired.session_command(c.wired_profile),
+            "rejected_devices": sum(p["rejected"] for p in out), "session_command": wired.session_command(profile, c.vendor),
             # The switch's own session list from the switch audit's latest poll, when monitoring is on: no paste needed.
             "switch_sessions": polled_sessions(s.get(m.SwitchState, c.id), int((c.monitoring or {}).get("interval_minutes") or 15))
             if (c.monitoring or {}).get("enabled") else None,

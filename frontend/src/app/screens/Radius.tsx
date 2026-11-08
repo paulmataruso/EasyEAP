@@ -68,7 +68,7 @@ export default function Radius() {
     }
     if (pick) {
       const c = data.clients.find((x) => x.id === pick)
-      if (c) { setSelectedId(c.id); if (c.vendor !== 'cisco-switch') setVendor(c.vendor) }
+      if (c) { setSelectedId(c.id); if (c.vendor !== 'cisco-switch' && c.vendor !== 'meraki') setVendor(c.vendor) }
     }
     if (rot) {
       const c = data.clients.find((x) => x.id === rot)
@@ -86,7 +86,7 @@ export default function Radius() {
   const selected = data?.clients.find((c) => c.id === selectedId) ?? null
   const select = (c: RadiusClient) => {
     setSelectedId(c.id)
-    if (c.vendor !== 'cisco-switch') setVendor(c.vendor)
+    if (c.vendor !== 'cisco-switch' && c.vendor !== 'meraki') setVendor(c.vendor)
     pushRecent(tid, { kind: 'controller', id: c.id, label: c.name, sub: [c.address, c.site].filter(Boolean).join(' · ') })
   }
 

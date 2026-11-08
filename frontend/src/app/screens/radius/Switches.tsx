@@ -8,9 +8,9 @@ import { ArrowLeft, ArrowRight, Cable, Check, Download, Eye, Lock, Pencil, Shiel
 import { cn } from '@/ui/lib'
 import { errorField, saveBlob } from '../../api/client'
 import {
-  ADDRESS_PLACEHOLDER, MAB_VENDORS, SECRET_PLACEHOLDER, SWITCH_VENDORS, defaultCoaPort, defaultWiredProfile, fillText, remainingPlaceholders, supportsMab, switchVendorLabels,
-  useActivity, useCheckSessions, useConfigApplied, useCreateClient, useRadius, useReadiness, useSetMab, useSetWiredMode, useUpdateClient, useWiredGuide, useWiredKit,
-  type MabHealth, type RadiusClient, type RadiusSettings, type WiredGuide, type WiredProfile,
+  ADDRESS_PLACEHOLDER, MAB_VENDORS, SECRET_PLACEHOLDER, SWITCH_VENDORS, ciscoPlatformLabels, defaultCoaPort, defaultWiredProfile, fillText, remainingPlaceholders, supportsMab, switchVendorLabels,
+  useActivity, useCheckSessions, useCiscoDetect, useCiscoPlatforms, useConfigApplied, useCreateClient, useRadius, useReadiness, useSetMab, useSetWiredMode, useUpdateClient, useWiredGuide, useWiredKit,
+  type CiscoDetected, type CiscoPlatform, type MabHealth, type RadiusClient, type RadiusSettings, type SwitchCaps, type WiredGuide, type WiredProfile,
 } from '../../api/radius'
 import { useTenant } from '../../api/tenant'
 import { failureExplanations } from '@/domain/explain'
@@ -28,7 +28,21 @@ const reasonTitle = (code: string | null) => (code ? failureExplanations[code as
 
 // ── Port plan form (Add switch step 2, Edit port plan) ──────────────────────
 
-const PLAN_FIELDS = new Set(['interfaces', 'exclude', 'source_interface', 'vrf', 'access_vlan', 'no_supplicant_vlan', 'server_down_vlan', 'fallback_vlan', 'wired_profile'])
+const PLAN_FIELDS = new Set(['interfaces', 'exclude', 'source_interface', 'vrf', 'access_vlan', 'no_supplicant_vlan', 'server_down_vlan', 'fallback_vlan', 'wired_profile',
+  'platform', 'series', 'version', 'host_mode', 'no_supplicant', 'server_down'])
+const CISCO_PLATFORMS: CiscoPlatform[] = ['ibns2', 'classic', 'nxos', 'cbs']
+
+/** What each Cisco family covers, how it names its ports, and how it prints its release. */
+const FAMILY: Record<CiscoPlatform, { covers: string; ports: string; portsHint: string; exclude: string; version: string }> = {
+  ibns2: { covers: 'Catalyst 9000, 3650, 3850, IE 3x00 and other switches on IOS-XE 16, 17 or 26, or IOS-XE 3.x on a 3650, 3850 or 4500E.',
+    ports: 'GigabitEthernet1/0/1 - 24', portsHint: 'Gi1/0/1-24, Gi2/0/1-48', exclude: 'Gi1/0/48, Te1/1/1', version: '17.9.4a' },
+  classic: { covers: 'Catalyst 2960, 2960-X, 2960-L, 3560, 3750 and IE 2000 on IOS 12.2 or 15.',
+    ports: 'GigabitEthernet1/0/1 - 24', portsHint: 'Gi1/0/1-24, Fa0/1-48', exclude: 'Gi1/0/48, Gi1/0/49', version: '15.2(7)E3' },
+  nxos: { covers: 'Nexus 9000, 3000, 5000, 6000 and 7000 on NX-OS.',
+    ports: 'Ethernet1/1 - 48', portsHint: 'Ethernet1/1-48, Ethernet2/1-24', exclude: 'Ethernet1/49-54', version: '9.3(8)' },
+  cbs: { covers: 'Catalyst 1200 and 1300, CBS220, CBS250 and CBS350, and the SG/SF 200 to 550X small business switches.',
+    ports: 'gi1/0/1 - 24', portsHint: 'gi1/0/1-24, gi2/0/1-24', exclude: 'gi1/0/25-28', version: '3.1.1.7' },
+}
 
 function vlanNumber(v: string): number | null {
   const n = Number(v.replace(/[^0-9]/g, ''))
@@ -38,7 +52,8 @@ function vlanNumber(v: string): number | null {
 function planProblems(vendor: string, p: WiredProfile): Partial<Record<keyof WiredProfile, string>> {
   const out: Partial<Record<keyof WiredProfile, string>> = {}
   const badVlan = (n: number | null) => n !== null && (n < 1 || n > 4094)
-  if (vendor === 'cisco-switch' && !p.interfaces.trim()) out.interfaces = 'List the access ports to configure, for example GigabitEthernet1/0/1 - 24.'
+  if (vendor === 'cisco-switch' && !p.interfaces.trim()) out.interfaces = `List the access ports to configure, for example ${FAMILY[p.platform]?.ports ?? FAMILY.ibns2.ports}.`
+  if (vendor === 'cisco-switch' && (p.platform === 'nxos' || p.platform === 'cbs') && !p.series) out.series = 'Choose the switch’s model family.'
   if (p.no_supplicant === 'vlan' && p.no_supplicant_vlan === null) out.no_supplicant_vlan = 'Choose the VLAN for devices without 802.1X.'
   if (p.server_down === 'vlan' && p.server_down_vlan === null) out.server_down_vlan = 'Choose the VLAN for new devices while EasyEAP is unreachable.'
   for (const k of ['access_vlan', 'no_supplicant_vlan', 'server_down_vlan', 'fallback_vlan'] as const) if (badVlan(p[k])) out[k] = 'A VLAN is 1 to 4094.'
@@ -55,21 +70,34 @@ const hostModes: Record<WiredProfile['host_mode'], string> = {
   'single-host': 'Single host: one device per port',
   'multi-host': 'Multi-host: the first device opens the port for all',
 }
+const serverDownLabels: Record<WiredProfile['server_down'], string> = { wait: 'Wait', open: 'Allow on the port’s VLAN', vlan: 'Allow on a VLAN' }
 
-function describeDefaults(p: WiredProfile): string[] {
+function describeDefaults(p: WiredProfile, vendor = 'cisco-switch'): string[] {
+  const cisco = vendor === 'cisco-switch'
   return [
     hostModes[p.host_mode].split(':')[0],
     `${p.mab ? 'Devices not on the MAC allow list' : 'Devices without 802.1X'}: ${p.no_supplicant === 'vlan' ? `VLAN ${p.no_supplicant_vlan ?? '?'} once enforced` : 'blocked once enforced'}`,
     p.server_down === 'open' ? 'EasyEAP unreachable: new devices allowed on the port’s VLAN' : p.server_down === 'vlan' ? `EasyEAP unreachable: new devices on VLAN ${p.server_down_vlan ?? '?'}` : 'EasyEAP unreachable: new devices wait, connected ones keep working',
     p.access_vlan ? `Access VLAN ${p.access_vlan}` : 'Each port keeps its VLAN',
-    p.source_interface ? `RADIUS from ${p.source_interface}` : 'RADIUS from the switch’s default address',
-    ...(p.vrf ? [`VRF ${p.vrf}`] : []),
+    ...(cisco ? [p.source_interface ? `RADIUS from ${p.source_interface}` : 'RADIUS from the switch’s default address'] : []),
+    ...(cisco && p.vrf ? [`VRF ${p.vrf}`] : []),
   ]
 }
 
 /** MAC authentication in the port plan: chosen when the switch is added; afterwards its own change on the switch's panel. */
-function MabChoice({ vendor, value, onChange, mode, supported }: { vendor: string; value: WiredProfile; onChange: (v: boolean) => void; mode: 'create' | 'edit'; supported: boolean }) {
+function MabChoice({ vendor, value, onChange, mode, supported, caps }: { vendor: string; value: WiredProfile; onChange: (v: boolean) => void; mode: 'create' | 'edit'; supported: boolean; caps: SwitchCaps | null }) {
   if (!MAB_VENDORS.includes(vendor)) return <Callout tone="neutral">IP phones, printers and other devices without 802.1X can’t be admitted by MAC address on this platform: list their ports under “leave alone”.</Callout>
+  if (caps && caps.mab === null) {
+    return <Callout tone="neutral">This switch can’t admit devices by MAC address. Leave the ports of IP phones, printers and other devices without 802.1X out of the plan (“leave alone”).</Callout>
+  }
+  if (caps?.monitor === 'server') {
+    return (
+      <Callout tone="neutral" title="MAC authentication: on">
+        This switch has no open (monitor) mode, so EasyEAP monitors it through MAC authentication: until you enforce, it accepts every MAC request from the switch and logs what it would decide.
+        Once enforced, devices without 802.1X are admitted only from the MAC allow list.
+      </Callout>
+    )
+  }
   if (mode === 'edit') {
     return <Callout tone="neutral">MAC authentication is {value.mab ? 'on' : 'off'} for this switch. Turn it {value.mab ? 'off' : 'on'} from the switch’s panel: it’s a change of its own on the switch.</Callout>
   }
@@ -90,17 +118,85 @@ function MabChoice({ vendor, value, onChange, mode, supported }: { vendor: strin
   )
 }
 
+/** "Paste show version": EasyEAP reads the family, model and release. Nothing is stored. */
+function DetectSwitch({ onDetected }: { onDetected: (d: CiscoDetected) => void }) {
+  const { tid } = useTenant()
+  const id = useId()
+  const detect = useCiscoDetect(tid)
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState('')
+  const d = detect.data?.detected
+  const run = () => detect.mutate(text, {
+    onSuccess: (r) => { if (r.detected.platform && !r.detected.unsupported) { onDetected(r.detected); setOpen(false); setText('') } },
+    onError: (e) => toast('That couldn’t be read', errorMessage(e), 'crit'),
+  })
+  return (
+    <div className="rounded-[10px] border border-[var(--ee-line)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 max-w-[62ch]">
+          <p className="text-[13px] font-semibold">Read it from the switch</p>
+          <p className="ee-small ee-ink-3 mt-0.5">Paste the output of <span className="ee-mono">show version</span> (Cisco Business: <span className="ee-mono">show system</span> and <span className="ee-mono">show version</span>) and EasyEAP sets the family, model and release below. Nothing you paste is stored.</p>
+        </div>
+        {!open && <Btn size="sm" onClick={() => setOpen(true)}>Paste show version</Btn>}
+      </div>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <label htmlFor={`${id}-sv`} className="sr-only">Output of show version</label>
+          <textarea id={`${id}-sv`} className="ee-input ee-mono min-h-[110px] text-[12px]" value={text} maxLength={20000} onChange={(e) => setText(e.target.value)} spellCheck={false} autoFocus />
+          <div className="flex gap-2">
+            <Btn size="sm" variant="primary" disabled={!text.trim()} busy={detect.isPending} onClick={run}>Read it</Btn>
+            <Btn size="sm" variant="ghost" onClick={() => { setOpen(false); setText('') }}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+      <div aria-live="polite">
+        {d && (d.unsupported
+          ? <Callout tone="crit" className="mt-3" title={`${d.model || d.family || 'This switch'}: EasyEAP can’t configure 802.1X on it`}>{d.unsupported}</Callout>
+          : !d.platform
+            ? <Callout tone="warn" className="mt-3" title="EasyEAP didn’t recognise that">Choose the family below. If it’s a Cisco switch, paste the whole output from its first line.</Callout>
+            : <p className="ee-small ee-ink-2 mt-3 flex items-center gap-1.5"><Check className="size-3.5 shrink-0 text-[var(--ee-valid)]" aria-hidden />{[d.family, d.model, d.version, d.lan_lite ? 'LAN Lite' : ''].filter(Boolean).join(' · ')}. Set below.</p>)}
+      </div>
+    </div>
+  )
+}
+
+/** What the chosen switch can't do, and what EasyEAP assumed because the release isn't given. */
+function CapsNotes({ caps }: { caps: SwitchCaps | null }) {
+  if (!caps || (!caps.notes.length && !caps.warnings.length)) return null
+  const list = (xs: string[]) => (xs.length === 1 ? xs[0] : <ul className="list-disc space-y-0.5 pl-5">{xs.map((x) => <li key={x} className="pl-1">{x}</li>)}</ul>)
+  return (
+    <div className="space-y-2">
+      {caps.warnings.length > 0 && <Callout tone="warn" title="EasyEAP assumed">{list(caps.warnings)}</Callout>}
+      {caps.notes.length > 0 && <Callout tone="neutral" title="About this switch">{list(caps.notes)}</Callout>}
+    </div>
+  )
+}
+
 export function PortPlanForm({ vendor, value, onChange, touched, serverError, mab = 'create' }: { vendor: string; value: WiredProfile; onChange: (p: WiredProfile) => void; touched: boolean; serverError?: { field: string; message: string } | null; mab?: 'create' | 'edit' }) {
   const { tid } = useTenant()
   const radius = useRadius(tid)
   const mabSupported = supportsMab(radius.data?.agent)
   const id = useId()
   const [more, setMore] = useState(false)
+  const cisco = vendor === 'cisco-switch'
+  const meraki = vendor === 'meraki'
+  const platforms = useCiscoPlatforms(tid, vendor, value, cisco || meraki)
+  const caps = cisco || meraki ? platforms.data?.capabilities ?? null : null
+  const fresh = !!caps && !platforms.isPlaceholderData
   const set = <K extends keyof WiredProfile>(k: K, v: WiredProfile[K]) => onChange({ ...value, [k]: v })
   const problems = planProblems(vendor, value)
   const err = (k: keyof WiredProfile) => (serverError?.field === k || serverError?.field === `wired_profile.${k}` ? serverError.message : touched ? problems[k] ?? null : null)
   // A server error about a field hidden behind "Change" opens it.
-  useEffect(() => { if (serverError && ['source_interface', 'vrf', 'access_vlan', 'no_supplicant_vlan', 'server_down_vlan'].includes(serverError.field)) setMore(true) }, [serverError])
+  useEffect(() => { if (serverError && ['source_interface', 'vrf', 'access_vlan', 'no_supplicant_vlan', 'server_down_vlan', 'host_mode', 'server_down', 'no_supplicant'].includes(serverError.field.replace(/^wired_profile\./, ''))) setMore(true) }, [serverError])
+  // Choices this switch can't carry out move to one it can (the backend refuses them anyway).
+  useEffect(() => {
+    if (!fresh || !caps) return
+    const fix: Partial<WiredProfile> = {}
+    if (!caps.host_modes.includes(value.host_mode)) fix.host_mode = caps.host_modes[0]
+    if (!caps.server_down.includes(value.server_down)) fix.server_down = caps.server_down[0]
+    if (value.no_supplicant === 'vlan' && !caps.no_supplicant_vlan) fix.no_supplicant = 'block'
+    if (Object.keys(fix).length) onChange({ ...value, ...fix })
+  }, [fresh, caps, value, onChange])
 
   if (vendor === 'unifi') {
     return (
@@ -109,82 +205,129 @@ export function PortPlanForm({ vendor, value, onChange, touched, serverError, ma
           hint="UniFi puts devices that fail 802.1X, or don’t try it, on this VLAN. While you test, use the VLAN the ports use today: that’s UniFi’s monitor mode. Choose a restricted VLAN when you enforce.">
           <VlanInput id={`${id}-fb`} label="Fallback VLAN" value={value.fallback_vlan} onChange={(v) => set('fallback_vlan', v)} invalid={!!err('fallback_vlan')} />
         </Field>
-        <MabChoice vendor={vendor} value={value} onChange={(v) => set('mab', v)} mode={mab} supported={mabSupported} />
+        <MabChoice vendor={vendor} value={value} onChange={(v) => set('mab', v)} mode={mab} supported={mabSupported} caps={null} />
         {!value.mab && <p className="ee-small ee-ink-3">Without it, leave the ports of IP phones, printers and other devices without 802.1X on Force Authorized.</p>}
       </div>
     )
   }
-  if (vendor !== 'cisco-switch') return null
+  if (!cisco && !meraki) return null
+  const fam = FAMILY[value.platform] ?? FAMILY.ibns2
+  const seriesOptions = (platforms.data?.series[meraki ? 'meraki' : value.platform] ?? []).filter(Boolean)
+  const seriesLabels = platforms.data?.series_labels ?? {}
+  const hostOptions = caps?.host_modes ?? (Object.keys(hostModes) as WiredProfile['host_mode'][])
+  const downOptions = caps?.server_down ?? (['wait', 'open', 'vlan'] as WiredProfile['server_down'][])
+  const nsVlan = caps?.no_supplicant_vlan !== false
   return (
     <div className="space-y-5">
-      <Field label="Configuration style" htmlFor={`${id}-plat`} hint={<>Run <span className="ee-mono">show version | include IOS</span>. IOS-XE 16, 17 or 26, or IOS-XE 3.x on a 3650, 3850 or 4500E: IBNS 2.0. Classic IOS 12.2 or 15 (2960, 2960-X, 3560, 3750): classic.</>}>
-        <Seg label="Configuration style" value={value.platform} onChange={(v) => set('platform', v)}
-          options={[{ value: 'ibns2', label: 'IOS-XE (IBNS 2.0)' }, { value: 'classic', label: 'Classic IOS / IOS-XE' }]} />
-      </Field>
-      <Field label="Access ports" htmlFor={`${id}-if`} error={err('interfaces')} hint="The ports users plug into, as the switch names them. Ranges and commas are fine: Gi1/0/1-24, Gi2/0/1-48.">
-        <textarea id={`${id}-if`} className="ee-input ee-mono min-h-[64px]" value={value.interfaces} onChange={(e) => set('interfaces', e.target.value)}
-          placeholder="GigabitEthernet1/0/1 - 24" spellCheck={false} aria-invalid={!!err('interfaces') || undefined} />
-      </Field>
-      <Field label="Ports to leave alone" htmlFor={`${id}-ex`} optional error={err('exclude')}
-        hint="Uplinks, access points, printers, phones, and the port you’re connected through. Skipped even when they fall inside the access-port ranges.">
-        <input id={`${id}-ex`} className="ee-input ee-mono" value={value.exclude} onChange={(e) => set('exclude', e.target.value)} placeholder="Gi1/0/48, Te1/1/1" spellCheck={false}
-          aria-invalid={!!err('exclude') || undefined} autoComplete="off" />
-      </Field>
-      <div className="flex items-start justify-between gap-6">
-        <div className="min-w-0 max-w-[62ch]">
-          <p className="text-[13px] font-semibold">The switch already uses AAA</p>
-          <p className="ee-small ee-ink-3 mt-0.5">{value.has_aaa
-            ? 'Its login and exec settings are left exactly as they are.'
-            : <>Off: the configuration turns AAA on and keeps logins on the switch’s local users. Check with <span className="ee-mono">show running-config | include ^aaa new-model</span>: on only if it prints exactly <span className="ee-mono">aaa new-model</span> (<span className="ee-mono">no aaa new-model</span> means off).</>}</p>
+      {cisco && <DetectSwitch onDetected={(d) => onChange({ ...value, platform: d.platform ?? value.platform, series: d.series, version: d.version, lan_lite: d.lan_lite })} />}
+      {cisco && (
+        <Field label="Family" htmlFor={`${id}-plat`} hint={fam.covers}>
+          <Seg label="Switch family" value={value.platform} onChange={(v) => onChange({ ...value, platform: v, series: '', version: '', lan_lite: false })}
+            options={CISCO_PLATFORMS.map((v) => ({ value: v, label: ciscoPlatformLabels[v] }))} />
+        </Field>
+      )}
+      {(meraki || value.platform === 'nxos' || value.platform === 'cbs') && (
+        <Field label="Model" htmlFor={`${id}-ser`} error={err('series')}
+          hint={meraki ? 'The switch’s own open (monitor) mode exists only on the MS130 and MS150 with MS 18 or later.' : 'What 802.1X can do differs by model.'}>
+          <ESelect id={`${id}-ser`} label="Model" className="w-full" value={value.series || (meraki ? 'ms' : '')} placeholder="Choose the model family"
+            onChange={(v) => set('series', v)} disabled={!seriesOptions.length} options={seriesOptions.map((s) => ({ value: s, label: seriesLabels[s] ?? s }))} />
+        </Field>
+      )}
+      {cisco && (
+        <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
+          <Field label="Software release" htmlFor={`${id}-ver`} optional error={err('version')}
+            hint={<>As <span className="ee-mono">show version</span> prints it, for example {fam.version}. Blank: EasyEAP assumes a recent release.</>}>
+            <input id={`${id}-ver`} className="ee-input ee-mono max-w-[200px]" value={value.version ?? ''} maxLength={40} onChange={(e) => set('version', e.target.value.trim())}
+              placeholder={fam.version} spellCheck={false} autoComplete="off" aria-invalid={!!err('version') || undefined} />
+          </Field>
+          {value.platform === 'classic' && (
+            <div className="flex min-w-0 max-w-[40ch] items-start gap-3 pt-6">
+              <ESwitch checked={!!value.lan_lite} onChange={(v) => set('lan_lite', v)} label="LAN Lite image" />
+              <p className="ee-small ee-ink-3">LAN Lite image: <span className="ee-mono">show version</span> names a LANLITE image (2960-L, some 2960 and 2960-X).</p>
+            </div>
+          )}
         </div>
-        <ESwitch checked={value.has_aaa} onChange={(v) => set('has_aaa', v)} label="The switch already uses AAA" />
-      </div>
-      <MabChoice vendor={vendor} value={value} onChange={(v) => set('mab', v)} mode={mab} supported={mabSupported} />
+      )}
+      <CapsNotes caps={caps} />
+      {cisco && (
+        <>
+          <Field label="Access ports" htmlFor={`${id}-if`} error={err('interfaces')} hint={`The ports users plug into, as the switch names them. Ranges and commas are fine: ${fam.portsHint}.`}>
+            <textarea id={`${id}-if`} className="ee-input ee-mono min-h-[64px]" value={value.interfaces} onChange={(e) => set('interfaces', e.target.value)}
+              placeholder={fam.ports} spellCheck={false} aria-invalid={!!err('interfaces') || undefined} />
+          </Field>
+          <Field label="Ports to leave alone" htmlFor={`${id}-ex`} optional error={err('exclude')}
+            hint="Uplinks, access points, printers, phones, and the port you’re connected through. Skipped even when they fall inside the access-port ranges.">
+            <input id={`${id}-ex`} className="ee-input ee-mono" value={value.exclude} onChange={(e) => set('exclude', e.target.value)} placeholder={fam.exclude} spellCheck={false}
+              aria-invalid={!!err('exclude') || undefined} autoComplete="off" />
+          </Field>
+        </>
+      )}
+      {cisco && (value.platform === 'ibns2' || value.platform === 'classic') && (
+        <div className="flex items-start justify-between gap-6">
+          <div className="min-w-0 max-w-[62ch]">
+            <p className="text-[13px] font-semibold">The switch already uses AAA</p>
+            <p className="ee-small ee-ink-3 mt-0.5">{value.has_aaa
+              ? 'Its login and exec settings are left exactly as they are.'
+              : <>Off: the configuration turns AAA on and keeps logins on the switch’s local users. Check with <span className="ee-mono">show running-config | include ^aaa new-model</span>: on only if it prints exactly <span className="ee-mono">aaa new-model</span> (<span className="ee-mono">no aaa new-model</span> means off).</>}</p>
+          </div>
+          <ESwitch checked={value.has_aaa} onChange={(v) => set('has_aaa', v)} label="The switch already uses AAA" />
+        </div>
+      )}
+      <MabChoice vendor={vendor} value={value} onChange={(v) => set('mab', v)} mode={mab} supported={mabSupported} caps={caps} />
 
       <div className="rounded-[10px] border border-[var(--ee-line)] p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[13px] font-semibold">Defaults</p>
-            {!more && <ul className="ee-small ee-ink-2 mt-1 space-y-0.5">{describeDefaults(value).map((d) => <li key={d}>{d}</li>)}</ul>}
+            {!more && <ul className="ee-small ee-ink-2 mt-1 space-y-0.5">{describeDefaults(value, vendor).map((d) => <li key={d}>{d}</li>)}</ul>}
           </div>
           <Btn size="sm" variant="ghost" onClick={() => setMore((m) => !m)} aria-expanded={more}>{more ? 'Done' : 'Change'}</Btn>
         </div>
         {more && (
           <div className="mt-4 space-y-4">
-            <Field label="Devices per port" htmlFor={`${id}-hm`}>
+            <Field label="Devices per port" htmlFor={`${id}-hm`} error={serverError?.field.endsWith('host_mode') ? serverError.message : null}>
               <ESelect id={`${id}-hm`} label="Devices per port" value={value.host_mode} onChange={(v) => set('host_mode', v as WiredProfile['host_mode'])} className="w-full"
-                options={Object.entries(hostModes).map(([v, l]) => ({ value: v, label: l }))} />
+                options={hostOptions.map((v) => ({ value: v, label: hostModes[v] }))} />
             </Field>
-            <Field label={value.mab ? 'Devices not on the MAC allow list, once enforced' : 'Devices without 802.1X, once enforced'} htmlFor={`${id}-ns`} error={err('no_supplicant_vlan')}
-              hint="In monitor mode they keep their access either way.">
-              <div className="flex flex-wrap items-center gap-3">
-                <Seg label="Devices without 802.1X" value={value.no_supplicant} onChange={(v) => set('no_supplicant', v)}
-                  options={[{ value: 'block', label: 'Blocked' }, { value: 'vlan', label: 'Put on a VLAN' }]} />
-                {value.no_supplicant === 'vlan' && <VlanInput id={`${id}-nsv`} label="VLAN for devices without 802.1X" value={value.no_supplicant_vlan} onChange={(v) => set('no_supplicant_vlan', v)} invalid={!!err('no_supplicant_vlan')} />}
-              </div>
+            <Field label={value.mab ? 'Devices not on the MAC allow list, once enforced' : 'Devices without 802.1X, once enforced'} htmlFor={`${id}-ns`}
+              error={err('no_supplicant_vlan') ?? (serverError?.field.endsWith('no_supplicant') ? serverError.message : null)}
+              hint={caps?.monitor === 'none' ? 'This switch has no monitor mode: they’re blocked as soon as their port is configured.' : 'In monitor mode they keep their access either way.'}>
+              {nsVlan ? (
+                <div className="flex flex-wrap items-center gap-3">
+                  <Seg label="Devices without 802.1X" value={value.no_supplicant} onChange={(v) => set('no_supplicant', v)}
+                    options={[{ value: 'block', label: 'Blocked' }, { value: 'vlan', label: 'Put on a VLAN' }]} />
+                  {value.no_supplicant === 'vlan' && <VlanInput id={`${id}-nsv`} label="VLAN for devices without 802.1X" value={value.no_supplicant_vlan} onChange={(v) => set('no_supplicant_vlan', v)} invalid={!!err('no_supplicant_vlan')} />}
+                </div>
+              ) : <p className="text-[13px] ee-ink-2">Blocked: this switch has no VLAN for them.</p>}
             </Field>
-            <Field label="New devices while EasyEAP is unreachable" htmlFor={`${id}-sd`} error={err('server_down_vlan')}
+            <Field label="New devices while EasyEAP is unreachable" htmlFor={`${id}-sd`} error={err('server_down_vlan') ?? (serverError?.field.endsWith('server_down') ? serverError.message : null)}
               hint={value.server_down === 'wait'
                 ? 'Fails closed: a device that connects during an outage waits until EasyEAP is back. Devices already connected keep working either way.'
                 : value.server_down === 'open'
                   ? 'Fails open: during an outage any device that plugs in gets the port’s VLAN without a certificate.'
                   : 'During an outage new devices get this VLAN without a certificate. Make it a restricted one.'}>
-              <div className="flex flex-wrap items-center gap-3">
-                <Seg label="New devices while EasyEAP is unreachable" value={value.server_down} onChange={(v) => set('server_down', v)}
-                  options={[{ value: 'wait', label: 'Wait' }, { value: 'open', label: 'Allow on the port’s VLAN' }, { value: 'vlan', label: 'Allow on a VLAN' }]} />
-                {value.server_down === 'vlan' && <VlanInput id={`${id}-sdv`} label="VLAN while EasyEAP is unreachable" value={value.server_down_vlan} onChange={(v) => set('server_down_vlan', v)} invalid={!!err('server_down_vlan')} />}
-              </div>
+              {downOptions.length > 1 ? (
+                <div className="flex flex-wrap items-center gap-3">
+                  <Seg label="New devices while EasyEAP is unreachable" value={value.server_down} onChange={(v) => set('server_down', v)}
+                    options={downOptions.map((v) => ({ value: v, label: serverDownLabels[v] }))} />
+                  {value.server_down === 'vlan' && <VlanInput id={`${id}-sdv`} label="VLAN while EasyEAP is unreachable" value={value.server_down_vlan} onChange={(v) => set('server_down_vlan', v)} invalid={!!err('server_down_vlan')} />}
+                </div>
+              ) : <p className="text-[13px] ee-ink-2">Wait: this switch has no way to let new devices through while EasyEAP is unreachable.</p>}
             </Field>
             <div className="grid gap-4 sm:grid-cols-3">
-              <Field label="Access VLAN" htmlFor={`${id}-av`} optional error={err('access_vlan')} hint="Blank keeps each port’s VLAN.">
+              <Field label="Access VLAN" htmlFor={`${id}-av`} optional error={err('access_vlan')} hint={meraki ? 'The VLAN these ports use. Blank: EasyEAP’s steps say “the VLAN these ports use”.' : 'Blank keeps each port’s VLAN.'}>
                 <VlanInput id={`${id}-av`} label="Access VLAN" value={value.access_vlan} onChange={(v) => set('access_vlan', v)} invalid={!!err('access_vlan')} />
               </Field>
-              <Field label="RADIUS source interface" htmlFor={`${id}-src`} optional error={err('source_interface')} hint="For example Vlan10 or Loopback0.">
-                <input id={`${id}-src`} className="ee-input ee-mono" value={value.source_interface} onChange={(e) => set('source_interface', e.target.value.trim())} placeholder="Vlan10" spellCheck={false} autoComplete="off" />
-              </Field>
-              <Field label="VRF" htmlFor={`${id}-vrf`} optional error={err('vrf')} hint="When EasyEAP is reached through one, for example Mgmt-vrf.">
-                <input id={`${id}-vrf`} className="ee-input ee-mono" value={value.vrf} onChange={(e) => set('vrf', e.target.value.trim())} spellCheck={false} autoComplete="off" />
-              </Field>
+              {cisco && (
+                <Field label="RADIUS source interface" htmlFor={`${id}-src`} optional error={err('source_interface')} hint={value.platform === 'nxos' ? 'For example mgmt0 or Vlan10.' : 'For example Vlan10 or Loopback0.'}>
+                  <input id={`${id}-src`} className="ee-input ee-mono" value={value.source_interface} onChange={(e) => set('source_interface', e.target.value.trim())} placeholder={value.platform === 'nxos' ? 'mgmt0' : 'Vlan10'} spellCheck={false} autoComplete="off" />
+                </Field>
+              )}
+              {cisco && value.platform !== 'cbs' && (
+                <Field label="VRF" htmlFor={`${id}-vrf`} optional error={err('vrf')} hint={value.platform === 'nxos' ? 'Blank: management.' : 'When EasyEAP is reached through one, for example Mgmt-vrf.'}>
+                  <input id={`${id}-vrf`} className="ee-input ee-mono" value={value.vrf} onChange={(e) => set('vrf', e.target.value.trim())} spellCheck={false} autoComplete="off" />
+                </Field>
+              )}
             </div>
           </div>
         )}
@@ -214,6 +357,9 @@ export function WiredGuideBody({ guide, settings, secret, onCopied, which = 'ini
         <Field label="RADIUS address" htmlFor={`${id}-addr`} hint={settings.radius_address_problem ?? 'This EasyEAP server has no RADIUS address configured (EASYEAP_RADIUS_ADDRESS in the deploy .env). Enter the address your switches reach it on.'}>
           <input id={`${id}-addr`} className="ee-input ee-mono max-w-[260px]" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="10.0.0.10" autoComplete="off" spellCheck={false} />
         </Field>
+      )}
+      {which === 'initial' && !!guide.warnings?.length && (
+        <Callout tone="warn" title="EasyEAP assumed">{guide.warnings.join(' ')} Check each command as you paste it, and add the release to the port plan if you can.</Callout>
       )}
       {which === 'initial' && guide.preflight.length > 0 && (
         <section aria-label="Before you paste">
@@ -321,6 +467,13 @@ export function FirstRequest({ client }: { client: RadiusClient }) {
 
 // ── Add switch ──────────────────────────────────────────────────────────────
 
+const VENDOR_HINTS: Record<string, string> = {
+  'cisco-switch': 'Catalyst (IOS and IOS-XE), Nexus and Cisco Business switches: the next step asks which.',
+  meraki: 'Set up in the Meraki Dashboard: EasyEAP gives the steps.',
+  unifi: 'UniFi switches managed by a UniFi Network application.',
+  other: 'Any switch that does 802.1X with RADIUS: EasyEAP gives the RADIUS settings, and you configure the ports.',
+}
+
 interface SwitchBasics { vendor: SwitchVendor; name: string; address: string; site: string; coa_enabled: boolean; coa_port: number | null }
 const blankBasics: SwitchBasics = { vendor: 'cisco-switch', name: '', address: '', site: '', coa_enabled: true, coa_port: 1700 }
 
@@ -372,7 +525,7 @@ export function AddSwitchDialog({ open, onOpenChange, settings, clients, onAdded
   const basicsErrors = existing ? {} : {
     name: !b.name.trim() ? 'Name the switch so you can recognise it in the log.' : clients.some((c) => c.name.toLowerCase() === b.name.trim().toLowerCase()) ? 'Another controller or switch already has this name.' : null,
     address: addressProblem(b.address),
-    coa_port: b.coa_enabled && !(Number.isInteger(b.coa_port) && (b.coa_port ?? 0) >= 1 && (b.coa_port ?? 0) <= 65535) ? 'Enter a UDP port from 1 to 65535. Catalyst switches listen on 1700.' : null,
+    coa_port: b.coa_enabled && !(Number.isInteger(b.coa_port) && (b.coa_port ?? 0) >= 1 && (b.coa_port ?? 0) <= 65535) ? 'Enter a UDP port from 1 to 65535. Cisco and Meraki switches listen on 1700.' : null,
   }
   const berr = (k: 'name' | 'address' | 'coa_port') => (error && error.field === k ? error.message : touched ? (basicsErrors as Record<string, string | null>)[k] ?? null : null)
 
@@ -439,8 +592,8 @@ export function AddSwitchDialog({ open, onOpenChange, settings, clients, onAdded
         <form id={`${id}-form`} noValidate onSubmit={(e: FormEvent) => { e.preventDefault(); next() }} className="space-y-4">
           {step === 'switch' && (
             <>
-              <Field label="Switch platform" htmlFor={`${id}-plat`} hint="Catalyst 1200/1300, Cisco Business and Meraki MS switches use other configuration: choose Other.">
-                <Seg label="Switch platform" value={b.vendor} onChange={(v) => { setB({ ...b, vendor: v, coa_port: defaultCoaPort(v), coa_enabled: v === 'cisco-switch' }); setTarget('new'); setError(null) }}
+              <Field label="Switch platform" htmlFor={`${id}-plat`} hint={VENDOR_HINTS[b.vendor]}>
+                <Seg label="Switch platform" value={b.vendor} onChange={(v) => { setB({ ...b, vendor: v, coa_port: defaultCoaPort(v), coa_enabled: v === 'cisco-switch' }); setPlan(v === 'meraki' ? { ...defaultWiredProfile, series: 'ms' } : defaultWiredProfile); setTarget('new'); setError(null) }}
                   options={SWITCH_VENDORS.map((v) => ({ value: v, label: switchVendorLabels[v] }))} />
               </Field>
               {b.vendor === 'unifi' && unifiExisting.length > 0 && (
@@ -460,7 +613,9 @@ export function AddSwitchDialog({ open, onOpenChange, settings, clients, onAdded
                     </Field>
                   </div>
                   <Field label="Source address or CIDR" htmlFor={`${id}-addr`} error={berr('address')}
-                    hint={b.vendor === 'unifi' ? 'The switches’ management addresses (a range covers several switches).' : 'The address its RADIUS requests come from: the management VLAN interface, or the source interface below.'}>
+                    hint={b.vendor === 'unifi' ? 'The switches’ management addresses (a range covers several switches).'
+                      : b.vendor === 'meraki' ? 'The switch’s management (LAN) IP, or its Alternate Management Interface IP if you set one. A range covers several switches.'
+                        : 'The address its RADIUS requests come from: the management VLAN interface, or the source interface in the port plan.'}>
                     <input id={`${id}-addr`} className="ee-input ee-mono" value={b.address} onChange={(e) => setB({ ...b, address: e.target.value })} placeholder="10.20.0.21" inputMode="decimal"
                       aria-invalid={!!berr('address') || undefined} autoComplete="off" spellCheck={false} />
                   </Field>
@@ -476,7 +631,9 @@ export function AddSwitchDialog({ open, onOpenChange, settings, clients, onAdded
                       <span className="ee-small ee-ink-3">UDP</span>
                     </div>
                     {berr('coa_port') ? <p className="ee-field-error" role="alert">{berr('coa_port')}</p> : (
-                      <p className="ee-small ee-ink-3">{b.vendor === 'unifi' ? 'Not verified on UniFi switches. Leave it off unless you’ve tested it.' : 'Lets EasyEAP end a port’s session when you revoke its certificate.'}</p>
+                      <p className="ee-small ee-ink-3">{b.vendor === 'unifi' ? 'Not verified on UniFi switches. Leave it off unless you’ve tested it.'
+                        : b.vendor === 'meraki' ? 'Leave it off: Meraki needs a session ID in each answer that EasyEAP doesn’t send yet.'
+                          : 'Lets EasyEAP end a port’s session when you revoke its certificate. Some Cisco switches can’t: the next step says.'}</p>
                     )}
                   </div>
                 </div>
@@ -535,19 +692,25 @@ export function SwitchPanel({ client, settings }: { client: RadiusClient; settin
     )
   }
   const since = p.mode_set_at ? Math.floor((now.getTime() - new Date(p.mode_set_at).getTime()) / 864e5) : null
+  const caps = client.capabilities
+  const cmd = sessionCommand(client)
+  const ciscoLike = client.vendor === 'cisco-switch' || client.vendor === 'meraki'
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="flex flex-wrap items-center gap-2 text-[13.5px]"><ModeChip c={client} />
             <span className="ee-ink-2">
-              {client.wired_mode === 'monitor' ? 'Ports open; EasyEAP decides and logs, and sends no VLAN.' : 'Ports admit only accepted devices; EasyEAP sends VLANs.'}
+              {client.wired_mode !== 'monitor' ? 'Ports admit only accepted devices; EasyEAP sends VLANs.'
+                : caps?.monitor === 'server' ? 'The switch has no open mode: EasyEAP accepts its MAC requests, logs what it would decide, and sends no VLAN.'
+                  : caps?.monitor === 'none' ? 'The switch has no open mode: its configured ports already require 802.1X. EasyEAP sends no VLAN.'
+                    : 'Ports open; EasyEAP decides and logs, and sends no VLAN.'}
             </span>
           </p>
           <p className="ee-small ee-ink-3 mt-1">
             Set in EasyEAP{p.mode_set_at ? ` on ${fmtDate(p.mode_set_at)}` : ''}{p.mode_set_by ? ` by ${p.mode_set_by}` : ''}.
-            {client.monitoring?.enabled ? ' The switch audit below reads what the switch itself reports.' : <> EasyEAP can’t read the switch{client.vendor === 'cisco-switch' ? ' unless the switch audit is set up' : ''}:
-              check with <span className="ee-mono">{client.vendor === 'cisco-switch' ? (p.platform === 'classic' ? 'show authentication sessions' : 'show access-session') : 'the UniFi port settings'}</span>.</>}
+            {client.monitoring?.enabled ? ' The switch audit below reads what the switch itself reports.' : <> EasyEAP can’t read the switch{client.vendor === 'cisco-switch' && caps?.audit !== null ? ' unless the switch audit is set up' : ''}:
+              check with {cmd ? <span className="ee-mono">{cmd}</span> : client.vendor === 'meraki' ? 'Switch ports in the Meraki Dashboard' : client.vendor === 'unifi' ? 'the UniFi port settings' : 'the switch’s 802.1X status'}.</>}
             {client.wired_mode === 'monitor' && since !== null && since >= 14 && <span className="text-[var(--ee-warn-ink)]"> In monitor mode for {since} days.</span>}
           </p>
         </div>
@@ -558,15 +721,16 @@ export function SwitchPanel({ client, settings }: { client: RadiusClient; settin
           {write && client.wired_mode === 'enforce' && <Btn size="sm" onClick={() => setMonitor(true)}><Undo2 aria-hidden />Back to monitor mode…</Btn>}
         </div>
       </div>
-      {client.vendor === 'cisco-switch' && (
+      {ciscoLike && (
         <dl className="grid gap-x-6 gap-y-1 text-[13px] sm:grid-cols-[auto_minmax(0,1fr)]">
-          <dt className="ee-label">Access ports</dt><dd className="ee-mono text-[12.5px] break-words">{p.interfaces}</dd>
-          {p.exclude && <><dt className="ee-label">Left alone</dt><dd className="ee-mono text-[12.5px] break-words">{p.exclude}</dd></>}
-          <dt className="ee-label">Style</dt><dd>{p.platform === 'classic' ? 'Classic IOS / IOS-XE' : 'IOS-XE (IBNS 2.0)'} · {describeDefaults(p).join(' · ')}</dd>
+          <dt className="ee-label">Switch</dt><dd>{client.switch_family ?? (p.platform === 'classic' ? 'Classic IOS' : 'IOS-XE (IBNS 2.0)')}</dd>
+          {client.vendor === 'cisco-switch' && <><dt className="ee-label">Access ports</dt><dd className="ee-mono text-[12.5px] break-words">{p.interfaces}</dd></>}
+          {client.vendor === 'cisco-switch' && p.exclude && <><dt className="ee-label">Left alone</dt><dd className="ee-mono text-[12.5px] break-words">{p.exclude}</dd></>}
+          <dt className="ee-label">Defaults</dt><dd>{describeDefaults(p, client.vendor).join(' · ')}</dd>
         </dl>
       )}
-      {MAB_VENDORS.includes(client.vendor) && <MabRow client={client} onChange={() => setMabChange(true)} />}
-      {client.vendor === 'cisco-switch' && <SwitchAuditPanel client={client} />}
+      {MAB_VENDORS.includes(client.vendor) && caps?.mab !== null && <MabRow client={client} onChange={() => setMabChange(true)} />}
+      {client.vendor === 'cisco-switch' && (caps?.audit !== null || client.monitoring?.set_up) && <SwitchAuditPanel client={client} />}
       {view && (guide.isLoading ? <LoadingBlock rows={5} label="Loading the configuration" />
         : guide.error ? <ErrorState error={guide.error} onRetry={() => guide.refetch()} />
           : guide.data ? <WiredGuideBody guide={guide.data} settings={settings} secretOf={client.name} /> : null)}
@@ -592,6 +756,8 @@ function MabRow({ client, onChange }: { client: RadiusClient; onChange: () => vo
   const on = !!client.wired_profile?.mab
   const supported = supportsMab(radius.data?.agent)
   const monitor = client.wired_mode === 'monitor'
+  // No open mode on the switch: MAC authentication is how EasyEAP monitors it, so it stays on.
+  const required = client.capabilities?.monitor === 'server'
   return (
     <div className="flex flex-wrap items-start justify-between gap-3 rounded-[10px] border border-[var(--ee-line)] px-4 py-3">
       <div className="min-w-0 max-w-[70ch]">
@@ -599,11 +765,12 @@ function MabRow({ client, onChange }: { client: RadiusClient; onChange: () => vo
         <p className="ee-small ee-ink-3 mt-0.5">
           {on ? <>Devices that don’t answer 802.1X are checked against the {can('mac:read') ? <Link className="underline decoration-[var(--ee-line-3)] underline-offset-2" to={paths.mac(tid)}>MAC allow list</Link> : 'MAC allow list'}.</>
             : 'Devices without 802.1X (printers, cameras, phones) aren’t admitted by MAC address.'}
-          {!monitor && ' Move the switch back to monitor mode to change it.'}
+          {required && ' It stays on: this switch has no open mode, so it’s how EasyEAP monitors it.'}
+          {!required && !monitor && ' Move the switch back to monitor mode to change it.'}
           {monitor && !on && !supported && ' RADIUS needs updating before it can be turned on (System health shows its version).'}
         </p>
       </div>
-      {can('radius:write') && monitor && (on || supported) && <Btn size="sm" onClick={onChange}>{on ? 'Turn off…' : 'Turn on…'}</Btn>}
+      {can('radius:write') && monitor && !(required && on) && (on || supported) && <Btn size="sm" onClick={onChange}>{on ? 'Turn off…' : 'Turn on…'}</Btn>}
     </div>
   )
 }
@@ -614,7 +781,7 @@ function MabHealthView({ health, hours }: { health: MabHealth; hours: number }) 
   if (health.answered === 0) {
     return (
       <Callout tone="warn" title={`No MAC authentication requests in the last ${hours} hours`}>
-        Enforce waits for one: plug in a device without 802.1X and check the Authentication log. If none arrives, the switch may send MAC requests without Message-Authenticator, which EasyEAP requires (check with <span className="ee-mono">debug radius</span> on the switch).
+        Enforce waits for one: plug in a device without 802.1X and check the Authentication log. If none arrives, check that the ports have MAC authentication on (the configuration EasyEAP gave you), then the switch’s RADIUS debug output.
       </Callout>
     )
   }
@@ -700,14 +867,20 @@ function ReadinessView({ client }: { client: RadiusClient }) {
   )
 }
 
-function SessionsCheckView({ client }: { client: RadiusClient }) {
+/** The command that lists the switch's 802.1X sessions in a form EasyEAP reads; null where there's none. */
+function sessionCommand(c: RadiusClient): string | null {
+  if (c.capabilities !== undefined) return c.capabilities?.session_command ?? null
+  if (c.vendor !== 'cisco-switch') return null
+  return c.wired_profile?.platform === 'classic' ? 'show authentication sessions' : 'show access-session'
+}
+
+function SessionsCheckView({ client, cmd }: { client: RadiusClient; cmd: string }) {
   const { tid } = useTenant()
   const id = useId()
   const check = useCheckSessions(tid)
   const readiness = useReadiness(tid, client.id)
   const [text, setText] = useState('')
   const [paste, setPaste] = useState(false)
-  const cmd = client.wired_profile?.platform === 'classic' ? 'show authentication sessions' : 'show access-session'
   const polled = readiness.data?.switch_sessions
   if (polled && !paste) {
     return (
@@ -771,7 +944,7 @@ export function EnforceDialog({ client, onClose, settings }: { client: RadiusCli
     return () => clearInterval(t)
   }, [doneAt, applied.state])
   const c = client ?? shown
-  const cisco = c?.vendor === 'cisco-switch'
+  const cmd = c ? sessionCommand(c) : null
   // The closed-mode change is shown only once RADIUS sends VLANs: pasted earlier, `clear access-session` would
   // re-authenticate devices while EasyEAP still withholds VLANs, leaving them on the port's VLAN for hours.
   const live = applied.state === 'live' || early
@@ -807,8 +980,12 @@ export function EnforceDialog({ client, onClose, settings }: { client: RadiusCli
       ) : c ? (
         <div className="space-y-5">
           <section aria-label="What EasyEAP saw"><h3 className="ee-h3 mb-2">What EasyEAP saw from {c.name}</h3><ReadinessView client={c} /></section>
-          {cisco && <section aria-label="What the switch sees" className="border-t border-[var(--ee-line)] pt-4"><h3 className="ee-h3 mb-2">What the switch sees</h3><SessionsCheckView client={c} /></section>}
-          {!cisco && <Callout tone="neutral">UniFi and other switches don’t list sessions the same way: check the switch’s client list for devices on 802.1X ports that EasyEAP hasn’t accepted.</Callout>}
+          {cmd && <section aria-label="What the switch sees" className="border-t border-[var(--ee-line)] pt-4"><h3 className="ee-h3 mb-2">What the switch sees</h3><SessionsCheckView client={c} cmd={cmd} /></section>}
+          {!cmd && <Callout tone="neutral">{c.vendor === 'meraki'
+            ? 'Meraki has no session list to paste here: in the Dashboard, check Switch ports for devices on these ports that EasyEAP hasn’t accepted.'
+            : c.vendor === 'unifi' || c.vendor === 'other'
+              ? 'UniFi and other switches don’t list sessions the same way: check the switch’s client list for devices on 802.1X ports that EasyEAP hasn’t accepted.'
+              : 'This switch doesn’t list sessions in a form EasyEAP reads: check its 802.1X status for devices on these ports that EasyEAP hasn’t accepted.'}</Callout>}
           {blocked && <Callout tone="crit" title="MAC authentication hasn’t proved itself yet">{blocked}</Callout>}
           <label className="flex items-start gap-2.5 text-[13px]">
             <input type="checkbox" className="ee-check mt-0.5" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />

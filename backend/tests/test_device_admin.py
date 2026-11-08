@@ -161,7 +161,7 @@ def test_cisco_config_variants():
     assert "ip http authentication aaa login-authentication default" in c9800["config"]
     assert "no ip http authentication aaa login-authentication" in c9800["rollback"]
     assert cisco.server_name(cisco.Ctx(tenant_slug="a-very-long-tenant-slug-name", server="x", name="n", vendor="cisco-switch")).__len__() <= 31
-    assert set(cisco.NOT_SUPPORTED) == {"unifi", "cisco-aireos", "other"}
+    assert set(cisco.NOT_SUPPORTED) == {"unifi", "cisco-aireos", "other", "meraki"}
 
 
 def test_wired_configuration_leaves_admin_login_lists_alone():

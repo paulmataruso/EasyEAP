@@ -18,8 +18,14 @@ export interface AdminDevice {
   key_set_at: string | null
   /** The key before the last rotation still works until then. */
   previous_key_until: string | null
-  /** Its port plan says classic IOS: offer the older `tacacs-server host` form. */
+  /** Its port plan says classic IOS. */
   classic: boolean
+  /** Offer the "older IOS" (`tacacs-server host`) choice: the release doesn't decide the form (classic IOS or IOS-XE, release unknown). */
+  legacy_choice?: boolean
+  /** The configuration form EasyEAP generates: named, legacy, nxos, sx, sx-old or cbs220; null without TACACS+. */
+  form?: string | null
+  /** What the TACACS+ service answers it as: ios, nxos or nxos-n7k. */
+  os?: string
   last_login_at: string | null
 }
 

@@ -24,6 +24,7 @@ from sqlalchemy import or_, select
 
 from app import models as m
 from app.db import platform_session
+from app.radius import cisco_platforms as cp
 from app.security.redact import configure_logging
 from app.switchaudit import service
 
@@ -38,16 +39,18 @@ _stop = False
 def due(now: datetime) -> list[tuple[uuid.UUID, uuid.UUID]]:
     """(client id, tenant id) of every switch to poll now, oldest first."""
     with platform_session() as s:
-        q = (select(m.RadiusClient.id, m.RadiusClient.tenant_id)
+        q = (select(m.RadiusClient.id, m.RadiusClient.tenant_id, m.RadiusClient.vendor, m.RadiusClient.wired_profile)
              .join(m.Tenant, m.Tenant.id == m.RadiusClient.tenant_id)
              .outerjoin(m.SwitchState, m.SwitchState.client_id == m.RadiusClient.id)
              .where(m.RadiusClient.monitoring["enabled"].as_boolean().is_(True), m.RadiusClient.snmp_secret_ct.is_not(None),
+                    m.RadiusClient.vendor == "cisco-switch",
                     m.Tenant.status.in_(("active", "setup")),
                     or_(m.SwitchState.client_id.is_(None), m.SwitchState.next_poll_at.is_(None), m.SwitchState.next_poll_at <= now,
                         m.SwitchState.poll_requested_at.is_not(None)))
              .order_by(m.SwitchState.poll_requested_at.desc().nulls_last(), m.SwitchState.next_poll_at.asc().nulls_first())
              .limit(200))
-        return [(r[0], r[1]) for r in s.execute(q)]
+        # A switch whose family has no audit (a plan saved before this check) isn't polled: nothing it answers is read.
+        return [(r[0], r[1]) for r in s.execute(q) if (caps := cp.caps_for(r[2], r[3])) is None or caps.audit is not None]
 
 
 def heartbeat(inflight: int, polled: int) -> None:
