@@ -686,8 +686,16 @@ def test_config_block_v2c_and_v3_carry_no_secrets():
     assert "snmp-server user audit EASYEAP v3 auth sha-2 256 <authentication key> priv aes 256 <privacy key>" in v3
     v6 = service.config_block({"version": "v2c"}, "2001:db8::10")
     assert "ipv6 access-list EASYEAP-SNMP6" in v6 and "RO ipv6 EASYEAP-SNMP6" in v6
-    rm = service.removal_block({"version": "v3", "user": "audit"})
-    assert "no snmp-server user audit EASYEAP v3" in rm and "no snmp-server view EASYEAP-RO" in rm
+    assert "IOS XE 17.10.1a" in v3  # sha-2 isn't on 3.x, 16.x or early 17.x
+    # SHA-1 by default: the one every IOS-XE Catalyst has.
+    assert service.MonitoringIn(host="192.0.2.10", version="v3").auth == "sha"
+    assert "v3 auth sha <authentication key> priv aes 128 <privacy key>" in service.config_block({"version": "v3", "auth": "sha"}, "192.0.2.10")
+    rm = service.removal_block({"version": "v3", "user": "audit"}, source="192.0.2.10")
+    assert "no snmp-server user audit EASYEAP v3" in rm
+    # Each subtree as it was added (17.12 and 17.15 accept only that), and only the ACL that was made.
+    assert rm.count("no snmp-server view EASYEAP-RO 1.3.6.1.") == 6 and "no snmp-server view EASYEAP-RO\n" not in rm
+    assert "no ip access-list standard EASYEAP-SNMP" in rm and "ipv6" not in rm
+    assert "no ipv6 access-list EASYEAP-SNMP6" in service.removal_block({"version": "v2c"}, source="2001:db8::10")
 
 
 def test_polled_sessions_for_readiness():

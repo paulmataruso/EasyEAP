@@ -7,10 +7,12 @@ wizard. This page explains what it generates and why, for change records and rev
 
 | Configuration style | Platforms | Monitor mode | Enforce |
 |---|---|---|---|
-| **IOS-XE (IBNS 2.0)** | Catalyst 9200, 9300, 9400, 9500; 3650/3850 on IOS-XE 16.x | policy map `EASYEAP_MONITOR` (ports open by default) | policy map `EASYEAP_CLOSED` and `access-session closed` |
-| **Classic** | IOS 15.x: 2960-X, 2960-XR, 3560-CX, 3650/3850 on IOS-XE 3.x | `authentication open` | `no authentication open` |
+| **IOS-XE (IBNS 2.0)** | Catalyst 9200, 9300, 9400, 9500 (IOS-XE 16.x, 17.x, 26.x); 3650/3850 on IOS-XE 16.x, or on 3.x | policy map `EASYEAP_MONITOR` (ports open by default) | policy map `EASYEAP_CLOSED` and `access-session closed` |
+| **Classic** | Classic IOS 12.2 and 15.x: 2960, 2960-X, 2960-XR, 3560, 3560-CX, 3750 | `authentication open` | `no authentication open` |
 
-Run `show version | include IOS` to choose. Not sure? IOS-XE 16.x and 17.x use IBNS 2.0.
+Run `show version | include IOS` to choose. `Cisco IOS XE Software, Version 16.…` (or 17., 26.) and IOS-XE 3.x
+(`Version 03.…E` on a 3650, 3850 or 4500E) use IBNS 2.0; a version without "IOS XE" or "IOS-XE", such as
+`Version 15.2(7)E`, is classic IOS.
 
 ## The rollout: monitor first, then enforce
 
@@ -44,7 +46,7 @@ The wizard lists these commands and what to look for in each answer:
 | Command | Look for |
 |---|---|
 | `show version \| include IOS` | The configuration style (above). |
-| `show running-config \| include aaa new-model` | A line back: tick **Already uses AAA**. EasyEAP then leaves the login and exec method lists alone. |
+| `show running-config \| include ^aaa new-model` | `aaa new-model`: tick **Already uses AAA**, and EasyEAP leaves the login and exec method lists alone. Nothing, or `no aaa new-model`: AAA is off, leave it unticked. Either way the configuration starts with `aaa new-model`, which `radius server` and every `aaa` command need (IOS-XE says “radius server” isn't a command without it). |
 | `show running-config \| include dot1x\|access-session\|authentication port-control\|policy-map type control` | **Must print nothing.** If it prints anything, the switch already has 802.1X: stop and merge by hand (below). |
 | `show interfaces trunk` | Uplinks and AP ports. Put them in **Ports to leave alone**. |
 | `show cdp neighbors` (or `show lldp neighbors`) | Switches, routers, APs and phones: leave their ports alone. |

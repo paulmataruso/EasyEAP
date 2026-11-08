@@ -251,8 +251,10 @@ def preflight(c: Ctx, vendor: str) -> list[dict]:
     vrf = f" vrf {c.p.vrf}" if c.p.vrf else ""
     src = f" source {c.p.source_interface}" if c.p.source_interface else ""
     return [
-        {"command": "show version | include IOS", "look_for": "IOS-XE 16.x or 17.x: use “IOS-XE (IBNS 2.0)”. IOS 15.x (2960-X, 2960-XR, older 3650/3850): use “Classic”."},
-        {"command": "show running-config | include aaa new-model", "look_for": "A line back: the switch already uses AAA, so tick “Already uses AAA”. Nothing: leave it unticked."},
+        {"command": "show version | include IOS", "look_for": "“IOS XE Software, Version 16.”, 17. or 26., or IOS-XE 3.x (“Version 03.0…E” on a "
+                    "3650/3850/4500E): use “IOS-XE (IBNS 2.0)”. Classic IOS 12.2 or 15.x (2960, 2960-X, 3560, 3750): use “Classic”."},
+        {"command": "show running-config | include ^aaa new-model", "look_for": "“aaa new-model”: AAA is on, so tick “Already uses AAA”. "
+                    "Nothing (or “no aaa new-model”, which the ^ should already hide): AAA is off, leave it unticked."},
         {"command": "show running-config | include dot1x|access-session|authentication port-control|policy-map type control",
          "look_for": "Must print nothing. If it prints anything, this switch already has 802.1X: stop here and merge by hand (docs/controllers/cisco-catalyst-switch.md)."},
         {"command": "show interfaces trunk", "look_for": "Trunk ports are uplinks or AP ports. Put them in “Leave alone”."},
@@ -262,7 +264,7 @@ def preflight(c: Ctx, vendor: str) -> list[dict]:
     ]
 
 
-def _aaa_block(c: Ctx, accounting: str) -> list[str]:
+def _aaa_block(c: Ctx, accounting: str | None) -> list[str]:
     p = c.p
     out = []
     if c.admin:
@@ -278,7 +280,10 @@ def _aaa_block(c: Ctx, accounting: str) -> list[str]:
                 "aaa authorization exec default local",
                 "!"]
     else:
-        out += ["! The switch already uses AAA: its login and exec lists are left exactly as they are.", "!"]
+        # Every aaa and radius server command below needs it; entering it again on a switch that has it changes nothing.
+        out += ["! The switch already uses AAA: its login and exec lists are left exactly as they are.",
+                "aaa new-model",
+                "!"]
     out += [f"radius server {c.name}",
             f" address ipv4 {c.server} auth-port {c.auth} acct-port {c.acct}",
             f" key 0 {SECRET_PLACEHOLDER}",
@@ -294,9 +299,10 @@ def _aaa_block(c: Ctx, accounting: str) -> list[str]:
         out.append(f" ip vrf forwarding {p.vrf}")
     out += ["!",
             "aaa authentication dot1x default group EASYEAP",
-            "aaa authorization network default group EASYEAP",
-            f"aaa accounting {accounting} default start-stop group EASYEAP",
-            "!",
+            "aaa authorization network default group EASYEAP"]
+    if accounting:
+        out.append(f"aaa accounting {accounting} default start-stop group EASYEAP")
+    out += ["!",
             "! Change of Authorization: lets EasyEAP end a revoked device's session (UDP 1700).",
             "aaa server radius dynamic-author",
             f" client {c.server}" + (f" vrf {p.vrf}" if p.vrf else "") + f" server-key 0 {SECRET_PLACEHOLDER}",
@@ -488,7 +494,10 @@ def cisco_initial(c: Ctx) -> str:
     if p.mab:
         head[-1:] = ["! MAC authentication: devices that don't answer 802.1X are checked against EasyEAP's MAC allow list.", "!"]
     if p.platform == "ibns2":
-        body = _aaa_block(c, "identity") + _classes(p) + _ibns2_policy(p, enforce=False)
+        # aaa accounting identity needs the CLI in policy (new-style) mode, which the first control class or policy
+        # turns on for good: so it comes after them.
+        body = [*_aaa_block(c, None), *_classes(p), *_ibns2_policy(p, enforce=False),
+                "aaa accounting identity default start-stop group EASYEAP", "!"]
         ports = [*_ibns2_ports(p), f" service-policy type control subscriber {monitor_policy(p)}"]
     else:
         body = _aaa_block(c, "dot1x")

@@ -128,8 +128,15 @@ def test_ibns2_monitor_is_passive_and_safe():
     assert "deadtime 3" in cli and "radius-server dead-criteria time 5 tries 3" in cli and "aaa accounting identity default" in cli
     # AAA is switched on for a switch that doesn't use it, with local logins kept; existing lists are never touched.
     assert "aaa new-model" in cli and "aaa authentication login default local" in cli
-    assert "aaa new-model" not in guide({**PLAN, "has_aaa": True})["cli"].replace("doesn't use AAA", "")
-    assert "aaa authentication login" not in guide({**PLAN, "has_aaa": True})["cli"]
+    # `radius server` and every aaa command need aaa new-model, so it's always there, before them (IOS-XE 16.6.1 rejected
+    # `radius server` when a switch's `no aaa new-model` was read as "already uses AAA"); only the login lists depend on it.
+    with_aaa = lines(guide({**PLAN, "has_aaa": True})["cli"])
+    assert "aaa authentication login" not in "\n".join(with_aaa)
+    for c in (lines(cli), with_aaa):
+        assert c.index("aaa new-model") < next(i for i, x in enumerate(c) if x.startswith("radius server "))
+        # aaa accounting identity needs policy (new-style) mode, which the first control class turns on.
+        assert c.index("aaa accounting identity default start-stop group EASYEAP") > \
+            next(i for i, x in enumerate(c) if x.startswith("policy-map type control subscriber"))
     # Only the listed ports are configured; the left-alone ones are named in a comment only.
     assert "interface range GigabitEthernet1/0/1 - 24, GigabitEthernet2/0/1 - 48" in cli
     assert not any("TenGigabitEthernet1/1/1" in x for x in lines(cli))

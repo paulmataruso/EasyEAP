@@ -339,8 +339,8 @@ function SetupDialog({ client, data, open, onClose }: { client: RadiusClient; da
                 <input id={`${id}-user`} className="ee-input ee-mono" value={form.user ?? 'easyeap'} onChange={(e) => setForm({ ...form, user: e.target.value })} autoComplete="off" spellCheck={false} />
               </Field>
               <Field label="Authentication" htmlFor={`${id}-auth`} hint={form.auth === 'sha' ? 'For IOS-XE before 16.10.' : undefined}>
-                <ESelect id={`${id}-auth`} label="Authentication" value={form.auth ?? 'sha256'} onChange={(v) => setForm({ ...form, auth: v as 'sha256' | 'sha', priv: v === 'sha' ? 'aes128' : form.priv })}
-                  options={[{ value: 'sha256', label: 'SHA-256' }, { value: 'sha', label: 'SHA-1' }]} />
+                <ESelect id={`${id}-auth`} label="Authentication" value={form.auth ?? 'sha'} onChange={(v) => setForm({ ...form, auth: v as 'sha256' | 'sha', priv: v === 'sha' ? 'aes128' : form.priv })}
+                  options={[{ value: 'sha', label: 'SHA-1 (every IOS-XE)' }, { value: 'sha256', label: 'SHA-256 (IOS XE 17.10 or later, where offered)' }]} />
               </Field>
               <Field label="Privacy" htmlFor={`${id}-priv`} error={err('priv')}>
                 <ESelect id={`${id}-priv`} label="Privacy" value={form.priv ?? 'aes128'} onChange={(v) => setForm({ ...form, priv: v as 'aes128' | 'aes256' })}

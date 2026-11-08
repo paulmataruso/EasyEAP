@@ -54,7 +54,9 @@ class MonitoringIn(BaseModel):
     port: int = Field(default=161, ge=1, le=65535)
     version: Literal["v2c", "v3"] = "v2c"
     user: str = Field(default="easyeap", min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$")
-    auth: Literal["sha256", "sha"] = "sha256"
+    # SHA-1 by default: every IOS-XE 3.x/16.x/17.x Catalyst has `auth sha`; `auth sha-2 256` is documented from IOS XE
+    # 17.10.1a, and not for every Catalyst.
+    auth: Literal["sha256", "sha"] = "sha"
     priv: Literal["aes128", "aes256"] = "aes128"
     interval_minutes: int = Field(default=DEFAULT_INTERVAL, ge=5, le=60)
 
@@ -126,7 +128,8 @@ def config_block(mon: dict, source: str, syslog: tuple[str, int] | None = None) 
         out += [f"snmp-server group EASYEAP v3 priv read EASYEAP-RO access {acl_ref}",
                 f"snmp-server user {mon.get('user') or 'easyeap'} EASYEAP v3 auth {auth} {AUTH_PLACEHOLDER} priv {priv} {PRIV_PLACEHOLDER}"]
         if auth == "sha-2 256":
-            out.append("! sha-2 256 needs IOS-XE 16.10 or later; on older software choose SHA-1 in EasyEAP instead.")
+            out.append("! sha-2 256 needs IOS XE 17.10.1a or later, and not every Catalyst has it (check: snmp-server user x y v3 auth ?).")
+            out.append("! If the switch rejects the line above, choose SHA-1 in EasyEAP and paste the new configuration.")
     else:
         out.append(f"snmp-server community {COMMUNITY_PLACEHOLDER} view EASYEAP-RO RO {acl_ref}")
     if syslog:
@@ -142,9 +145,10 @@ def config_block(mon: dict, source: str, syslog: tuple[str, int] | None = None) 
     return "\n".join(out) + "\n"
 
 
-def removal_block(mon: dict, community: str | None = None, syslog: tuple[str, int] | None = None) -> str:
+def removal_block(mon: dict, community: str | None = None, syslog: tuple[str, int] | None = None, source: str = "") -> str:
     """Undo config_block (also how the old community is retired when credentials are regenerated). The logging host is
-    removed with the line exactly as it was added: IOS keeps a host on another port as a separate entry."""
+    removed with the line exactly as it was added: IOS keeps a host on another port as a separate entry. The view is
+    removed one subtree at a time, numerically, as it was added (IOS XE 17.12 and 17.15 accept nothing else)."""
     out = []
     if syslog:
         dest, port = syslog
@@ -155,8 +159,8 @@ def removal_block(mon: dict, community: str | None = None, syslog: tuple[str, in
         out += [f"no snmp-server user {mon.get('user') or 'easyeap'} EASYEAP v3", "no snmp-server group EASYEAP v3 priv"]
     else:
         out.append(f"no snmp-server community {community or COMMUNITY_PLACEHOLDER}")
-    out.append("no snmp-server view EASYEAP-RO")
-    out += ["no ip access-list standard EASYEAP-SNMP", "no ipv6 access-list EASYEAP-SNMP6"]
+    out += [f"no snmp-server view EASYEAP-RO {o} included" for o, _ in VIEW]
+    out.append("no ipv6 access-list EASYEAP-SNMP6" if ":" in (source or "") else "no ip access-list standard EASYEAP-SNMP")
     return "\n".join(out) + "\n"
 
 

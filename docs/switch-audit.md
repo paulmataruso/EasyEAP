@@ -48,9 +48,11 @@ You need the **radius:secrets** permission (Tenant administrator): setting up sh
    address when the switch is registered by a single address), choose the version and how often to poll.
    - **SNMPv2c** (default): EasyEAP generates a random 24-character community. It travels in clear text, so the
      configuration binds it to a read-only view of the six tables and to an ACL that allows only EasyEAP's address.
-   - **SNMPv3**: authenticated and encrypted; no community crosses the network. SHA-256 with AES-128 by default
-     (`auth sha-2 256` needs IOS-XE 16.10 or later; choose SHA-1 for older software). AES-256 is offered only with
-     SHA-256.
+   - **SNMPv3**: authenticated and encrypted; no community crosses the network. SHA-1 with AES-128 by default
+     (`auth sha … priv aes 128`), which every IOS-XE 3.x, 16.x and 17.x Catalyst accepts. SHA-256 (`auth sha-2 256`)
+     is documented from IOS XE 17.10.1a and not on every Catalyst: choose it only if `snmp-server user x y v3 auth ?`
+     lists `sha-2`. AES-256 is offered only with SHA-256. On IOS XE 26.1 and later, SNMPv2c communities are blocked
+     unless `system mode insecure` is set: use SNMPv3 there.
 2. **Paste the block** EasyEAP shows on the switch. It contains, and changes, nothing else:
 
    ```

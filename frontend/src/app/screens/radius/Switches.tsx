@@ -117,7 +117,7 @@ export function PortPlanForm({ vendor, value, onChange, touched, serverError, ma
   if (vendor !== 'cisco-switch') return null
   return (
     <div className="space-y-5">
-      <Field label="Configuration style" htmlFor={`${id}-plat`} hint={<>Run <span className="ee-mono">show version | include IOS</span>. IOS-XE 16 or 17: IBNS 2.0. IOS 15 (2960-X, 2960-XR, older 3650/3850): classic.</>}>
+      <Field label="Configuration style" htmlFor={`${id}-plat`} hint={<>Run <span className="ee-mono">show version | include IOS</span>. IOS-XE 16, 17 or 26, or IOS-XE 3.x on a 3650, 3850 or 4500E: IBNS 2.0. Classic IOS 12.2 or 15 (2960, 2960-X, 3560, 3750): classic.</>}>
         <Seg label="Configuration style" value={value.platform} onChange={(v) => set('platform', v)}
           options={[{ value: 'ibns2', label: 'IOS-XE (IBNS 2.0)' }, { value: 'classic', label: 'Classic IOS / IOS-XE' }]} />
       </Field>
@@ -135,7 +135,7 @@ export function PortPlanForm({ vendor, value, onChange, touched, serverError, ma
           <p className="text-[13px] font-semibold">The switch already uses AAA</p>
           <p className="ee-small ee-ink-3 mt-0.5">{value.has_aaa
             ? 'Its login and exec settings are left exactly as they are.'
-            : <>Off: the configuration turns AAA on and keeps logins on the switch’s local users. Check with <span className="ee-mono">show running-config | include aaa new-model</span>.</>}</p>
+            : <>Off: the configuration turns AAA on and keeps logins on the switch’s local users. Check with <span className="ee-mono">show running-config | include ^aaa new-model</span>: on only if it prints exactly <span className="ee-mono">aaa new-model</span> (<span className="ee-mono">no aaa new-model</span> means off).</>}</p>
         </div>
         <ESwitch checked={value.has_aaa} onChange={(v) => set('has_aaa', v)} label="The switch already uses AAA" />
       </div>

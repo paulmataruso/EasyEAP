@@ -49,7 +49,7 @@ def _syslog_target() -> tuple[str, int] | None:
 
 
 def _removal(mon: dict) -> str:
-    return service.removal_block(mon, syslog=_syslog_target())
+    return service.removal_block(mon, syslog=_syslog_target(), source=_source_address())
 
 
 def _heartbeat(s, key: str) -> dict:
