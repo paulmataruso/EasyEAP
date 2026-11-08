@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app import audit
@@ -127,34 +127,58 @@ def submit_csr(token: str, body: CsrIn, request: Request, s: Session = Depends(d
 
 class RenewIn(BaseModel):
     certificate: str = Field(min_length=100, max_length=20_000)  # the current certificate, base64 DER
-    csr: str = Field(min_length=100, max_length=20_000)          # the new key's request (PEM)
+    csr: str | None = Field(default=None, min_length=100, max_length=20_000)  # the new key's request (PEM); none: a v2 check-in
     signed_at: int                                              # Unix time the signature was made
     signature: str = Field(min_length=40, max_length=2_000)      # base64, by the current certificate's key
     key_storage: str | None = Field(default=None, max_length=16)
+    client: str | None = Field(default=None, max_length=4_000)   # v2: the renewer's client block, JSON text, signed as sent
 
 
 def _refused(s: Session, exc: enr.RenewalRefused, request: Request) -> None:
     """Audit a turned-down renewal of a certificate EasyEAP issued, once a day per certificate and reason (a device's
-    renewal task asks daily, and some ask hourly), and commit it: the request still fails."""
+    renewal task asks daily, and some ask hourly), and commit it: the request still fails. A conflict (another key
+    renewed it and that certificate is in use) is its own, critical event."""
     c = exc.cert
-    cert_id, tenant_id, label, cn, purpose = str(c.id), c.tenant_id, f"{c.common_name} ({c.serial})", c.common_name, c.purpose
+    cid, tenant_id, label, cn, purpose = c.id, c.tenant_id, f"{c.common_name} ({c.serial})", c.common_name, c.purpose
+    cert_id = str(cid)
+    action = "certificate.renewal_conflict" if exc.code == "conflict" else "certificate.renewal_refused"
     s.rollback()  # whatever the refused renewal changed goes; the audit row stays
-    set_platform(s)
-    seen = s.scalar(select(func.count()).select_from(m.AuditEvent).where(
-        m.AuditEvent.action == "certificate.renewal_refused", m.AuditEvent.target_id == cert_id,
-        m.AuditEvent.at >= datetime.now(UTC) - timedelta(days=1), m.AuditEvent.detail["reason"].astext == exc.code))
-    if seen:
-        return
-    audit.record(s, audit.Actor("certificate", cn, cert_id, client_ip(request)), "certificate.renewal_refused", tenant_id=tenant_id,
-                 target_type="certificate", target_id=cert_id, target_label=label, detail={"reason": exc.code, "message": str(exc), "purpose": purpose})
-    s.commit()
+    wrote = exc.note is not None
+    if wrote:  # the device signed a check-in with the key: it's alive, just refused (overdue, not silent)
+        info, at = exc.note
+        set_tenant(s, tenant_id)
+        s.execute(update(m.Certificate).where(m.Certificate.id == cid).values(
+            renewer=info["kind"], renewer_version=info["version"], renewal_checked_at=at, trust_reported=enr.note_trust(info, at)))
+    else:
+        set_platform(s)
+    if not seen_today(s, action, cert_id, exc.code):
+        audit.record(s, audit.Actor("certificate", cn, cert_id, client_ip(request)), action, tenant_id=tenant_id, target_type="certificate",
+                     target_id=cert_id, target_label=label, detail={"reason": exc.code, "message": str(exc), "purpose": purpose})
+        wrote = True
+    if wrote:
+        s.commit()
+
+
+def seen_today(s: Session, action: str, cert_id: str, code: str) -> bool:
+    return bool(s.scalar(select(func.count()).select_from(m.AuditEvent).where(
+        m.AuditEvent.action == action, m.AuditEvent.target_id == cert_id,
+        m.AuditEvent.at >= datetime.now(UTC) - timedelta(days=1), m.AuditEvent.detail["reason"].astext == code)))
+
+
+def trust_block(s: Session, tenant_id) -> dict:
+    """The tenant's trust anchors, in every v2 answer (docs/plans/cert-renewal.md §4.2). During a root rollover (phase
+    6) `cross` carries the certificate by which the old root vouches for the new one; devices take a new root only then."""
+    roots = s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == tenant_id, m.CertificateAuthority.role == "root",
+                                                           m.CertificateAuthority.status == "active")).all()
+    return {"roots": [{"sha256": r.fingerprint_sha256.lower(), "pem": r.certificate_pem.strip() + "\n"} for r in roots], "cross": []}
 
 
 @router.post("/renew")
 def renew(body: RenewIn, request: Request, s: Session = Depends(db), format: str = "json") -> dict:
-    """Renew a certificate with its own key (docs/plans/windows-setup.md §4): the Windows setup's renewal task calls
-    this daily; nothing is issued until the certificate is inside its template's renewal window.
-    `format=pem` (the Linux renewal script): the new certificate as PEM text, or 204 when it isn't renewed yet."""
+    """Renew a certificate with its own key (docs/plans/windows-setup.md §4, cert-renewal.md §4.2): renewal tasks call
+    this daily; nothing is issued until the certificate is inside its renewal window. v2 renewers send a client block,
+    and check in without a request when they aren't due; every JSON answer says when renewal starts.
+    `format=pem` (the v1 Linux renewal script): the new certificate as PEM text, or 204 when it isn't renewed yet."""
     if not limiter.hit(f"renew:{client_ip(request)}", 60):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests. Wait a minute and try again.")
     try:
@@ -165,10 +189,9 @@ def renew(body: RenewIn, request: Request, s: Session = Depends(db), format: str
     if not limiter.hit(f"renew-cert:{hashlib.sha256(der).hexdigest()}", 10):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests for this certificate. Try again later.")
     set_platform(s)
-    started = datetime.now(UTC)
     try:
-        old, new = enr.renew(s, OpenBao(), certificate_der=der, csr_pem=body.csr.strip() + "\n", signed_at=body.signed_at,
-                             signature=signature, key_storage=body.key_storage)
+        old, new = enr.renew(s, OpenBao(), certificate_der=der, csr_pem=body.csr.strip() + "\n" if body.csr else None, signed_at=body.signed_at,
+                             signature=signature, key_storage=body.key_storage, client=body.client)
     except enr.RenewalRefused as exc:
         _refused(s, exc, request)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
@@ -177,18 +200,23 @@ def renew(body: RenewIn, request: Request, s: Session = Depends(db), format: str
     if new is None:
         if format == "pem":
             return Response(status_code=status.HTTP_204_NO_CONTENT)
-        return {"renewed": False, "not_after": old.not_after.isoformat(),
-                "renew_from": renewal.renew_from(old, renewal.settings(s, old.tenant_id).renew_at_percent).isoformat()}
+        st = renewal.settings(s, old.tenant_id)
+        superseded = old.status == "superseded"
+        return {"renewed": False, "not_after": old.not_after.isoformat(), "superseded": superseded,
+                # superseded: a renewer holding a request from a lost answer sends it again now; one without stops
+                "renew_from": (datetime.now(UTC) if superseded else renewal.renew_from(old, st.renew_at_percent)).isoformat(),
+                "renewal_enabled": renewal.enabled_for(st, old.purpose), "trust": trust_block(s, old.tenant_id)}
     set_tenant(s, new.tenant_id)
     issuing, root = pki.chain_pem(s, new.tenant_id)
-    if old.renewed_at is None or old.renewed_at >= started:  # not a resend of an earlier renewal's lost answer
+    if getattr(new, "issued_now", False):  # not a resend of an earlier renewal's lost answer
         audit.record(s, audit.Actor("certificate", old.common_name, str(old.id), client_ip(request)), "certificate.renewed", tenant_id=new.tenant_id,
                      target_type="certificate", target_id=new.id, target_label=f"{new.common_name} ({new.serial})",
-                     detail={"previous_serial": old.serial, "key_storage": new.key_storage, "purpose": new.purpose})
+                     detail={"previous_serial": old.serial, "key_storage": new.key_storage, "purpose": new.purpose, "renewer": new.renewer,
+                             "renewer_version": new.renewer_version, "replaced_unused_serial": getattr(new, "replaced_serial", None)})
     if format == "pem":
         return PlainTextResponse(new.certificate_pem, media_type="application/x-pem-file")
     return {"renewed": True, "certificate_pem": new.certificate_pem, "serial": new.serial, "not_after": new.not_after.isoformat(),
-            "issuing_ca_pem": issuing, "root_ca_pem": root}
+            "issuing_ca_pem": issuing, "root_ca_pem": root, "trust": trust_block(s, new.tenant_id)}
 
 
 @router.get("/{token}/windows.ps1", response_class=PlainTextResponse)

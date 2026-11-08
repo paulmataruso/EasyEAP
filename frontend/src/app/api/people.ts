@@ -155,11 +155,43 @@ export interface Certificate {
   /** The certificate this one renewed, and when this one was renewed (renewal by its own key). */
   renewal_of?: string | null
   renewed_at?: string | null
+  /** What renews it (docs/plans/cert-renewal.md §15b): null means the user needs a new link. */
+  renewer?: Renewer | null
+  /** "1": an older renewal task that asks only when due; "2…": checks in daily. */
+  renewer_version?: string | null
+  /** The renewer's last check-in signed with this certificate's key (v2 renewers). */
+  renewal_checked_at?: string | null
+  /** When EasyEAP retired it (revoked as superseded: its device uses the newer certificate). */
+  retired_at?: string | null
+}
+
+export type Renewer = 'windows-setup' | 'windows-helper' | 'linux' | 'gpo' | 'renewed'
+/** auto: renews by itself; silent: its renewer stopped checking in while due; overdue: should have renewed; manual: needs the user. */
+export type RenewalState = 'auto' | 'silent' | 'overdue' | 'manual'
+export interface CertificateSuccessor {
+  id: string
+  serial: string
+  status: CertStatusValue
+  not_after: string
+  revoked_by: string | null
+  /** Revoked by EasyEAP because the device never received it and asked again (a lost renewal answer). */
+  replaced?: boolean
+  /** A renewal of this certificate (same template and device), not a certificate that replaced it. */
+  renewal?: boolean
 }
 
 export interface CertificatePage extends Page<Certificate> { counts: Record<CertStatusValue, number>; warning_days: number }
 export interface CertificateDecision extends Outcome { computed_at: string }
-export interface CertificateDetail extends Certificate { decision: CertificateDecision | null; issuer: string | null }
+export interface CertificateDetail extends Certificate {
+  decision: CertificateDecision | null
+  issuer: string | null
+  /** Client certificates only: when renewal starts, whether it's on for this kind, and how it stands (null unless active). */
+  renewal?: { renew_from: string; enabled: boolean; state: RenewalState | null } | null
+  /** Certificates that superseded this one, newest first (including ones revoked since). */
+  successors?: CertificateSuccessor[]
+  /** What revoking this one revokes too: the unrevoked chain renewed from it. */
+  revoke_also?: { id: string; serial: string }[]
+}
 
 export interface CertificateListParams { q?: string; status?: string; purpose?: string; identity_id?: string; page?: number; page_size?: number }
 
@@ -179,9 +211,10 @@ export function useCertificate(tid: string, id: string | null | undefined) {
   })
 }
 
-export interface RevokeResult { ok: boolean; disconnect: DisconnectResult; session_timeout_seconds: number | null; note: string }
-export const revokeCertificate = (tid: string, id: string, reason: RevocationReason, disconnect: boolean) =>
-  api.post<RevokeResult>(`/api/tenants/${tid}/certificates/${id}/revoke`, { reason, disconnect })
+export interface RevokeResult { ok: boolean; disconnect: DisconnectResult; session_timeout_seconds: number | null; note: string; successors?: string[] }
+/** `successors`: also revoke the certificates renewed from this one (the backend's default). */
+export const revokeCertificate = (tid: string, id: string, reason: RevocationReason, disconnect: boolean, successors = true) =>
+  api.post<RevokeResult>(`/api/tenants/${tid}/certificates/${id}/revoke`, { reason, disconnect, successors })
 export const fetchPem = (tid: string, id: string) => api.get<string>(`/api/tenants/${tid}/certificates/${id}/pem`)
 
 /** Authentications that presented this certificate (events search matches the serial). */

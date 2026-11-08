@@ -44,6 +44,8 @@ export function sourceText(item: QueueItem, now: Date): string | null {
   if (c.startsWith('rejects:') || c === 'server_cert_rejected') return `Last attempt ${ago(at, now)}`
   if (c === 'directory_failed') return `Last sync attempt ${ago(at, now)}`
   if (c === 'server_cert_expiring' || c === 'issuing_ca_expiring' || c === 'issuing_ca_expired' || c === 'issuing_ca_cap') return `Certificate issued ${fmtDate(at)}`
+  if (c === 'renewal_silent') return `Most recent check-in ${ago(at, now)}`
+  if (c === 'renewal_conflict' || c === 'superseded_used') return `Last seen ${ago(at, now)}`
   return `Checked ${ago(at, now)}`
 }
 

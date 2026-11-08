@@ -5,7 +5,8 @@ Schedule (per tenant unless noted):
 * decision refresh hourly while the directory is healthy (so RADIUS data stays inside its staleness limit; if the
   directory has been failing longer than the limit, the refresh stops and RADIUS fails closed);
 * CRL rotation daily (OpenBao CRLs are issued with a 72h lifetime);
-* the RADIUS server certificate's rotation, checked every 6 hours (app/pki/renewal.py);
+* the RADIUS server certificate's rotation, checked every 6 hours, and superseded client certificates (flagged when
+  still used, retired once their device uses the successor), daily (app/pki/renewal.py);
 * expiry of enrollment links, purge of undelivered server-generated keys (and revocation of their certificates);
 * OpenBao token renewal, job pruning, event and system log retention (platform);
 * MAC allow list: devices whose entry expired are disconnected (CoA) every 10 minutes; sightings kept 90 days.
@@ -80,6 +81,8 @@ def _handle(job: m.Job) -> None:
             s.add(mark)
         elif job.kind == "renewal.server_cert":
             _rotate_server_cert(s, tid)
+        elif job.kind == "renewal.retire":
+            _tend_superseded(s, tid)
         elif job.kind == "openbao.renew":
             from app.pki.openbao import renew_token
             renew_token()
@@ -110,6 +113,28 @@ def _rotate_server_cert(s, tid: uuid.UUID) -> None:
                  target_id=cert.id, target_label=cert.common_name,
                  detail={"serial": cert.serial, "automatic": True, "previous_serial": prev.serial if prev else None,
                          "not_after": cert.not_after.isoformat()})
+
+
+def _tend_superseded(s, tid: uuid.UUID) -> None:
+    """Superseded certificates: flag one still used after its successor, retire (revoke) one its device no longer uses
+    (docs/plans/cert-renewal.md §15b items 5, 6)."""
+    from app.pki.openbao import OpenBao
+    from app.pki.renewal import tend_superseded
+    from app.policy.service import recompute_tenant
+    from app.radius.state import bump
+    res = tend_superseded(s, OpenBao(), tid)
+    if res["retired"]:  # before the audit rows: auditing holds a lock that every tenant's audit writes wait on
+        recompute_tenant(s, tid)
+        bump(s, tid)  # pushes the new CRL to RADIUS
+    if res["failed"]:
+        log.warning("Retirement: %d superseded certificates couldn't be revoked in tenant %s; retried tomorrow", res["failed"], tid)
+    actor = audit.Actor.system("Certificate renewal")
+    for cert, succ_serial, last in res["used"]:
+        audit.record(s, actor, "certificate.superseded_used", tenant_id=tid, target_type="certificate", target_id=cert.id,
+                     target_label=f"{cert.common_name} ({cert.serial})", detail={"successor_serial": succ_serial, "last_used": last.isoformat()})
+    for cert, succ_serial in res["retired"]:
+        audit.record(s, actor, "certificate.superseded_retired", tenant_id=tid, target_type="certificate", target_id=cert.id,
+                     target_label=f"{cert.common_name} ({cert.serial})", detail={"successor_serial": succ_serial})
 
 
 def _purge_escrow(s) -> None:
@@ -175,6 +200,8 @@ def schedule() -> None:
                 queue.enqueue(s, "crl.rotate", tenant_id=t.id, dedupe_key=f"crl.rotate:{t.id}")
             if issuing is not None and due(f"server-cert:{t.id}", timedelta(hours=6)):
                 queue.enqueue(s, "renewal.server_cert", tenant_id=t.id, dedupe_key=f"renewal.server_cert:{t.id}")
+            if issuing is not None and due(f"retire:{t.id}", timedelta(hours=24)):
+                queue.enqueue(s, "renewal.retire", tenant_id=t.id, dedupe_key=f"renewal.retire:{t.id}")
 
 
 def run_once() -> bool:

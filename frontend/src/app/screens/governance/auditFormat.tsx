@@ -18,8 +18,11 @@ export const actionLabels: Record<string, string> = {
   'auth.mfa_reset_cli': 'Two-factor reset from the server command line',
   'auth.password_changed': 'Password changed',
   'auth.profile_updated': 'Own profile updated',
+  'certificate.renewal_conflict': 'Certificate renewed with two keys',
   'certificate.renewal_refused': 'Certificate renewal refused',
   'certificate.renewed': 'Certificate renewed by its device',
+  'certificate.superseded_retired': 'Renewed certificate retired',
+  'certificate.superseded_used': 'Renewed certificate still in use',
   'certificate.revoked': 'Certificate revoked',
   'directory.saved': 'Directory connection saved',
   'directory.sync_failed': 'Scheduled directory sync failed',
@@ -89,7 +92,8 @@ export function actionLabel(action: string, detail?: Record<string, unknown>): s
 export function actionTone(action: string, detail?: Record<string, unknown>): Tone | null {
   if (action === 'directory.synced' && detail?.ok === false) return 'crit'
   if (/(revoked|deleted|failed|disabled|mfa_reset)/.test(action)) return 'crit'
-  if (action.endsWith('_refused')) return 'warn'
+  if (action.endsWith('_refused') || action === 'certificate.superseded_used') return 'warn'
+  if (action === 'certificate.renewal_conflict') return 'crit'
   if (action === 'policy.published' || action === 'system.backup_restored' || action === 'system.restore_started' || /rotated|rolled_back|settings/.test(action)) return 'gold'
   return null
 }

@@ -212,10 +212,18 @@ class Certificate(Base):
     key_storage: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Renewal by the certificate's own key (POST /api/enroll/renew): the certificate this one replaced, and when this
     # one was replaced. A certificate renews once.
-    renewal_of: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    renewal_of: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     renewed_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     # gpo: Windows enrolled it through Group Policy (no enrollment link or setup file). None otherwise.
     enrollment_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # What renews it by itself (docs/plans/cert-renewal.md §15b): windows-setup | windows-helper | linux | gpo; None: it
+    # needs the user (a new link). The renewer's protocol version, its last signed check-in (v2), the roots it reported,
+    # and when a superseded certificate was revoked because its successor took over.
+    renewer: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    renewer_version: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    renewal_checked_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    trust_reported: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
 
 
 # ── Directory & identity ────────────────────────────────────────────────────
@@ -352,6 +360,7 @@ class RenewalSettings(Base):
     machine_certs: Mapped[bool] = mapped_column(Boolean, default=True)
     server_cert: Mapped[bool] = mapped_column(Boolean, default=True)
     renew_at_percent: Mapped[int] = mapped_column(Integer, default=80)
+    retire_superseded: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     updated_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
 

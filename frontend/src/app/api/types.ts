@@ -90,7 +90,8 @@ export interface EnforcementStatus { state: EnforcementState; tone: 'valid' | 'w
 
 /**
  * Where a needs-action item (or setup gap) sends the user. Screen names, optionally with a filter after a colon:
- * "directory", "radius", "pki", "setup", "system", "tenant", "certificates:expiring", "events:<reason_code>".
+ * "directory", "radius", "pki", "setup", "system", "tenant", "certificates:<status>", "certificate:<id>", "audit",
+ * "events:<reason_code>".
  */
 export type ActionTarget = string
 

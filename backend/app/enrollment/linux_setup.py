@@ -19,7 +19,10 @@ iwd can't sign with ECDSA keys (its TLS library signs with RSA only), so compute
 an RSA-3072 key; everything else gets ECDSA P-256.
 
 It also installs a daily renewal (systemd timer, or cron.daily) that renews the certificate with its own key through
-POST /api/enroll/renew, the same protocol as the Windows setup's renewal (enrollment/service.py renewal_message).
+POST /api/enroll/renew (docs/plans/cert-renewal.md §4.2, protocol v2): each day it checks in, signed with the
+certificate's key, saying what it is and which roots it trusts; EasyEAP answers when renewal starts. From then it
+sends a request for a new key, kept until the new certificate is in, so a lost answer is asked for again with the
+same request. Without an answer it falls back on the template's renewal period it was made with.
 
 Talking to EasyEAP: curl, else python3 (Ubuntu desktops ship without curl). The link is never on a command line
 (other users can read those): curl gets the URL on stdin, python3 in its environment. The server's TLS certificate is
@@ -84,8 +87,8 @@ def _common_config(*, api_base: str, org: str, slug: str, renew_days: int, pin: 
 
 def renew_script(*, api_base: str, org: str, slug: str, renew_days: int, pin: str) -> str:
     return ("#!/usr/bin/env bash\n# shellcheck disable=SC2034  # shared settings and colours the renewal doesn't use\n"
-            f"# EasyEAP certificate renewal for {re.sub(r'[^ -~]', '', org)}, installed by the EasyEAP setup. Runs daily; renews the\n"
-            "# certificate with a new key once it's inside its renewal window. Log: renew.log next to this file.\n"
+            f"# EasyEAP certificate renewal for {re.sub(r'[^ -~]', '', org)}, installed by the EasyEAP setup. Runs daily: checks in\n"
+            "# with EasyEAP and renews the certificate with a new key once its renewal starts. Log: renew.log next to this file.\n"
             "set -u\numask 077\nexport LC_ALL=C\nPATH=\"$PATH:/usr/sbin:/sbin\"\n"
             + _common_config(api_base=api_base, org=org, slug=slug, renew_days=renew_days, pin=pin) + _COMMON + _RENEW)
 
@@ -231,12 +234,11 @@ key_type_of() { if openssl pkey -in "$1" -noout -text 2>/dev/null | grep -q 'ASN
 """
 
 _RENEW = r"""
+RENEWER_VERSION=2.0
 LOG="$DIR/renew.log"
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; printf '%s\n' "$*"; }
 cert="$DIR/client.pem"; key="$DIR/client.key"
 [ -r "$cert" ] && [ -r "$key" ] || { log "No certificate in $DIR."; exit 1; }
-# Not due yet: nothing to sign.
-openssl x509 -in "$cert" -noout -checkend $((RENEW_DAYS * 86400)) >/dev/null 2>&1 && exit 0
 if ! openssl x509 -in "$cert" -noout -checkend 0 >/dev/null 2>&1; then log "The certificate has expired; it can't renew itself. Enroll again."; exit 1; fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/easyeap-renew.XXXXXX") || exit 1
 trap 'rm -rf "$WORK"' EXIT
@@ -244,22 +246,72 @@ trap 'rm -rf "$WORK"' EXIT
 # The new key and its request stay in $DIR until the new certificate is in: if EasyEAP's answer gets lost (sleep, a
 # Wi-Fi drop), the next run sends the same request, and EasyEAP sends the certificate it already issued for it.
 pkey="$DIR/renew-pending.key"; pcsr="$DIR/renew-pending.csr"
-if ! { [ -s "$pkey" ] && [ -s "$pcsr" ] && [ "$(openssl req -in "$pcsr" -noout -pubkey 2>/dev/null)" = "$(openssl pkey -in "$pkey" -pubout 2>/dev/null)" ]; }; then
+pending() { [ -s "$pkey" ] && [ -s "$pcsr" ] && [ "$(openssl req -in "$pcsr" -noout -pubkey 2>/dev/null)" = "$(openssl pkey -in "$pkey" -pubout 2>/dev/null)" ]; }
+sign() { printf '%s' "$1" > "$WORK/msg"; openssl dgst -sha256 -sign "$key" "$WORK/msg" | openssl base64 -A; }
+now=$(date +%s)
+cert_hex=$(openssl x509 -in "$cert" -outform DER | sha256_hex)
+der=$(openssl x509 -in "$cert" -outform DER | openssl base64 -A)
+
+# What this renewer is and the roots the connection trusts (the self-signed certificates in ca.pem), for the console.
+roots=
+if [ -s "$DIR/ca.pem" ]; then
+  awk -v d="$WORK" '/BEGIN CERTIFICATE/ { n++ } n { print > (d "/ca-" n ".pem") }' "$DIR/ca.pem"
+  for f in "$WORK"/ca-*.pem; do
+    [ -f "$f" ] || continue
+    [ "$(openssl x509 -in "$f" -noout -subject 2>/dev/null | sed 's/^subject *= *//')" = "$(openssl x509 -in "$f" -noout -issuer 2>/dev/null | sed 's/^issuer *= *//')" ] || continue
+    roots="$roots${roots:+,}\"$(openssl x509 -in "$f" -outform DER | sha256_hex)\""
+  done
+fi
+CLIENT=$(printf '{"kind":"linux","version":"%s","scope":"computer","roots":[%s]}' "$RENEWER_VERSION" "$roots")
+client_hex=$(printf '%s' "$CLIENT" | sha256_hex)
+client_json=$(printf '%s' "$CLIENT" | sed 's/"/\\"/g')
+PROTO=2
+
+# Due? A request still waiting from an earlier run is sent again at once. Otherwise a signed check-in: EasyEAP answers
+# when renewal starts (a share of the certificate's life set in the console). Without an answer, the template's
+# renewal period this script was made with decides.
+if ! pending; then
+  sig=$(sign "easyeap-check-v2|$cert_hex|$now|$client_hex")
+  printf '{"certificate":"%s","signed_at":%s,"signature":"%s","client":"%s"}' "$der" "$now" "$sig" "$client_json" > "$WORK/body.json"
+  http POST "$API/api/enroll/renew" "$WORK/body.json"; rc=$?
+  if [ "$rc" = 0 ] && [ "$HTTP_CODE" = 200 ]; then
+    if grep -q '"superseded" *: *true' "$WORK/resp"; then log "EasyEAP renewed this certificate already, and nothing is waiting here; nothing to do."; exit 0; fi
+    rf=$(sed -n 's/.*"renew_from" *: *"\([^"]*\)".*/\1/p' "$WORK/resp" | head -n 1)
+    rf_s=$(date -u -d "$rf" +%s 2>/dev/null) || rf_s=
+    if [ -n "$rf_s" ]; then
+      [ "$now" -ge "$rf_s" ] || exit 0
+      if grep -q '"renewal_enabled" *: *false' "$WORK/resp"; then log "Renewal is due, but automatic renewal is turned off in EasyEAP. Ask your IT team for a new link."; exit 1; fi
+    else
+      openssl x509 -in "$cert" -noout -checkend $((RENEW_DAYS * 86400)) >/dev/null 2>&1 && exit 0
+    fi
+  elif [ "$rc" = 0 ] && [ "$HTTP_CODE" = 400 ]; then
+    log "Check-in refused: $(api_detail)"; exit 1
+  else
+    # No answer, or an EasyEAP from before check-ins (it wants a request: protocol 1).
+    case "$HTTP_CODE" in 404|422) PROTO=1 ;; esac
+    openssl x509 -in "$cert" -noout -checkend $((RENEW_DAYS * 86400)) >/dev/null 2>&1 && exit 0
+    [ "$rc" = 0 ] || log "Couldn't reach EasyEAP to check in: $TRANSPORT_ERR"
+  fi
+fi
+
+if ! pending; then
   new_key "$(key_type_of "$key")" "$WORK/key.pem" && new_csr "$WORK/key.pem" "$WORK/req.csr" || { log "openssl failed: $(head -c 300 "$WORK/err")"; exit 1; }
   cp "$WORK/key.pem" "$pkey" && cp "$WORK/req.csr" "$pcsr" && chmod 600 "$pkey" || { log "Couldn't write $pkey."; exit 1; }
 fi
-now=$(date +%s)
-cert_hex=$(openssl x509 -in "$cert" -outform DER | sha256_hex)
 csr_hex=$(openssl req -in "$pcsr" -outform DER | sha256_hex)
-printf 'easyeap-renew-v1|%s|%s|%s' "$cert_hex" "$now" "$csr_hex" > "$WORK/msg"
-sig=$(openssl dgst -sha256 -sign "$key" "$WORK/msg" | openssl base64 -A)
-der=$(openssl x509 -in "$cert" -outform DER | openssl base64 -A)
-printf '{"certificate":"%s","csr":"%s","signed_at":%s,"signature":"%s","key_storage":"software"}' "$der" "$(json_pem "$pcsr")" "$now" "$sig" > "$WORK/body.json"
+if [ "$PROTO" = 2 ]; then
+  sig=$(sign "easyeap-renew-v2|$cert_hex|$now|$csr_hex|$client_hex"); extra=",\"client\":\"$client_json\""
+else
+  sig=$(sign "easyeap-renew-v1|$cert_hex|$now|$csr_hex"); extra=
+fi
+printf '{"certificate":"%s","csr":"%s","signed_at":%s,"signature":"%s","key_storage":"software"%s}' "$der" "$(json_pem "$pcsr")" "$now" "$sig" "$extra" > "$WORK/body.json"
 http POST "$API/api/enroll/renew?format=pem" "$WORK/body.json" || { log "Couldn't reach EasyEAP: $TRANSPORT_ERR"; exit 1; }
 case "$HTTP_CODE" in
   204) log "EasyEAP doesn't renew it yet."; exit 0 ;;
   200) ;;
-  *) log "Renewal refused: $(api_detail)"; exit 1 ;;
+  # Refused: that request can't get a certificate (the reason is in EasyEAP's audit log too); the next run makes a new one.
+  400) log "Renewal refused: $(api_detail)"; rm -f "$pkey" "$pcsr"; exit 1 ;;
+  *) log "Renewal failed, asking again next time: $(api_detail)"; exit 1 ;;
 esac
 grep -q 'BEGIN CERTIFICATE' "$WORK/resp" && same_key "$WORK/resp" "$pkey" || { log "EasyEAP's answer isn't a certificate for the new key."; exit 1; }
 # The key first, then the certificate: a reader in between sees the old certificate with a key it doesn't match,

@@ -887,6 +887,63 @@ Decisions taken while building phase 1, where the plan above was open or had to 
 
 Not changed: the rollback hook already refreshes the dashboard (through the RADIUS invalidation).
 
+### 15b. Phase 2 as built (2026-11-08)
+
+Split in two: **2a** the server (this list), **2b** the devices (renewer v2 for the Windows setup file, the Linux
+script and the portal's Windows helper, §4.3–4.5).
+
+1. **Migration 0015.** `certificates` gains `renewer`, `renewer_version`, `renewal_checked_at`, `trust_reported`
+   (JSONB) and `retired_at`; `renewal_settings` gains `retire_superseded` (on). Existing certificates get `renewer`
+   from how they were issued (§15a item 7), version `1`; a renewal copies its predecessor's. Group Policy writes
+   `gpo` when it issues. The heuristic stays as the fallback for rows without one.
+2. **Protocol v2 on the server** (§4.2). A request with a `client` field (the JSON text, at most 4 KB, signed by its
+   SHA-256) is v2: without `csr` it's a check-in (`easyeap-check-v2|sha256(cert)|signed_at|sha256(client)`), with one a
+   renewal (`easyeap-renew-v2|sha256(cert)|signed_at|sha256(csr)|sha256(client)`). Both record the check-in time, the
+   renewer kind and version and the roots reported. Every JSON answer carries `trust` (the tenant's current roots; the
+   cross-certificate list is empty until phase 6). v1 is unchanged.
+3. **A lost answer, for renewers that throw their key away.** v1 `renew.ps1` deletes its pending key when the answer
+   doesn't arrive, then asks again the next day with a new key, which v1 refused for good ("already renewed"): the PC
+   kept its old certificate until it expired. Now, when a renewal arrives for a certificate already renewed with
+   another key: if the earlier successor (a renewal through this endpoint, same template) has never been accepted by
+   RADIUS, it's revoked ("replaced: never received") and the new key gets the certificate, within 14 days of the first
+   renewal and at most 3 times per certificate (a copied key can't keep extending itself); if it **has** been used, that's a **conflict**: refused, audited `certificate.renewal_conflict`
+   (once a day), critical on the dashboard (two keys claim one certificate: a copied key). Group Policy's successors
+   are never replaced this way. *After the critique:* only v1 requests get a replacement (a v2 renewer keeps its
+   request until the answer arrives, so another key from it is refused); a successor the device has checked in with
+   counts as used (a conflict) like one RADIUS accepted; the certificate row is locked for a renewal, so two requests
+   at once can't both replace; "at most 3" counts replacements, not the first renewal.
+4. **Revoking a certificate revokes its active successors** (the `renewal_of` chain), in the console; the audit line
+   lists them. Only renewals count (same template and device): Group Policy's `_supersede` also links a computer
+   certificate that replaced a setup file's, and a user certificate from another PC, which aren't revoked with it. The
+   dialog lists exactly what will go, for any status (an expired certificate can have a valid renewal), and sends
+   nothing extra unless it showed the list.
+5. **Retirement** (`renewal.retire`, daily per tenant, when `retire_superseded` is on): a superseded certificate is
+   revoked (`superseded`) once its device has shown it holds the successor (RADIUS accepted the successor, or a v2
+   check-in was signed with the successor's key) **and** the old one hasn't been accepted in the last 7 days (a device
+   still using it isn't cut off; it expires as before). Audited `certificate.superseded_retired`. *Changed while
+   building:* the planned "30 days after renewal, for renewers that delete the old key" rule is dropped. A v1 device
+   whose answer was lost and that stayed away past the re-issue limits still holds only the old certificate and key;
+   revoking it on a timer would cut that device off, and nothing it buys is worth that.
+6. **Superseded certificate used** (`certificate.superseded_used`): one presented more than a day after its successor
+   was first accepted. A **warning**, not the plan's critical: a Windows PC that failed to delete the old certificate
+   can present it once more, so it is a reason to look, not proof of a copied key.
+7. **Dashboard.** `renewal_silent` (warning): a v2 renewer that hasn't checked in for 7 days while its certificate is
+   due. `renewal_overdue`: v2 renewers from `renew_from` + 14 days, v1 from 14 days before expiry (§15a); critical
+   when any has 14 days or less. `renewal_conflict` (critical), `superseded_used` (warning).
+8. **Console.** Certificates show how they renew (Windows setup file, Linux script, Group Policy, needs a new link,
+   off) with the last check-in, and their successor; the Renewal panel gets the retirement switch and counts (renew by
+   themselves, silent, need the user, overdue). The revoke dialog of a renewed certificate lists its unrevoked
+   successors with a box (on) to revoke them too; off revokes only the old one.
+9. **Check-ins are what the device signs.** Issuing a successor records its renewer, not a check-in: only a request
+   signed with the successor's own key says the device has it (retirement relies on that). A refused v2 request still
+   records its check-in (after the rollback), except a wrong clock, which could be a replay. Retirement revokes each
+   certificate in its own savepoint and recomputes before auditing.
+10. **Known limit:** the Renewal panel's counts classify every valid client certificate in Python on each load; fine
+   for thousands, to move into SQL for tenants far larger.
+11. **Silent and overdue don't double up.** A v2 renewer that is due and quiet for 7 days is *silent*; one that keeps
+   checking in and still hasn't renewed 14 days into its window is *overdue* (it's being refused: the audit log says
+   why). Both are critical once a certificate has 14 days or less.
+
 ## 16. Sources
 
 Read in November 2026. Numbers 14 and 17 aren't cited in the text; they hold pages read for the research that back

@@ -436,6 +436,7 @@ def enroll(session: Session, bao: OpenBao, tenant: m.Tenant, cfg: m.AutoenrollCo
                                template_ext_der=cms.template_extension(tpl.template_oid or "", tpl.revision_major, tpl.revision_minor),
                                ttl=ttl, identity_id=identity.id, device_id=device.id if device else None)
     cert.enrollment_source = "gpo"
+    cert.renewer, cert.renewer_version = "gpo", None  # Windows renews it on its own schedule (docs/plans/cert-renewal.md §15b)
     cert.key_storage = _storage(parsed.csr.public_bytes(serialization.Encoding.DER))
     # A computer a user added with their machine account quota could be named after another PC: it doesn't stop that
     # PC's setup-file certificate.

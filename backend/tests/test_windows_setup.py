@@ -5,6 +5,7 @@ the whole flow against the real API, OpenBao and FreeRADIUS."""
 from __future__ import annotations
 
 import base64
+import json
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
@@ -162,18 +163,31 @@ def test_message_binds_certificate_time_and_request():
 class FakeSession:
     def __init__(self, cert, identity, tpl, tenant, device):
         self.cert, self.objs, self.renewal = cert, {}, None
+        self.successor, self.successor_used, self.tries = None, None, 1  # an earlier renewal's certificate, for a re-issue
         for o in (identity, tpl, tenant, device):
             if o is not None:
                 self.objs[o.id] = o
 
     def scalars(self, stmt):
+        sql = str(stmt.whereclause)
+        if "renewal_of" in sql and "status !=" in sql:  # _replaceable_successor: the earlier renewal's, not revoked
+            return SimpleNamespace(first=lambda: self.successor)
+        if "renewal_of" in sql:  # _earlier_renewal: the certificate an earlier renewal of it issued
+            return SimpleNamespace(first=lambda: self.renewal)
         # The row only matches the fingerprint the code really looks up, in the stored format.
         wanted = stmt.whereclause.right.value
-        if self.cert is not None and wanted == self.cert.id:  # the certificate an earlier renewal of it issued
-            return SimpleNamespace(first=lambda: self.renewal)
         return SimpleNamespace(first=lambda: self.cert if self.cert is not None and wanted == self.cert.fingerprint_sha256 else None)
 
-    def get(self, _model, ident):
+    def scalar(self, stmt):
+        sql = str(stmt)
+        if "count(" in sql:  # renewals of this certificate so far
+            return self.tries
+        assert "min(auth_events.at)" in sql  # successor_used(): when RADIUS first accepted the successor
+        return self.successor_used
+
+    def get(self, _model, ident, **_lock):
+        if self.cert is not None and ident == self.cert.id:  # re-read under a row lock before a renewal
+            return self.cert
         return self.objs.get(ident)
 
 
@@ -190,7 +204,8 @@ def world(monkeypatch):
     cert = SimpleNamespace(id=uuid.uuid4(), fingerprint_sha256=stored, status="active", renewed_at=None,
                            not_before=leaf.not_valid_before_utc, not_after=leaf.not_valid_after_utc, purpose="device",
                            identity_id=identity.id, template_id=tpl.id, tenant_id=tenant.id, device_id=device.id, key_origin="device",
-                           enrollment_id=None)
+                           enrollment_id=None, enrollment_source=None, renewal_of=None, renewer="windows-setup", renewer_version="1",
+                           renewal_checked_at=None, trust_reported=None, serial="0A")
     issued = {}
     rset = SimpleNamespace(user_certs=True, machine_certs=True, server_cert=True, renew_at_percent=80)
     monkeypatch.setattr(enr.renewal, "settings", lambda s_, tid: rset)
@@ -201,18 +216,23 @@ def world(monkeypatch):
         return SimpleNamespace(id=uuid.uuid4(), key_storage=None, renewal_of=None)
 
     monkeypatch.setattr(enr.pki, "sign_csr", sign_csr)
+    monkeypatch.setattr(enr.pki, "revoke", lambda s_, bao, c, reason, actor: issued.setdefault("revoked", []).append((c, reason, actor)))
     monkeypatch.setattr(enr, "recompute_tenant", lambda s, t: issued.setdefault("recomputed", t))
     s = FakeSession(cert, identity, tpl, tenant, device)
 
-    def call(*, csr_key=None, signer=None, signed_at=None, now=NOW, header="NEW CERTIFICATE REQUEST", certificate=None):
-        _, csr_pem = _csr(csr_key, header)
-        csr_der = x509.load_pem_x509_csr(csr_pem.encode()).public_bytes(serialization.Encoding.DER)
+    def call(*, csr_key=None, signer=None, signed_at=None, now=NOW, header="NEW CERTIFICATE REQUEST", certificate=None, client=None, check_in=False):
         at = int(now.timestamp()) if signed_at is None else signed_at
         cert_der = certificate or der
-        sig = _p1363(signer or key, enr.renewal_message(cert_der, at, csr_der))
-        return enr.renew(s, None, certificate_der=cert_der, csr_pem=csr_pem, signed_at=at, signature=sig, key_storage="tpm", now=now)
+        if check_in:
+            sig = _p1363(signer or key, enr.check_message(cert_der, at, client))
+            return enr.renew(s, None, certificate_der=cert_der, csr_pem=None, signed_at=at, signature=sig, key_storage=None, client=client, now=now)
+        _, csr_pem = _csr(csr_key, header)
+        csr_der = x509.load_pem_x509_csr(csr_pem.encode()).public_bytes(serialization.Encoding.DER)
+        sig = _p1363(signer or key, enr.renewal_message(cert_der, at, csr_der, client))
+        return enr.renew(s, None, certificate_der=cert_der, csr_pem=csr_pem, signed_at=at, signature=sig, key_storage="tpm", client=client, now=now)
 
-    return SimpleNamespace(call=call, cert=cert, identity=identity, tpl=tpl, tenant=tenant, key=key, issued=issued, session=s, renewal=rset)
+    return SimpleNamespace(call=call, cert=cert, identity=identity, tpl=tpl, tenant=tenant, key=key, issued=issued, session=s, renewal=rset,
+                           cert_der=der)
 
 
 def test_renews_inside_the_window(world):
@@ -322,3 +342,158 @@ def test_signature_time_and_key_checks(world):
         enr._csr_der("garbage")
     _, new = world.call(header="CERTIFICATE REQUEST")  # either PEM header
     assert new is not None
+
+
+# ── Protocol v2: check-ins, client blocks, lost answers (docs/plans/cert-renewal.md §15b) ─────────────────────────
+
+
+ROOT_HASH = "ab" * 32
+CLIENT = json.dumps({"kind": "windows-setup", "version": "2.0", "scope": "computer", "roots": [ROOT_HASH.upper(), "nothex"],
+                     "profile_roots": [ROOT_HASH]})
+
+
+def test_parse_client():
+    info = enr.parse_client(CLIENT)
+    assert info == {"kind": "windows-setup", "version": "2.0", "scope": "computer", "roots": [ROOT_HASH], "profile_roots": [ROOT_HASH]}
+    with pytest.raises(enr.EnrollmentError, match="JSON"):
+        enr.parse_client("{")
+    with pytest.raises(enr.EnrollmentError, match="kind"):
+        enr.parse_client(json.dumps({"kind": "mdm"}))
+    assert enr.parse_client(json.dumps({"kind": "linux", "roots": ["cd" * 32] * 40}))["roots"] == ["cd" * 32] * 16
+    assert enr.parse_client(json.dumps({"kind": "linux", "roots": ["cd" * 32 + "\n"]}))["roots"] == []
+
+
+def test_messages_v2():
+    v1 = enr.renewal_message(b"cert", 100, b"csr")
+    v2 = enr.renewal_message(b"cert", 100, b"csr", CLIENT)
+    assert v2.startswith(b"easyeap-renew-v2|") and v2 != v1 and v2 != enr.renewal_message(b"cert", 100, b"csr", CLIENT + " ")
+    chk = enr.check_message(b"cert", 100, CLIENT)
+    assert chk.startswith(b"easyeap-check-v2|") and chk != enr.check_message(b"cert", 100, CLIENT.replace("2.0", "2.1"))
+
+
+def test_a_check_in_records_the_renewer_and_issues_nothing(world):
+    old, new = world.call(check_in=True, client=CLIENT)
+    assert new is None and old is world.cert and old.status == "active" and "names" not in world.issued
+    assert old.renewer == "windows-setup" and old.renewer_version == "2.0" and old.renewal_checked_at == NOW
+    assert old.trust_reported["roots"] == [ROOT_HASH] and old.trust_reported["scope"] == "computer"
+
+
+def test_a_check_in_must_be_signed_over_the_client_block(world):
+    with pytest.raises(enr.EnrollmentError, match="isn't signed"):
+        world.call(check_in=True, client=CLIENT, signer=ec.generate_private_key(ec.SECP256R1()))
+    at = int(NOW.timestamp())
+    sig = _p1363(world.key, enr.check_message(world.cert_der, at, CLIENT))
+    with pytest.raises(enr.EnrollmentError, match="isn't signed"):  # the block changed after signing
+        enr.renew(world.session, None, certificate_der=world.cert_der, csr_pem=None, signed_at=at, signature=sig, key_storage=None,
+                  client=CLIENT.replace("computer", "user"), now=NOW)
+    with pytest.raises(enr.EnrollmentError, match="needs a certificate request"):
+        enr.renew(world.session, None, certificate_der=world.cert_der, csr_pem=None, signed_at=at, signature=sig, key_storage=None, now=NOW)
+    assert world.cert.renewal_checked_at is None
+
+
+def test_a_check_in_with_an_expired_certificate_is_refused(world):
+    world.cert.not_after = NOW - timedelta(seconds=1)
+    with pytest.raises(enr.RenewalRefused) as exc:
+        world.call(check_in=True, client=CLIENT)
+    assert exc.value.code == "expired"
+
+
+def test_a_v2_renewal_records_its_renewer(world):
+    _, new = world.call(client=CLIENT)
+    assert new.renewer == "windows-setup" and new.renewer_version == "2.0" and new.issued_now
+    # Issued isn't received: only a check-in signed with the new key says the device has it (retirement relies on it).
+    assert getattr(new, "renewal_checked_at", None) is None and world.cert.renewal_checked_at == NOW
+    assert new.replaced_serial is None and world.cert.status == "superseded"
+
+
+def test_a_v1_renewal_inherits_the_renewer(world):
+    world.cert.renewer = None  # issued before 0015 and missed by the backfill: read from how it was issued
+    _, new = world.call()
+    assert new.renewer == "renewed" and new.renewer_version == "1"
+    world.cert.status, world.cert.renewed_at, world.cert.renewer = "active", None, "linux"
+    assert world.call()[1].renewer == "linux"
+
+
+def _renewed_before(world, *, days=2, source=None, template=None, device=None, checked=None):
+    world.cert.status, world.cert.renewed_at = "superseded", NOW - timedelta(days=days)
+    world.session.successor = SimpleNamespace(id=uuid.uuid4(), tenant_id=world.tenant.id, status="active", serial="0B", enrollment_source=source,
+                                              template_id=template or world.tpl.id, device_id=device or world.cert.device_id,
+                                              renewal_checked_at=checked)
+
+
+def test_a_lost_answer_with_a_new_key_replaces_the_unused_successor(world):
+    """v1 renew.ps1 throws its pending key away when the answer is lost, and asks the next day with a new one."""
+    _renewed_before(world)
+    _, new = world.call()
+    assert new is not None and new.renewal_of == world.cert.id and new.replaced_serial == "0B" and new.issued_now
+    (gone, reason, actor), = world.issued["revoked"]
+    assert gone is world.session.successor and reason == "superseded" and actor == enr.REPLACED_BY
+    assert world.cert.renewed_at == NOW - timedelta(days=2)  # the first renewal's time still bounds the re-issues
+
+
+def test_a_used_successor_is_a_conflict(world):
+    _renewed_before(world)
+    world.session.successor_used = NOW - timedelta(hours=5)
+    with pytest.raises(enr.RenewalRefused, match="in use") as exc:
+        world.call()
+    assert exc.value.code == "conflict" and "names" not in world.issued and "revoked" not in world.issued
+
+
+def test_a_successor_its_device_checked_in_with_is_a_conflict(world):
+    _renewed_before(world, checked=NOW - timedelta(hours=3))  # the device signed a check-in with the new key
+    with pytest.raises(enr.RenewalRefused) as exc:
+        world.call()
+    assert exc.value.code == "conflict" and "revoked" not in world.issued
+
+
+def test_three_replacements_at_most(world):
+    _renewed_before(world)
+    world.session.tries = 4  # the renewal and three replacements
+    with pytest.raises(enr.RenewalRefused, match="already renewed"):
+        world.call()
+    world.session.tries = 3
+    assert world.call()[1].replaced_serial == "0B"
+
+
+def test_a_v2_renewer_with_another_key_gets_no_replacement(world):
+    """v2 keeps its request until the answer arrives: a different key isn't a lost answer, maybe a copied key."""
+    _renewed_before(world)
+    with pytest.raises(enr.RenewalRefused, match="already renewed") as exc:
+        world.call(client=CLIENT)
+    assert exc.value.code == "renewed" and "revoked" not in world.issued
+    assert exc.value.note[0]["kind"] == "windows-setup"  # still a signed check-in: recorded after the rollback
+
+
+def test_a_refusal_carries_the_check_in_except_on_a_wrong_clock(world):
+    world.cert.status = "revoked"
+    with pytest.raises(enr.RenewalRefused) as exc:
+        world.call(client=CLIENT)
+    assert exc.value.note == (enr.parse_client(CLIENT), NOW)
+    world.cert.status = "active"
+    with pytest.raises(enr.RenewalRefused) as exc:
+        world.call(client=CLIENT, signed_at=int((NOW - timedelta(minutes=11)).timestamp()))
+    assert exc.value.code == "clock" and exc.value.note is None
+    with pytest.raises(enr.RenewalRefused) as exc:
+        world.cert.status = "revoked"
+        world.call()
+    assert exc.value.note is None  # v1: no client block to record
+
+
+@pytest.mark.parametrize("setup", [
+    lambda w: _renewed_before(w, days=15),                       # past 14 days since the renewal
+    lambda w: _renewed_before(w, device=uuid.uuid4()),           # another device's certificate replaced it
+    lambda w: _renewed_before(w, source="gpo"),                  # Group Policy took over: never replaced this way
+    lambda w: _renewed_before(w, template=uuid.uuid4()),         # superseded by another template's certificate
+    lambda w: setattr(w.cert, "status", "superseded"),           # superseded by a new enrollment: no successor
+])
+def test_no_reissue(world, setup):
+    setup(world)
+    with pytest.raises(enr.RenewalRefused, match="already renewed") as exc:
+        world.call()
+    assert exc.value.code == "renewed" and "revoked" not in world.issued
+
+
+def test_a_superseded_certificate_can_check_in(world):
+    _renewed_before(world)
+    old, new = world.call(check_in=True, client=CLIENT)
+    assert new is None and old.status == "superseded" and old.renewal_checked_at == NOW

@@ -101,6 +101,16 @@ authority → Renewal): run a new setup file then. Each refusal is in the audit 
 a day per certificate and reason), and a certificate that hasn't renewed two weeks into its window shows on the
 dashboard.
 
+If the answer to a renewal gets lost (sleep, a Wi-Fi drop, a timeout), the task deletes its unused new key and asks
+again the next day with another one. EasyEAP then replaces the certificate it issued for the lost answer, provided
+RADIUS has never accepted it, within 14 days of the first renewal and at most 3 times. If that certificate *has* been
+used (or its renewal task checked in with it), the request is refused as a conflict (**Certificate renewed with two keys**, critical on the dashboard): two
+devices hold the same key. Before this, the PC kept its old certificate until it expired.
+
+Once RADIUS accepts the new certificate and the old one hasn't connected for 7 days, EasyEAP retires the old one
+(revokes it as superseded; **Retire renewed certificates** in Certificate authority → Renewal). If a PC keeps
+presenting the old certificate more than a day after it started using the new one, the dashboard says so instead.
+
 Logs: `C:\Program Files\EasyEAP\renew.log` (computer), `%LOCALAPPDATA%\EasyEAP\renew.log` (user), and the Application
 event log, source **EasyEAP**.
 

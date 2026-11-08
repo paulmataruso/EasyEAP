@@ -1,4 +1,5 @@
-"""Certificate renewal settings (docs/plans/cert-renewal.md §3, §15a): what renews by itself and when."""
+"""Certificate renewal settings (docs/plans/cert-renewal.md §3, §15a, §15b): what renews by itself and when, and how
+the tenant's certificates stand."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -21,9 +22,12 @@ def renewal_out(ctx: TenantCtx) -> dict:
     tpls = s.scalars(select(m.CertificateTemplate).where(m.CertificateTemplate.tenant_id == ctx.id).order_by(m.CertificateTemplate.name)).all()
     return {
         "settings": {"user_certs": st.user_certs, "machine_certs": st.machine_certs, "server_cert": st.server_cert,
-                     "renew_at_percent": st.renew_at_percent, "updated_at": st.updated_at.isoformat() if st.updated_at else None,
-                     "updated_by": st.updated_by},
-        "limits": {"min_percent": renewal.MIN_PERCENT, "max_percent": renewal.MAX_PERCENT, "rollback_days": renewal.ROLLBACK_DAYS},
+                     "renew_at_percent": st.renew_at_percent, "retire_superseded": st.retire_superseded,
+                     "updated_at": st.updated_at.isoformat() if st.updated_at else None, "updated_by": st.updated_by},
+        "limits": {"min_percent": renewal.MIN_PERCENT, "max_percent": renewal.MAX_PERCENT, "rollback_days": renewal.ROLLBACK_DAYS,
+                   "silent_days": renewal.SILENT_DAYS, "quiet_days": renewal.QUIET_DAYS},
+        # valid client certificates: auto (renew by themselves), silent, overdue, manual (need the user)
+        "counts": renewal.counts(s, ctx.id),
         "templates": [{"id": str(t.id), "name": t.name, "purpose": t.purpose, "validity_days": t.validity_days,
                        "renew_before_days": t.renew_before_days, "group_policy": bool(t.autoenroll_kind)} for t in tpls],
         "server_certificate": renewal.server_status(s, ctx.id),
@@ -41,14 +45,16 @@ class RenewalIn(BaseModel):
     machine_certs: bool
     server_cert: bool
     renew_at_percent: int = Field(ge=renewal.MIN_PERCENT, le=renewal.MAX_PERCENT)
+    retire_superseded: bool | None = None  # None: unchanged
 
 
 @router.put("")
 def put_renewal(body: RenewalIn, ctx: TenantCtx = Depends(require("ca:manage"))) -> dict:
     s = ctx.session
     st = renewal.settings(s, ctx.id)
-    before = {"user_certs": st.user_certs, "machine_certs": st.machine_certs, "server_cert": st.server_cert, "renew_at_percent": st.renew_at_percent}
-    after = body.model_dump()
+    before = {"user_certs": st.user_certs, "machine_certs": st.machine_certs, "server_cert": st.server_cert, "renew_at_percent": st.renew_at_percent,
+              "retire_superseded": st.retire_superseded}
+    after = body.model_dump(exclude_none=True)
     changes = {k: f"{before[k]} → {v}" for k, v in after.items() if before[k] != v}
     if not changes:
         return renewal_out(ctx)

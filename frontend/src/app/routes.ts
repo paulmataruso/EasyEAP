@@ -2,7 +2,8 @@
 //
 // Intent query parameters (screens must honour them on load, then clear them with replace):
 //   users/:id?issue=1            open "Issue certificate" for that user
-//   certificates?status=expiring filter (active | expiring | expired | revoked)
+//   certificates?status=expiring filter (active | expiring | superseded | expired | revoked; renewal: automatic
+//                                renewals that are overdue or whose renewer stopped checking in)
 //   certificates?revoke=<certId> open the revoke dialog for that certificate
 //   certificates?identity_id=<id> filter to one user's certificates
 //   radius?rotate=<clientId>     open "Rotate shared secret" for that controller
@@ -72,6 +73,8 @@ export function targetPath(tid: string, target: ActionTarget): string {
     case 'system': return paths.system()
     case 'tenant': return paths.settings(tid)
     case 'certificates': return paths.certificates(tid, arg ? { status: arg } : undefined)
+    case 'certificate': return arg ? paths.certificate(tid, arg) : paths.certificates(tid)
+    case 'audit': return paths.tenantAudit(tid)
     case 'events': return paths.events(tid, arg ? { reason: arg } : undefined)
     case 'policy': return paths.policy(tid)
     case 'mac': return paths.mac(tid, arg === 'seen' ? { tab: 'seen' } : undefined)

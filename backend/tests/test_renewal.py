@@ -1,5 +1,6 @@
-"""Certificate renewal, phase 1 (docs/plans/cert-renewal.md §15a): windows, templates' days, who renews, the lifetime cap,
-the RADIUS server certificate's rotation and rollback, and refusals audited once a day."""
+"""Certificate renewal, phases 1 and 2a (docs/plans/cert-renewal.md §15a, §15b): windows, templates' days, who renews,
+the lifetime cap, the RADIUS server certificate's rotation and rollback, refusals audited once a day, how each client
+certificate stands, superseded certificates retired, and revocation of a renewal chain."""
 from __future__ import annotations
 
 import uuid
@@ -73,6 +74,69 @@ def test_who_renews(cert, enrollment, tpl, who):
     e = SimpleNamespace(**enrollment) if enrollment is not None else None
     t = SimpleNamespace(**{"autoenroll_kind": None, **tpl}) if tpl is not None else None
     assert renewal.renewer(c, e, t) == who
+
+
+def test_the_recorded_renewer_wins():
+    c = SimpleNamespace(renewer="windows-helper", enrollment_source="gpo", key_origin="csr", renewal_of=None)
+    assert renewal.renewer(c, None, None) == "windows-helper"
+    c.renewer = None
+    assert renewal.renewer(c, None, None) == "gpo"
+
+
+def _row(days_in, days_left, *, renewer="windows-setup", checked=None, purpose="device", method=None):
+    return SimpleNamespace(not_before=NOW - timedelta(days=days_in), not_after=NOW + timedelta(days=days_left), purpose=purpose,
+                           renewer=renewer, renewal_checked_at=checked, method=method, platform=None, enrollment_source=None,
+                           key_origin="device", renewal_of=None, autoenroll_kind=None)
+
+
+ON = SimpleNamespace(user_certs=True, machine_certs=True, server_cert=True, renew_at_percent=80)
+
+
+@pytest.mark.parametrize(("row", "settings", "state"), [
+    (_row(10, 355, renewer=None), ON, "manual"),                                  # an Apple profile: needs a new link
+    (_row(10, 355), SimpleNamespace(**{**vars(ON), "machine_certs": False}), "manual"),  # renewal turned off
+    (_row(10, 355, renewer="gpo"), SimpleNamespace(**{**vars(ON), "machine_certs": False}), "auto"),  # Windows decides
+    (_row(300, 65), ON, "auto"),                                                   # v1, due, not yet 14 days left
+    (_row(352, 13), ON, "overdue"),                                                # v1 with 13 days left
+    (_row(300, 65, checked=NOW - timedelta(hours=20)), ON, "auto"),               # v2, due 8 days ago, checking in
+    (_row(310, 55, checked=NOW - timedelta(hours=20)), ON, "overdue"),            # v2, due 18 days ago, not renewed
+    (_row(300, 65, checked=NOW - timedelta(days=8)), ON, "silent"),               # v2, due, quiet for 8 days
+    (_row(100, 265, checked=NOW - timedelta(days=60)), ON, "auto"),               # v2 quiet, but not due: nothing to say
+])
+def test_classify(row, settings, state):
+    assert renewal.classify(row, settings, NOW) == state
+
+
+@pytest.mark.parametrize(("first", "last", "checked", "used", "retire"), [
+    (None, None, None, False, False),                                   # nothing shows the device has the successor
+    (None, None, NOW - timedelta(days=1), False, True),                 # a check-in signed with the successor's key
+    (NOW - timedelta(days=20), NOW - timedelta(days=21), None, False, True),  # switched over three weeks ago
+    (NOW - timedelta(days=3), NOW - timedelta(days=3, hours=1), None, False, False),  # switched, but the old one isn't quiet a week
+    (NOW - timedelta(days=20), NOW - timedelta(days=10), None, True, True),   # used 10 days after the switch, quiet since
+    (NOW - timedelta(days=20), NOW - timedelta(hours=2), None, True, False),  # still in use: flagged, not cut off
+])
+def test_judge_superseded(first, last, checked, used, retire):
+    assert renewal.judge_superseded(first, last, checked, NOW) == (used, retire)
+
+
+def test_successors_walk_the_chain():
+    tpl, dev = uuid.uuid4(), uuid.uuid4()
+    a, b, c, d = (SimpleNamespace(id=uuid.uuid4(), tenant_id="t", status=st, template_id=tpl, device_id=dev) for st in ("revoked", "superseded", "active", "revoked"))
+    # Group Policy's certificate replaced b on that PC (another template), and another PC's user certificate replaced c:
+    # neither is a renewal of b with its key, so neither is revoked with it.
+    gpo = SimpleNamespace(id=uuid.uuid4(), tenant_id="t", status="active", template_id=uuid.uuid4(), device_id=dev)
+    other_pc = SimpleNamespace(id=uuid.uuid4(), tenant_id="t", status="active", template_id=tpl, device_id=uuid.uuid4())
+    children = {a.id: [b], b.id: [c, d, gpo], c.id: [other_pc], d.id: []}
+    for parent, kids in list(children.items()):
+        for k in kids:
+            k.renewal_of = parent
+
+    class S:
+        def scalars(self, stmt):
+            parents = next(v for k, v in stmt.compile().params.items() if k.startswith("renewal_of"))
+            return SimpleNamespace(all=lambda: [x for p in parents for x in children[p]])
+
+    assert renewal.successors(S(), a) == [b, c]  # d is revoked already
 
 
 def test_overdue_waits_for_copies_made_before_this_change():
@@ -267,6 +331,93 @@ def test_refusal_audited_once_a_day(monkeypatch):
     seen["n"] = 1
     ep._refused(S(), exc, None)
     assert len(audits) == 1 and len(committed) == 1
+
+
+def test_a_conflict_is_its_own_event(monkeypatch):
+    cert = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), common_name="nina", serial="0A", purpose="user")
+    audits, queried = [], []
+
+    class S:
+        def rollback(self):
+            pass
+
+        def commit(self):
+            pass
+
+        def scalar(self, stmt):
+            queried.append(str(stmt.compile(compile_kwargs={"literal_binds": True})))
+            return 0
+
+    monkeypatch.setattr(ep, "set_platform", lambda s: None)
+    monkeypatch.setattr(ep, "client_ip", lambda r: "192.0.2.1")
+    monkeypatch.setattr(ep.audit, "record", lambda s, actor, action, **kw: audits.append(action))
+    ep._refused(S(), ep.enr.RenewalRefused("in use", cert, "conflict"), None)
+    assert audits == ["certificate.renewal_conflict"] and "certificate.renewal_conflict" in queried[0]
+
+
+def test_a_refused_v2_renewal_keeps_its_check_in(monkeypatch):
+    """Refused daily, a v2 renewer is overdue (alive, refused), not silent: its signed check-in survives the rollback."""
+    cert = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), common_name="nina", serial="0A", purpose="user")
+    done = {"updates": [], "commits": 0, "scope": None}
+
+    class S:
+        def rollback(self):
+            pass
+
+        def commit(self):
+            done["commits"] += 1
+
+        def execute(self, stmt):
+            done["updates"].append(stmt.compile().params)
+
+        def scalar(self, stmt):
+            return 1  # audited today already
+
+    monkeypatch.setattr(ep, "set_tenant", lambda s, t: done.update(scope=t))
+    monkeypatch.setattr(ep.audit, "record", lambda *a, **kw: pytest.fail("audited twice in a day"))
+    info = ep.enr.parse_client('{"kind": "linux", "version": "2.0"}')
+    ep._refused(S(), ep.enr.RenewalRefused("disabled", cert, "account", (info, NOW)), None)
+    (params,) = done["updates"]
+    assert params["renewal_checked_at"] == NOW and params["renewer"] == "linux" and done["scope"] == cert.tenant_id and done["commits"] == 1
+
+
+def _check_in_world(monkeypatch, status="active"):
+    old = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), status=status, purpose="device",
+                          not_before=NOW - timedelta(days=100), not_after=NOW + timedelta(days=265))
+    monkeypatch.setattr(ep.limiter, "hit", lambda *a: True)
+    monkeypatch.setattr(ep, "set_platform", lambda s: None)
+    monkeypatch.setattr(ep, "client_ip", lambda r: "192.0.2.1")
+    monkeypatch.setattr(ep, "OpenBao", lambda: None)
+    monkeypatch.setattr(ep.enr, "renew", lambda *a, **kw: (old, None))
+    monkeypatch.setattr(ep.renewal, "settings", lambda s, t: ON)
+    monkeypatch.setattr(ep, "trust_block", lambda s, t: {"roots": [{"sha256": "ab" * 32, "pem": "PEM"}], "cross": []})
+    body = ep.RenewIn(certificate="Yw" * 60, signed_at=0, signature="cw" * 30, client='{"kind": "linux"}')
+    return old, body
+
+
+def test_a_check_in_answer_says_when_to_renew_and_what_to_trust(monkeypatch):
+    old, body = _check_in_world(monkeypatch)
+    r = ep.renew(body, None, SimpleNamespace())
+    assert r["renewed"] is False and r["superseded"] is False and r["renewal_enabled"] is True
+    assert r["renew_from"] == renewal.renew_from(old, 80).isoformat() and r["trust"]["roots"][0]["sha256"] == "ab" * 32
+
+
+def test_a_superseded_certificate_is_told_to_finish_now(monkeypatch):
+    _, body = _check_in_world(monkeypatch, status="superseded")
+    r = ep.renew(body, None, SimpleNamespace())
+    assert r["superseded"] is True and datetime.fromisoformat(r["renew_from"]) <= datetime.now(UTC)
+
+
+def test_trust_block_lists_active_roots():
+    root = SimpleNamespace(fingerprint_sha256="AB" * 32, certificate_pem="-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----")
+
+    class S:
+        def scalars(self, stmt):
+            sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            assert "'root'" in sql and "'active'" in sql
+            return SimpleNamespace(all=lambda: [root])
+
+    assert ep.trust_block(S(), uuid.uuid4()) == {"roots": [{"sha256": "ab" * 32, "pem": root.certificate_pem + "\n"}], "cross": []}
 
 
 # ── The CA schedule ─────────────────────────────────────────────────────────

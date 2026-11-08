@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
+import re
 import secrets
 import string
 import uuid
@@ -14,7 +16,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.hazmat.primitives.serialization import pkcs12
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import models as m
@@ -42,9 +44,10 @@ class EnrollmentError(ValueError):
 class RenewalRefused(EnrollmentError):
     """A renewal EasyEAP turned down, for a certificate it issued: `code` says why (the audit records it once a day)."""
 
-    def __init__(self, message: str, cert: m.Certificate, code: str) -> None:
+    def __init__(self, message: str, cert: m.Certificate, code: str, note: tuple[dict, datetime] | None = None) -> None:
         super().__init__(message)
-        self.cert, self.code = cert, code
+        # note: a signed v2 client block and when it came, recorded on the certificate even though the request failed
+        self.cert, self.code, self.note = cert, code, note
 
 
 def _expires(hours: int | None = None) -> datetime:
@@ -156,6 +159,9 @@ def complete_with_csr(session: Session, bao: OpenBao, e: m.Enrollment, csr_pem: 
     cert = pki.sign_csr(session, bao, tenant, tpl, csr_pem, names, key_origin=key_origin, identity_id=identity.id,
                         device_id=device.id, enrollment_id=e.id)
     cert.key_storage = key_storage if key_storage in KEY_STORAGE else None
+    # What will renew it (docs/plans/cert-renewal.md §15b): the setup file's tasks, or the Linux script's timer (it
+    # makes the key on the computer; the portal's by-hand route doesn't). The version comes with its first check-in.
+    cert.renewer = "windows-setup" if e.method == WINDOWS_SETUP else "linux" if e.platform == "linux" and key_origin == "device" else None
     _finish(session, e, cert, identity)
     return cert
 
@@ -212,10 +218,50 @@ def create_windows_setup(session: Session, tenant: m.Tenant, identity: m.Identit
 RENEW_SKEW = timedelta(minutes=10)
 
 
-def renewal_message(certificate_der: bytes, signed_at: int, csr_der: bytes) -> bytes:
-    """What the current certificate's key signs to renew it. Binds the certificate, the time and the new request."""
-    return (f"easyeap-renew-v1|{hashlib.sha256(certificate_der).hexdigest()}|{signed_at}|"
-            f"{hashlib.sha256(csr_der).hexdigest()}").encode()
+def renewal_message(certificate_der: bytes, signed_at: int, csr_der: bytes, client: str | None = None) -> bytes:
+    """What the current certificate's key signs to renew it. Binds the certificate, the time and the new request, and
+    in v2 the client block, exactly as sent (docs/plans/cert-renewal.md §4.2)."""
+    cert_hash, csr_hash = hashlib.sha256(certificate_der).hexdigest(), hashlib.sha256(csr_der).hexdigest()
+    if client is None:
+        return f"easyeap-renew-v1|{cert_hash}|{signed_at}|{csr_hash}".encode()
+    return f"easyeap-renew-v2|{cert_hash}|{signed_at}|{csr_hash}|{hashlib.sha256(client.encode()).hexdigest()}".encode()
+
+
+def check_message(certificate_der: bytes, signed_at: int, client: str) -> bytes:
+    """What a v2 renewer signs to check in (no request): the certificate, the time and its client block."""
+    return (f"easyeap-check-v2|{hashlib.sha256(certificate_der).hexdigest()}|{signed_at}|"
+            f"{hashlib.sha256(client.encode()).hexdigest()}").encode()
+
+
+CLIENT_KINDS = ("windows-setup", "windows-helper", "linux")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+def parse_client(client: str) -> dict:
+    """The v2 client block: telemetry about the renewer (kind, version, scope, the roots it trusts and the ones in its
+    network profiles). It never changes what is issued."""
+    try:
+        d = json.loads(client)
+    except ValueError as exc:
+        raise EnrollmentError("The client block isn't valid JSON.") from exc
+    if not isinstance(d, dict) or d.get("kind") not in CLIENT_KINDS:
+        raise EnrollmentError(f"The client block's kind must be one of: {', '.join(CLIENT_KINDS)}.")
+
+    def hashes(v) -> list[str]:
+        return [x.lower() for x in (v if isinstance(v, list) else []) if isinstance(x, str) and _HEX64.fullmatch(x.lower())][:16]
+
+    return {"kind": d["kind"], "version": str(d.get("version") or "2")[:8], "scope": d.get("scope") if d.get("scope") in ("computer", "user") else None,
+            "roots": hashes(d.get("roots")), "profile_roots": hashes(d.get("profile_roots"))}
+
+
+def _note_client(cert: m.Certificate, info: dict, now: datetime) -> None:
+    """A request signed with this certificate's key carried the client block: the device holds the key, now."""
+    cert.renewer, cert.renewer_version, cert.renewal_checked_at = info["kind"], info["version"], now
+    cert.trust_reported = note_trust(info, now)
+
+
+def note_trust(info: dict, now: datetime) -> dict:
+    return {"roots": info["roots"], "profile_roots": info["profile_roots"], "scope": info["scope"], "at": now.isoformat()}
 
 
 def verify_signature(cert: x509.Certificate, message: bytes, signature: bytes) -> bool:
@@ -240,35 +286,60 @@ def _spki(key) -> bytes:
     return key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
 
 
-def renew(session: Session, bao: OpenBao, *, certificate_der: bytes, csr_pem: str, signed_at: int, signature: bytes,
-          key_storage: str | None, now: datetime | None = None) -> tuple[m.Certificate, m.Certificate | None]:
-    """Renew a certificate on behalf of its key holder (docs/plans/windows-setup.md §4, cert-renewal.md §3). Returns
-    (current, new); new is None when the certificate isn't inside its renewal window yet: from the tenant's percentage
-    of its own lifetime on. The session starts platform-scoped (the certificate tells which tenant) and is scoped to
-    that tenant once the request is proven to come from the certificate's key."""
+REPLACED_BY = "EasyEAP (replaced: the device never received it)"
+REISSUE_DAYS, REISSUE_MAX = 14, 3  # replacements of an unreceived renewal: within 14 days of it, at most 3
+
+
+def renew(session: Session, bao: OpenBao, *, certificate_der: bytes, csr_pem: str | None, signed_at: int, signature: bytes,
+          key_storage: str | None, client: str | None = None, now: datetime | None = None) -> tuple[m.Certificate, m.Certificate | None]:
+    """Renew a certificate on behalf of its key holder (docs/plans/windows-setup.md §4, cert-renewal.md §3, §4.2, §15b),
+    or record a v2 check-in (`client` without `csr_pem`). Returns (current, new); new is None for a check-in and when the
+    certificate isn't inside its renewal window yet: from the tenant's percentage of its own lifetime on. The session
+    starts platform-scoped (the certificate tells which tenant) and is scoped to that tenant once the request is proven
+    to come from the certificate's key."""
     now = now or datetime.now(UTC)
     fingerprint = hashlib.sha256(certificate_der).hexdigest().upper()  # as crypto.cert_info stores it
     old = session.scalars(select(m.Certificate).where(m.Certificate.fingerprint_sha256 == fingerprint)).first()
     if old is None:
         raise EnrollmentError("EasyEAP didn't issue this certificate.")
 
-    def refuse(code: str, message: str) -> RenewalRefused:
-        return RenewalRefused(message, old, code)
+    info = parse_client(client) if client is not None else None
 
+    def refuse(code: str, message: str) -> RenewalRefused:
+        # A wrong clock could be a replayed request: its check-in isn't recorded.
+        return RenewalRefused(message, old, code, (info, now) if info is not None and code != "clock" else None)
+
+    if csr_pem is None and info is None:
+        raise EnrollmentError("A renewal needs a certificate request.")
+    message = check_message(certificate_der, signed_at, client) if csr_pem is None else \
+        renewal_message(certificate_der, signed_at, _csr_der(csr_pem), client)
     # The signature first: anyone may hold a copy of the certificate, so nothing before it is audited (a refusal is
     # recorded against the certificate). It covers signed_at, so a wrong clock is the key holder's own.
-    if not verify_signature(x509.load_der_x509_certificate(certificate_der), renewal_message(certificate_der, signed_at, _csr_der(csr_pem)), signature):
+    if not verify_signature(x509.load_der_x509_certificate(certificate_der), message, signature):
         raise EnrollmentError("The request isn't signed by this certificate's key.")
     if abs(now.timestamp() - signed_at) > RENEW_SKEW.total_seconds():
         raise refuse("clock", "The request's time is more than 10 minutes off. Check the computer's clock.")
     set_tenant(session, old.tenant_id)
+    if csr_pem is not None:  # one renewal at a time per certificate (a logon task and the daily one can coincide)
+        old = session.get(m.Certificate, old.id, with_for_update=True, populate_existing=True)
+    if info is not None:
+        _note_client(old, info, now)
     if old.status == "revoked":
         raise refuse("revoked", "This certificate was revoked, so it can't be renewed. Enroll again.")
+    if csr_pem is None:  # a check-in: the route answers with the window (or that it was superseded)
+        if old.not_after <= now:
+            raise refuse("expired", "This certificate has expired, so it can't be renewed. Enroll again.")
+        return old, None
+    replace = None
     if old.status == "superseded" or old.renewed_at is not None:
         again = _earlier_renewal(session, old, csr_pem, now)
         if again is not None:  # the answer to the same request got lost on the way: send it again
             return old, again
-        raise refuse("renewed", "This certificate was already renewed. Use the newer one.")
+        try:
+            replace = _replaceable_successor(session, old, now, v1=info is None)  # a v1 renewer threw its key away with the lost answer
+        except RenewalRefused as exc:
+            exc.note = (info, now) if info is not None else None
+            raise
     if old.not_after <= now:
         raise refuse("expired", "This certificate has expired, so it can't be renewed. Enroll again.")
     if old.purpose not in ("user", "device") or old.identity_id is None:
@@ -281,7 +352,7 @@ def renew(session: Session, bao: OpenBao, *, certificate_der: bytes, csr_pem: st
     if tpl.autoenroll_kind:
         raise refuse("gpo", "Windows renews this certificate itself, through Group Policy autoenrollment.")
     st = renewal.settings(session, tenant.id)
-    if now < renewal.renew_from(old, st.renew_at_percent):
+    if replace is None and now < renewal.renew_from(old, st.renew_at_percent):
         return old, None
     if not renewal.enabled_for(st, old.purpose):
         what = "user" if old.purpose == "user" else "device"
@@ -303,9 +374,46 @@ def renew(session: Session, bao: OpenBao, *, certificate_der: bytes, csr_pem: st
         raise refuse("ca", str(exc)) from exc
     new.key_storage = key_storage if key_storage in KEY_STORAGE else None
     new.renewal_of = old.id
-    old.status, old.renewed_at = "superseded", now  # still accepted until it expires, as after any renewal
+    if info is not None:  # its first check-in, signed with the new key, is what shows the device has it
+        new.renewer, new.renewer_version = info["kind"], info["version"]
+    else:
+        e = session.get(m.Enrollment, old.enrollment_id) if old.enrollment_id else None
+        new.renewer, new.renewer_version = renewal.renewer(old, e, tpl) or "renewed", "1"  # a v1 renewer signed this
+    new.issued_now = True  # not a column: tells the route this one is new (a resent answer isn't audited again)
+    new.replaced_serial = None
+    if replace is not None:
+        pki.revoke(session, bao, replace, "superseded", REPLACED_BY)
+        new.replaced_serial = replace.serial
+    else:
+        old.status, old.renewed_at = "superseded", now  # still accepted until it expires, as after any renewal
     recompute_tenant(session, tenant.id)
     return old, new
+
+
+def successor_used(session: Session, cert: m.Certificate) -> datetime | None:
+    """When RADIUS first accepted this certificate (None: never)."""
+    return session.scalar(select(func.min(m.AuthEvent.at)).where(m.AuthEvent.tenant_id == cert.tenant_id, m.AuthEvent.cert_serial == cert.serial,
+                                                                 m.AuthEvent.result == "accept"))
+
+
+def _replaceable_successor(session: Session, old: m.Certificate, now: datetime, *, v1: bool) -> m.Certificate:
+    """A certificate already renewed, asked again with another key (§15b item 3). The earlier successor is replaced when
+    the device can't have it: the request is v1 (whose renewer throws its key away with a lost answer), the successor
+    has never been used or checked in with, it was renewed through this endpoint lately, and not too often. Else the
+    renewal is refused, as a conflict when that successor is in use: two keys claim one certificate."""
+    succ = session.scalars(select(m.Certificate).where(m.Certificate.renewal_of == old.id, m.Certificate.status != "revoked")
+                           .order_by(m.Certificate.created_at.desc())).first()
+    renewed = RenewalRefused("This certificate was already renewed. Use the newer one.", old, "renewed")
+    if succ is None or succ.enrollment_source == "gpo" or succ.template_id != old.template_id or succ.device_id != old.device_id \
+            or old.renewed_at is None:
+        raise renewed  # superseded by a new enrollment or by Group Policy, not by its own renewal
+    if succ.renewal_checked_at is not None or successor_used(session, succ) is not None:
+        raise RenewalRefused("This certificate was already renewed with another key, and that certificate is in use. Contact your IT team.",
+                             old, "conflict")
+    tries = session.scalar(select(func.count()).select_from(m.Certificate).where(m.Certificate.renewal_of == old.id)) or 0
+    if not v1 or now - old.renewed_at > timedelta(days=REISSUE_DAYS) or tries > REISSUE_MAX:
+        raise renewed  # a v2 renewer keeps its request until the answer arrives: another key isn't a lost answer
+    return succ
 
 
 def _earlier_renewal(session: Session, old: m.Certificate, csr_pem: str, now: datetime) -> m.Certificate | None:

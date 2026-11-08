@@ -18,6 +18,23 @@ versions follow [Semantic Versioning](https://semver.org/).
   dashboard watches for devices that connected the week before a rotation and have failed the handshake since.
 - **Refused renewals are audited** (Certificate renewal refused, with the reason), once a day per certificate and
   reason.
+- **How each certificate renews** ([plan](docs/plans/cert-renewal.md) §15b): its page shows what renews it (Windows
+  setup file, Linux script, Group Policy, or a new link), when renewal starts, the renewal task's last check-in and what
+  it was renewed into. The Renewal panel counts certificates that renew by themselves, have gone quiet, are overdue or
+  need the user.
+- **Renewal protocol v2** on the server: renewal tasks can check in daily without renewing (signed with the
+  certificate's key) and report what they are and which roots they trust; every answer says when renewal starts and
+  carries the tenant's root certificates. v1 is unchanged.
+- **The Linux setup script's renewal uses it** (scripts made from now on): it checks in daily, renews from the date
+  EasyEAP gives instead of the days it was made with (those are the fallback when EasyEAP can't be reached), says
+  which roots it trusts, and drops a request EasyEAP refused so the next run starts afresh. The Windows setup file
+  comes next.
+- **Retire renewed certificates** (on by default): a superseded certificate is revoked once its device uses the newer
+  one and the old one hasn't connected for 7 days. A device still presenting the old one is listed on the dashboard
+  instead (**A renewed certificate is still in use**).
+- **Renewal conflicts** (critical on the dashboard): a renewal signed by a certificate that another key already renewed,
+  when that newer certificate is in use, is refused and audited (**Certificate renewed with two keys**).
+- **Revoking a renewed certificate revokes what it was renewed into**, unless you untick it in the dialog.
 - **Device syslog, live** (Investigate → Device syslog; [plan and critique](docs/plans/syslog-full.md)): everything
   this tenant's switches and controllers send, as it arrives (checked every second while the page is open). A message
   repeated within the minute moves to the top with its count. Filter by device, access messages, warnings and errors,
@@ -229,6 +246,10 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A lost renewal answer no longer strands a Windows PC.** The setup file's renewal task deletes its new key when
+  the answer doesn't arrive, and EasyEAP refused the next day's request with another key ("already renewed"), so the
+  PC kept its old certificate until it expired. EasyEAP now replaces the unused certificate (within 14 days, at most 3
+  times), and refuses as a conflict when that certificate has been used.
 - **An expired enrollment link stayed stored, encrypted**: the expiry job (every 10 minutes) didn't clear it, though
   it could never be shown (the expiry is checked first). It's cleared now, and migration 0013 clears those left over.
 - **The user's page said a lost link can't be shown again**, though **Show link** could since the previous change.

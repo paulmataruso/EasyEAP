@@ -16,12 +16,13 @@ from app import models as m
 from app.radius.events import _match_client
 
 
-def disconnect_for_certificate(session: Session, cert: m.Certificate, reason: str) -> dict:
-    """Queue Disconnect-Requests for live sessions that authenticated with this certificate."""
+def disconnect_for_certificate(session: Session, cert: m.Certificate, reason: str, *, also: list[m.Certificate] | tuple = ()) -> dict:
+    """Queue Disconnect-Requests for live sessions that authenticated with this certificate (and `also` these, the
+    certificates renewed from it: one request per device even when it used both)."""
     since = datetime.now(UTC) - timedelta(days=2)
     macs = {e.calling_station_id for e in session.scalars(select(m.AuthEvent).where(
-        m.AuthEvent.tenant_id == cert.tenant_id, m.AuthEvent.cert_serial == cert.serial, m.AuthEvent.result == "accept",
-        m.AuthEvent.at >= since)) if e.calling_station_id}
+        m.AuthEvent.tenant_id == cert.tenant_id, m.AuthEvent.cert_serial.in_([cert.serial, *(c.serial for c in also)]),
+        m.AuthEvent.result == "accept", m.AuthEvent.at >= since)) if e.calling_station_id}
     return _disconnect_macs(session, cert.tenant_id, macs, reason)
 
 

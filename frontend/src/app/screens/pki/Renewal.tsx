@@ -1,5 +1,6 @@
-// Certificate renewal (docs/plans/cert-renewal.md §15a): what renews by itself, at what share of each certificate's
-// life, the template days that follow, and the CA dates to plan for. Group Policy keeps its own schedule.
+// Certificate renewal (docs/plans/cert-renewal.md §15a, §15b): what renews by itself, at what share of each
+// certificate's life, the template days that follow, how the tenant's certificates stand, retirement of renewed ones,
+// and the CA dates to plan for. Group Policy keeps its own schedule.
 import { useEffect, useId, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { Save } from 'lucide-react'
@@ -14,7 +15,30 @@ const PRESETS = [50, 60, 70, 80, 90]
 
 const fromData = (d: RenewalOverview): RenewalIn => ({
   user_certs: d.settings.user_certs, machine_certs: d.settings.machine_certs, server_cert: d.settings.server_cert, renew_at_percent: d.settings.renew_at_percent,
+  retire_superseded: d.settings.retire_superseded,
 })
+
+/** Valid client certificates by how they renew, each linking to the matching list. */
+function Standing({ tid, counts }: { tid: string; counts: RenewalOverview['counts'] }) {
+  const cells: { n: number; label: string; to?: string; tone?: string }[] = [
+    { n: counts.auto, label: 'renew by themselves' },
+    { n: counts.silent, label: 'haven’t checked in for a week', to: paths.certificates(tid, { status: 'renewal' }), tone: 'text-[var(--ee-warn)]' },
+    { n: counts.overdue, label: 'overdue', to: paths.certificates(tid, { status: 'renewal' }), tone: 'text-[var(--ee-warn)]' },
+    { n: counts.manual, label: 'need the user (a new link)' },
+  ]
+  return (
+    <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4" aria-label="Valid client certificates by how they renew">
+      {cells.map((c) => (
+        <div key={c.label} className="min-w-0">
+          <dt className="ee-small ee-ink-3 order-2">{c.label}</dt>
+          <dd className={`ee-num text-[18px] font-semibold ${c.n > 0 && c.tone ? c.tone : ''}`}>
+            {c.to && c.n > 0 ? <Link className="underline decoration-dotted underline-offset-4" to={c.to}>{c.n}</Link> : c.n}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
 
 function SwitchRow({ id, label, hint, checked, onChange, disabled }: { id: string; label: string; hint: ReactNode; checked: boolean; onChange: (v: boolean) => void; disabled: boolean }) {
   return (
@@ -66,6 +90,7 @@ export function RenewalPanel() {
         and Group Policy. Each asks with the certificate’s own key, so nobody signs in. Apple and Android profiles can’t renew themselves:
         those users need a new link before the certificate expires, and the dashboard lists them.
       </p>
+      <Standing tid={tid} counts={d.counts} />
 
       <div className="mt-2 divide-y divide-[var(--ee-line)]">
         <SwitchRow id={`${id}-u`} label="User certificates" checked={v.user_certs} onChange={(x) => set('user_certs', x)} disabled={!write}
@@ -78,6 +103,10 @@ export function RenewalPanel() {
               : sc?.ca_too_short ? <> The current one is past {p} % of its life, but the issuing CA expires too soon to give a new one 30 days: it waits for a new issuing CA.</>
                 : <> The current one is past {p} % of its life: it rotates within 6 hours{dirty ? ' of saving' : ''}.</>)}
           </>} />
+        <SwitchRow id={`${id}-r`} label="Retire renewed certificates" checked={v.retire_superseded} onChange={(x) => set('retire_superseded', x)} disabled={!write}
+          hint={<>Once a device uses its new certificate (RADIUS accepted it, or its renewal task checked in with it) and the old one hasn’t connected
+            for {d.limits.quiet_days} days, EasyEAP revokes the old one, so a copy of the old key stops working. A device still using the old certificate
+            isn’t cut off: it’s listed on the dashboard instead. Checked daily.</>} />
       </div>
 
       <div className="mt-3 space-y-2">

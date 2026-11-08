@@ -179,10 +179,12 @@ def test_tls_pin(tmp_path):
 
 
 class _Api:
-    """HTTPS on 127.0.0.1 with a self-signed certificate: POST /api/enroll/renew?format=pem checks the request the way
-    enrollment/service.py renew() does and answers with a certificate for the new key (or 204)."""
+    """HTTPS on 127.0.0.1 with a self-signed certificate: POST /api/enroll/renew checks the request the way
+    enrollment/service.py renew() does. A check-in (no csr) gets the JSON answer with renew_from; a renewal
+    (?format=pem) gets a certificate for the new key (or 204, or a refusal)."""
 
-    def __init__(self, tmp: Path, *, renew: bool = True, lose: int = 0):
+    def __init__(self, tmp: Path, *, renew: bool = True, lose: int = 0, renew_from: datetime | None = None, superseded: bool = False,
+                 checkin: int = 200, refuse: bool = False, enabled: bool = True):
         self.key = ec.generate_private_key(ec.SECP256R1())
         self.cert = _cert("localhost", self.key.public_key(), self.key, "localhost", san="localhost")
         (tmp / "srv.pem").write_text(_pem(self.cert))
@@ -193,6 +195,8 @@ class _Api:
         self.requests: list[dict] = []
         self.renew = renew
         self.lose = lose  # answer this many renewals with 502, as if the answer got lost
+        self.renew_from = renew_from or datetime.now(UTC) - timedelta(days=1)  # due by default
+        self.superseded, self.checkin, self.refuse, self.enabled = superseded, checkin, refuse, enabled
 
         class H(BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -202,14 +206,26 @@ class _Api:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 api.requests.append({"path": self.path, **body})
                 old = x509.load_der_x509_certificate(base64.b64decode(body["certificate"]))
+                der, client, sig = old.public_bytes(serialization.Encoding.DER), body.get("client"), base64.b64decode(body["signature"])
+                if body.get("csr") is None:  # a v2 check-in
+                    if api.checkin != 200:
+                        return self._answer(api.checkin, b'{"detail":"nope"}', "application/json")
+                    if client is None or not enr.verify_signature(old, enr.check_message(der, body["signed_at"], client), sig):
+                        return self._answer(400, json.dumps({"detail": "The request isn't signed by this certificate's key."}).encode(), "application/json")
+                    enr.parse_client(client)
+                    answer = {"renewed": False, "not_after": old.not_valid_after_utc.isoformat(), "superseded": api.superseded,
+                              "renew_from": api.renew_from.isoformat(), "renewal_enabled": api.enabled,
+                              "trust": {"roots": [{"sha256": "ab" * 32, "pem": _pem(CA)}], "cross": []}}
+                    return self._answer(200, json.dumps(answer).encode(), "application/json")
                 csr_pem = body["csr"].strip() + "\n"
-                ok = enr.verify_signature(old, enr.renewal_message(old.public_bytes(serialization.Encoding.DER), body["signed_at"], enr._csr_der(csr_pem)),
-                                          base64.b64decode(body["signature"]))
+                ok = enr.verify_signature(old, enr.renewal_message(der, body["signed_at"], enr._csr_der(csr_pem), client), sig)
                 if not ok:
                     self._answer(400, json.dumps({"detail": "The request isn't signed by this certificate's key."}).encode(), "application/json")
                 elif api.lose:
                     api.lose -= 1
                     self._answer(502, b"Bad Gateway", "text/plain")
+                elif api.refuse:
+                    self._answer(400, json.dumps({"detail": "This certificate was already renewed. Use the newer one."}).encode(), "application/json")
                 elif not api.renew:
                     self._answer(204, b"", "text/plain")
                 else:
@@ -228,6 +244,12 @@ class _Api:
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
+    def checkins(self) -> list[dict]:
+        return [r for r in self.requests if r.get("csr") is None]
+
+    def renewals(self) -> list[dict]:
+        return [r for r in self.requests if r.get("csr") is not None]
+
     def pin(self) -> str:
         der_spki = self.key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
         return base64.b64encode(hashlib.sha256(der_spki).digest()).decode()
@@ -236,6 +258,7 @@ class _Api:
 def _install(tmp: Path, *, days: int, key=None) -> tuple[Path, ec.EllipticCurvePrivateKey]:
     d = tmp / "corp"
     d.mkdir()
+    (d / "ca.pem").write_text(_pem(CA))
     key = key or ec.generate_private_key(ec.SECP256R1())
     (d / "client.key").write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     (d / "client.pem").write_text(_pem(_cert("nina", key.public_key(), CA_KEY, "Test Root", days=days)))
@@ -263,9 +286,12 @@ def test_renewal_signs_like_the_api_expects_and_swaps_the_files(tmp_path):
     d, old_key = _install(tmp_path, days=10)  # inside the 30-day window
     r = _run_renewal(tmp_path, api, d)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "Renewed" in r.stdout and len(api.requests) == 1
-    req = api.requests[0]
-    assert req["path"] == "/api/enroll/renew?format=pem" and req["key_storage"] == "software"
+    assert "Renewed" in r.stdout and len(api.checkins()) == 1 and len(api.renewals()) == 1
+    chk, req = api.requests
+    assert chk["path"] == "/api/enroll/renew" and json.loads(chk["client"])["kind"] == "linux"
+    root = hashlib.sha256(CA.public_bytes(serialization.Encoding.DER)).hexdigest()
+    assert json.loads(chk["client"]) == {"kind": "linux", "version": "2.0", "scope": "computer", "roots": [root]}
+    assert req["path"] == "/api/enroll/renew?format=pem" and req["key_storage"] == "software" and req["client"] == chk["client"]
     new_key = serialization.load_pem_private_key((d / "client.key").read_bytes(), None)
     new_cert = x509.load_pem_x509_certificate((d / "client.pem").read_bytes())
     pub = serialization.PublicFormat.SubjectPublicKeyInfo
@@ -282,24 +308,30 @@ def test_a_lost_renewal_answer_is_asked_for_again_with_the_same_key(tmp_path):
     api = _Api(tmp_path, lose=1)
     d, old_key = _install(tmp_path, days=10)
     r = _run_renewal(tmp_path, api, d)
-    assert r.returncode == 1 and "Renewal refused" in r.stdout
+    assert r.returncode == 1 and "asking again next time" in r.stdout
     assert (d / "renew-pending.key").stat().st_mode & 0o777 == 0o600
     old_pub = old_key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     assert serialization.load_pem_private_key((d / "client.key").read_bytes(), None).public_key().public_bytes(
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo) == old_pub  # nothing swapped
     r = _run_renewal(tmp_path, api, d)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert len(api.requests) == 2 and api.requests[0]["csr"] == api.requests[1]["csr"]  # the same request again
+    first, again = api.renewals()
+    assert first["csr"] == again["csr"] and len(api.checkins()) == 1  # the same request again, without checking in first
     assert not list(d.glob("renew-pending.*"))
 
 
 @needs_tools
 def test_renewal_waits_for_its_window(tmp_path):
-    api = _Api(tmp_path)
-    d, _ = _install(tmp_path, days=200)
+    """EasyEAP's renew_from decides, not the days the script was made with."""
+    api = _Api(tmp_path, renew_from=datetime.now(UTC) + timedelta(days=3))
+    d, _ = _install(tmp_path, days=10)  # inside the baked 30 days, but EasyEAP says not yet
     before = (d / "client.pem").read_text()
     r = _run_renewal(tmp_path, api, d)
-    assert r.returncode == 0 and api.requests == [] and (d / "client.pem").read_text() == before
+    assert r.returncode == 0 and len(api.checkins()) == 1 and api.renewals() == [] and (d / "client.pem").read_text() == before
+    api.renew_from = datetime.now(UTC) - timedelta(minutes=5)
+    d2 = tmp_path / "corp"
+    _run_renewal(tmp_path, api, d2)
+    assert len(api.renewals()) == 1
 
 
 @needs_tools
@@ -308,7 +340,7 @@ def test_renewal_keeps_the_files_when_the_server_says_not_yet(tmp_path):
     d, _ = _install(tmp_path, days=10)
     before = (d / "client.key").read_bytes()
     r = _run_renewal(tmp_path, api, d)
-    assert r.returncode == 0 and len(api.requests) == 1
+    assert r.returncode == 0 and len(api.renewals()) == 1
     assert (d / "client.key").read_bytes() == before and "doesn't renew it yet" in (d / "renew.log").read_text()
 
 
@@ -320,6 +352,57 @@ def test_renewal_refuses_a_server_it_wasnt_made_for(tmp_path):
     r = _run_renewal(tmp_path, api, d, pin="x" * 43 + "=")  # another server's pin: the self-signed certificate isn't accepted
     assert r.returncode == 1 and api.requests == []
     assert "Couldn't reach EasyEAP" in r.stdout and (d / "client.key").read_bytes() == before
+
+
+@needs_tools
+@pytest.mark.parametrize(("checkin", "days", "renews", "message"), [
+    (502, 200, False, "Couldn't reach"),   # EasyEAP down, outside the baked period: wait
+    (502, 10, True, None),                 # down, inside it: renew anyway (protocol 2)
+    (422, 10, True, None),                 # an EasyEAP from before check-ins: protocol 1
+])
+def test_without_a_check_in_answer_the_baked_period_decides(tmp_path, checkin, days, renews, message):
+    api = _Api(tmp_path, checkin=checkin)
+    d, _ = _install(tmp_path, days=days)
+    r = _run_renewal(tmp_path, api, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert bool(api.renewals()) == renews
+    if renews:
+        assert ("client" in api.renewals()[0]) == (checkin != 422)  # v1 for a server that doesn't know v2
+    if message:
+        assert message not in r.stdout  # 502 is an answer: the server is there, just failing; nothing to shout about
+
+
+@needs_tools
+def test_a_superseded_certificate_with_nothing_waiting_stops(tmp_path):
+    api = _Api(tmp_path, superseded=True)
+    d, _ = _install(tmp_path, days=10)
+    r = _run_renewal(tmp_path, api, d)
+    assert r.returncode == 0 and api.renewals() == [] and "renewed this certificate already" in r.stdout
+
+
+@needs_tools
+def test_a_refused_request_is_dropped_and_a_fresh_key_made_next_time(tmp_path):
+    api = _Api(tmp_path, refuse=True)
+    d, _ = _install(tmp_path, days=10)
+    r = _run_renewal(tmp_path, api, d)
+    assert r.returncode == 1 and "Renewal refused: This certificate was already renewed" in r.stdout
+    assert not list(d.glob("renew-pending.*"))
+
+
+@needs_tools
+def test_renewal_turned_off_is_said_once_due(tmp_path):
+    api = _Api(tmp_path, enabled=False)
+    d, _ = _install(tmp_path, days=10)
+    r = _run_renewal(tmp_path, api, d)
+    assert r.returncode == 1 and api.renewals() == [] and "turned off" in r.stdout
+
+
+@needs_tools
+def test_a_refused_check_in_is_logged(tmp_path):
+    api = _Api(tmp_path, checkin=400)
+    d, _ = _install(tmp_path, days=10)
+    r = _run_renewal(tmp_path, api, d)
+    assert r.returncode == 1 and "Check-in refused: nope" in r.stdout and api.renewals() == []
 
 
 # ── The endpoints ───────────────────────────────────────────────────────────
@@ -381,15 +464,16 @@ def test_the_certificate_as_pem(link, monkeypatch):
 
 def test_renewal_as_pem(monkeypatch):
     audits = []
-    old = SimpleNamespace(id="c0", tenant_id="t1", common_name="nina", serial="00", renewed_at=None, template_id=None,
-                          not_before=datetime.now(UTC) - timedelta(days=100), not_after=datetime.now(UTC))
+    old = SimpleNamespace(id="c0", tenant_id="t1", common_name="nina", serial="00", renewed_at=None, template_id=None, status="active",
+                          purpose="user", not_before=datetime.now(UTC) - timedelta(days=100), not_after=datetime.now(UTC))
     new = SimpleNamespace(id="c1", tenant_id="t1", certificate_pem=_pem(CA), common_name="nina", serial="01", key_storage="software",
-                          purpose="user", not_after=datetime.now(UTC))
+                          purpose="user", not_after=datetime.now(UTC), renewer="linux", renewer_version="1")
     result = {"v": (old, None)}
 
     def renew(*a, **kw):
-        if result["v"][1] is not None and old.renewed_at is None:
-            old.renewed_at = datetime.now(UTC)  # what a real renewal does
+        if result["v"][1] is not None:
+            new.issued_now = old.renewed_at is None  # what a real renewal says; a resend of a lost answer isn't new
+            old.renewed_at = old.renewed_at or datetime.now(UTC)
         return result["v"]
 
     monkeypatch.setattr(ep.limiter, "hit", lambda *a: True)
@@ -399,7 +483,8 @@ def test_renewal_as_pem(monkeypatch):
     monkeypatch.setattr(ep, "OpenBao", lambda: None)
     monkeypatch.setattr(ep.enr, "renew", renew)
     monkeypatch.setattr(ep.pki, "chain_pem", lambda s, t: ("", None))
-    monkeypatch.setattr(ep.renewal, "settings", lambda s, t: SimpleNamespace(renew_at_percent=80))
+    monkeypatch.setattr(ep.renewal, "settings", lambda s, t: SimpleNamespace(renew_at_percent=80, user_certs=True, machine_certs=True, server_cert=True))
+    monkeypatch.setattr(ep, "trust_block", lambda s, t: {"roots": [], "cross": []})
     monkeypatch.setattr(ep.audit, "record", lambda *a, **kw: audits.append(a[2]))
     body = ep.RenewIn(certificate=base64.b64encode(b"c" * 100).decode(), csr="x" * 100, signed_at=0, signature=base64.b64encode(b"s" * 40).decode())
     s = SimpleNamespace(get=lambda *a: None)
@@ -408,5 +493,4 @@ def test_renewal_as_pem(monkeypatch):
     result["v"] = (old, new)
     r = ep.renew(body, None, s, format="pem")
     assert r.body.decode() == new.certificate_pem and audits == ["certificate.renewed"]
-    old.renewed_at = datetime.now(UTC) - timedelta(hours=1)  # a resend of an earlier renewal's lost answer: not audited again
     assert ep.renew(body, None, s, format="pem").body.decode() == new.certificate_pem and audits == ["certificate.renewed"]

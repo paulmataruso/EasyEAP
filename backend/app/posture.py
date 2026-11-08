@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, exists, func, select
 from sqlalchemy.orm import Session
 
 from app import models as m
@@ -320,9 +320,10 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
             "Review the switch audit", f"radius:client:{cid}", affected=0, impact_at=None, source_at=top.opened_at)
 
     # Certificates that renew by themselves (Group Policy, the setup file, the Linux script) aren't counted until they're
-    # overdue; the rest need someone (docs/plans/cert-renewal.md §15a item 7).
+    # overdue or their renewer goes silent; the rest need someone (docs/plans/cert-renewal.md §15a item 7, §15b item 7).
     cr = renewal.client_renewal(s, t.id, ps.expiry_warning_days, now)
-    manual, overdue = cr["manual"], cr["overdue"]
+    manual, overdue, silent = cr["manual"], cr["overdue"], cr["silent"]
+    urgent = now + timedelta(days=renewal.OVERDUE_LEFT_DAYS)
     if manual:
         n = len(manual)
         add("certs_expiring", "warning", f"{n} certificate{'s' if n != 1 else ''} expire within {ps.expiry_warning_days} days",
@@ -330,13 +331,49 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
             "certificate installed by hand, or renewal turned off), and devices stop connecting when their certificate expires. Give each "
             "user a new link from their record.", "Review expiring certificates", "certificates:expiring",
             affected=len({c.identity_id for c in manual}), impact_at=min(c.not_after for c in manual), source_at=now)
+    if silent:
+        n = len(silent)
+        add("renewal_silent", "critical" if any(c.not_after <= urgent for c in silent) else "warning",
+            f"{n} device{'s haven’t' if n != 1 else ' hasn’t'} checked in for renewal in a week",
+            f"{'Their certificates are' if n != 1 else 'Its certificate is'} due for renewal, and the renewal task stopped checking in "
+            f"{renewal.SILENT_DAYS} or more days ago: the device is switched off or away, can't reach EasyEAP, or the task was removed. "
+            "It renews by itself once it's back; one that's gone for good can be revoked.",
+            "Review the certificates", "certificates:renewal", affected=len({c.identity_id for c in silent}),
+            impact_at=min(c.not_after for c in silent), source_at=max(c.renewal_checked_at for c in silent))
     if overdue:
         n = len(overdue)
-        add("renewal_overdue", "warning", f"{n} certificate{'s' if n != 1 else ''} should have renewed by {'themselves' if n != 1 else 'itself'}",
-            f"With {renewal.OVERDUE_LEFT_DAYS} days or less left, the device{'s haven’t' if n != 1 else ' hasn’t'} renewed: switched off or "
-            "away, the renewal task (or Group Policy) can't reach EasyEAP, or EasyEAP refused it (Audit log: Certificate renewal refused).",
-            "Review expiring certificates", "certificates:expiring", affected=len({c.identity_id for c in overdue}),
+        add("renewal_overdue", "critical" if any(c.not_after <= urgent for c in overdue) else "warning",
+            f"{n} certificate{'s' if n != 1 else ''} should have renewed by {'themselves' if n != 1 else 'itself'}",
+            f"The device{'s haven’t' if n != 1 else ' hasn’t'} renewed well into the renewal period: switched off or away, the renewal task "
+            "(or Group Policy) can't reach EasyEAP, or EasyEAP refused it (Audit log: Certificate renewal refused).",
+            "Review the certificates", "certificates:renewal", affected=len({c.identity_id for c in overdue}),
             impact_at=min(c.not_after for c in overdue), source_at=now)
+    for code, action, sev, one, many, body, label in (
+            ("renewal_conflict", "certificate.renewal_conflict", "critical", "A certificate was renewed with two keys",
+             "{n} certificates were renewed with two keys",
+             "A renewal arrived signed by a certificate that another key already renewed, and that newer certificate is in use: "
+             "two devices hold the same key, so it may have been copied. Revoke the certificate (with the certificates renewed "
+             "from it) and enroll the device again.", "Review the certificate"),
+            ("superseded_used", "certificate.superseded_used", "warning", "A renewed certificate is still in use",
+             "{n} renewed certificates are still in use",
+             "RADIUS accepted a certificate more than a day after the one that renewed it was first used. A Windows PC that kept "
+             "the old certificate can do that; so can a copied key. Check the device; revoke the old certificate if it isn't "
+             "needed.", "Review the certificate")):
+        flagged = s.execute(select(m.AuditEvent.target_id, func.max(m.AuditEvent.at)).where(
+            m.AuditEvent.tenant_id == t.id, m.AuditEvent.action == action, m.AuditEvent.at >= now - timedelta(days=14))
+            .group_by(m.AuditEvent.target_id)).all()
+        ids = [uuid.UUID(tid) for tid, _ in flagged if tid]
+        succ = m.Certificate.__table__.alias("succ")
+        # A conflict lasts while a certificate renewed from it isn't revoked; a superseded one in use while it's valid.
+        still = [exists().where(succ.c.renewal_of == m.Certificate.id, succ.c.status != "revoked")] if code == "renewal_conflict" else \
+            [m.Certificate.status != "revoked", m.Certificate.not_after > now]
+        live = s.execute(select(m.Certificate.id, m.Certificate.identity_id).where(
+            m.Certificate.tenant_id == t.id, m.Certificate.id.in_(ids), *still)).all() if ids else []
+        if live:
+            n, last = len(live), max(at for tid, at in flagged if tid in {str(c.id) for c in live})
+            add(code, sev, one if n == 1 else many.format(n=n), body, label,
+                f"certificate:{live[0].id}" if n == 1 else "audit", affected=len({c.identity_id for c in live if c.identity_id}),
+                impact_at=None, source_at=last)
 
     day = now - timedelta(hours=24)
     rows = s.execute(select(m.AuthEvent.reason_code, func.count(), func.count(distinct(m.AuthEvent.calling_station_id)), func.max(m.AuthEvent.at))

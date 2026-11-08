@@ -71,9 +71,11 @@ runs one command in Terminal, `bash ~/Downloads/EasyEAP-WiFi-Setup.sh`, and type
   has (a fixed address, DNS, one port) are kept: 802.1X goes on a copy of each, which NetworkManager prefers, so
   `--remove` brings the originals back unchanged. Nothing is reconnected while the script runs;
 - installs a daily systemd timer (or a cron job) that renews the certificate before it expires, signed with the
-  current key like the Windows renewal. The new key and request wait in `/etc/easyeap/<tenant>/` until the new
-  certificate is in: if the answer gets lost, the next run asks again with the same request, and EasyEAP sends the
-  certificate it already issued for it;
+  current key like the Windows renewal. Each run checks in with EasyEAP (signed with the key; the certificate's page
+  shows the last check-in) and renews once EasyEAP says renewal has started; when EasyEAP can't be reached, the
+  renewal period the script was made with decides. The new key and request wait in `/etc/easyeap/<tenant>/` until
+  the new certificate is in: if the answer gets lost, the next run asks again with the same request, and EasyEAP
+  sends the certificate it already issued for it;
 - checks the connection to EasyEAP: when the computer doesn't trust EasyEAP's certificate (a self-signed one), it
   accepts the public key EasyEAP had when it made the script. The link never appears on a command line, where other
   users of the computer could read it.
@@ -152,8 +154,28 @@ it was turned on don't have the wired settings until they enroll again (or IT in
 
 Certificates can't outlive the issuing CA: one issued when the CA has less time left than the template's lifetime
 ends with the CA, and the panel shows when to prepare and switch to the next issuing CA. Refused renewals are in the
-audit log (**Certificate renewal refused**, with the reason, once a day per certificate and reason). A certificate
-that should renew by itself and hasn't, two weeks into its window, shows on the dashboard.
+audit log (**Certificate renewal refused**, with the reason, once a day per certificate and reason).
+
+What each certificate's page shows under **Renewal** (docs/plans/cert-renewal.md §15b): what renews it (the Windows
+setup file, the Linux script, Group Policy, or nothing: a new link), when renewal starts, the renewal task's last
+check-in, and what it was renewed into. The panel counts the tenant's valid certificates: renew by themselves,
+haven't checked in for a week, overdue, need the user. On the dashboard:
+
+- **Devices haven't checked in for renewal in a week**: renewal tasks that check in daily (the next versions of the
+  setup file and the Linux script) and have gone quiet while their certificate is due.
+- **Certificates should have renewed by themselves**: two weeks into the renewal period (older tasks that ask only
+  when due: once 14 days are left). Critical when one has 14 days or less.
+- **A certificate was renewed with two keys** (critical): a renewal signed by a certificate another key already
+  renewed, when that newer certificate is in use. The key may have been copied: revoke the certificate with the ones
+  renewed from it, and enroll the device again.
+- **A renewed certificate is still in use** (warning): RADIUS accepted it more than a day after its successor was
+  first used.
+
+**Retire renewed certificates** (on by default) revokes a superseded certificate once its device has shown it holds
+the newer one (RADIUS accepted it, or the renewal task checked in with its key) and the old one hasn't connected for 7
+days. Revoking a certificate by hand also revokes the certificates renewed from it (the dialog lists them), unless
+you untick that (to revoke only an old certificate a device kept). A certificate that merely replaced it (Group
+Policy's after a setup file's, or one from another PC) isn't revoked with it.
 
 ## Revoking
 

@@ -16,8 +16,9 @@ const day = 864e5
 const iso = (ms: number) => new Date(Date.now() + ms).toISOString()
 
 const overview = (over: Partial<RenewalOverview['settings']> = {}): RenewalOverview => ({
-  settings: { user_certs: true, machine_certs: true, server_cert: true, renew_at_percent: 80, updated_at: null, updated_by: null, ...over },
-  limits: { min_percent: 50, max_percent: 90, rollback_days: 14 },
+  settings: { user_certs: true, machine_certs: true, server_cert: true, renew_at_percent: 80, retire_superseded: true, updated_at: null, updated_by: null, ...over },
+  limits: { min_percent: 50, max_percent: 90, rollback_days: 14, silent_days: 7, quiet_days: 7 },
+  counts: { auto: 41, silent: 2, overdue: 0, manual: 5 },
   templates: [
     { id: 'a', name: 'User Wi-Fi', purpose: 'user', validity_days: 365, renew_before_days: 73, group_policy: false },
     { id: 'b', name: 'EasyEAP computer', purpose: 'device', validity_days: 365, renew_before_days: 42, group_policy: true },
@@ -69,7 +70,22 @@ describe('Renewal panel', () => {
     expect(screen.getByText(/User Wi-Fi renews 110 days before expiry/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('switch', { name: 'User certificates' }))
     fireEvent.click(save)
-    await waitFor(() => expect(puts).toEqual([{ user_certs: false, machine_certs: true, server_cert: true, renew_at_percent: 70 }]))
+    await waitFor(() => expect(puts).toEqual([{ user_certs: false, machine_certs: true, server_cert: true, renew_at_percent: 70, retire_superseded: true }]))
+  })
+
+  it('shows how the certificates stand and saves the retirement switch', async () => {
+    const puts: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      if (init?.method === 'PUT') { puts.push(JSON.parse(init.body as string)); return json(200, overview({ retire_superseded: false })) }
+      return json(200, overview())
+    }))
+    wrap(<RenewalPanel />, ['certificates:read', 'ca:manage'])
+    expect(await screen.findByText('renew by themselves')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '2' })).toHaveAttribute('href', '/t/t1/certificates?status=renewal')
+    expect(screen.queryByRole('link', { name: '0' })).toBeNull()  // nothing overdue: no link
+    fireEvent.click(screen.getByRole('switch', { name: 'Retire renewed certificates' }))
+    fireEvent.click(screen.getByRole('button', { name: /Save renewal settings/ }))
+    await waitFor(() => expect(puts).toEqual([{ user_certs: true, machine_certs: true, server_cert: true, renew_at_percent: 80, retire_superseded: false }]))
   })
 
   it('says when turning server rotation back on rotates at once', async () => {
