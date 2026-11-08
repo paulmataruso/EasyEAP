@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router'
 import { TenantProvider } from '../../api/tenant'
 import type { RadiusClient } from '../../api/radius'
 import type { MonitoringResponse, RadiusDown, SyslogLine } from '../../api/switchAudit'
@@ -34,7 +35,7 @@ function response(syslog: Partial<NonNullable<MonitoringResponse['syslog']>>): M
 function show(r: MonitoringResponse) {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/tenants/t1/radius/clients/c1/monitoring' ? json(200, r) : json(404, { detail: 'not found' })))
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={qc}><TenantProvider tenant={tenant}><SwitchAuditPanel client={sw} /></TenantProvider></QueryClientProvider>)
+  render(<MemoryRouter><QueryClientProvider client={qc}><TenantProvider tenant={tenant}><SwitchAuditPanel client={sw} /></TenantProvider></QueryClientProvider></MemoryRouter>)
 }
 
 afterEach(() => vi.unstubAllGlobals())
@@ -62,11 +63,24 @@ describe('SwitchAuditPanel syslog', () => {
   })
 
   it('lists the coalesced messages', async () => {
-    show(response({ stats: { last_at: at, last_tag: 'DOT1X-5-FAIL', kept: 3 }, recent: [line({ count: 3, port: 'GigabitEthernet1/0/5', mac: '020000001103' })] }))
+    show(response({ stats: { last_at: at, last_tag: 'DOT1X-5-FAIL', received: 5, kept: 3 }, recent: [line({ count: 3, port: 'GigabitEthernet1/0/5', mac: '020000001103' })] }))
     fireEvent.click(await screen.findByRole('button', { name: 'What the switch says (1)' }))
-    expect(screen.getByText(/Today: 3 kept/)).toBeInTheDocument()
+    expect(screen.getByText(/Today: 5 received, 3 kept/)).toBeInTheDocument()
     const list = screen.getByRole('list', { name: 'What the switch says' })
     expect(list).toHaveTextContent('DOT1X-5-FAIL ×3')
     expect(list).toHaveTextContent('02:00:00:00:11:03')
+  })
+
+  it('shows the sessions the switch logged and links to the live view', async () => {
+    show(response({
+      stats: { last_at: at, received: 2, kept: 2 },
+      sessions: [{ port: 'GigabitEthernet1/0/24', mac: '00051B31576E', state: 'failed', method: 'dot1x', vlan: null, ip: null, session_id: 'AC10',
+        reason: 'Cred Fail', ssid: null, ap: null, first_at: at, last_at: at, ended_at: null, ended: null, active: true }],
+    }))
+    fireEvent.click(await screen.findByRole('button', { name: /What the switch says/ }))
+    expect(screen.getByText('Sessions the switch logged')).toBeInTheDocument()
+    expect(screen.getByText('00:05:1B:31:57:6E')).toBeInTheDocument()
+    expect(screen.getByText('802.1X · Reason: Cred Fail')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Live view' })).toHaveAttribute('href', '/t/t1/syslog?device=c1')
   })
 })

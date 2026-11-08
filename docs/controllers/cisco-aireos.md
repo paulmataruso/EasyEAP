@@ -35,3 +35,28 @@ AireOS accepts CoA on UDP 3799, which is EasyEAP's default for this controller t
   carry it.
 - The WLC sources RADIUS from its management interface; that's the address to register in EasyEAP.
 - `show client detail <mac>` shows the assigned VLAN after authentication.
+
+## Syslog
+
+EasyEAP can keep the controller's log and show it live (Investigate → Device syslog), decoded where it can: client
+association, authentication (with SSID and IP), failures, exclusions and disassociation (with the reason). AireOS
+(and the vWLC) sends syslog to **UDP 514 only**, so the EasyEAP server must publish 514 (`install.sh` does when the
+port is free; see DEPLOYMENT.md). In **RADIUS**, select the controller, then **Syslog from …** → **Keep syslog from this
+device**. In the web interface: Management → Logs → Config, Syslog Server IP Address: EasyEAP's address, Add, Syslog
+Level: Informational, Apply, then Save Configuration. The client messages are off until turned on, which only the CLI
+does; these lines set everything:
+
+```
+config logging syslog host <EasyEAP's address>
+config logging syslog level informational
+config logging syslog facility client authentication enable
+config logging syslog facility client authfail enable
+config logging syslog facility client deauthenticate enable
+config logging syslog facility client excluded enable
+config logging syslog facility client associate enable
+config logging syslog facility client disassociate enable
+save config
+```
+
+The controller sends from its management interface, as it does RADIUS. To stop: `config logging syslog host
+<EasyEAP's address> delete` (the panel has the full list).

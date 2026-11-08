@@ -1,0 +1,14 @@
+# Also receive syslog on UDP 514, the standard port. Cisco AireOS controllers (5520, 3504, 8540, vWLC) send syslog to
+# 514 only; everything else can use EASYEAP_SYSLOG_PORT (5514). install.sh adds this file to COMPOSE_FILE in .env when
+# nothing on the host already listens on UDP 514. To add it yourself, put this line in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.syslog514.yml
+# Like 5514, it's off the network unless EASYEAP_SYSLOG_BIND names the address devices reach EasyEAP on.
+# Both ports belong to one container: if something on the host takes UDP 514 later (rsyslog with a UDP input),
+# easyeap-syslog won't start and 5514 stops too. Remove the COMPOSE_FILE line from .env then.
+services:
+  easyeap-api:
+    environment:
+      EASYEAP_SYSLOG_STD_PORT: "514"   # the console then offers 514 in AireOS guidance
+  easyeap-syslog:
+    ports:
+      - "${EASYEAP_SYSLOG_BIND:-127.0.0.1}:514:5514/udp"

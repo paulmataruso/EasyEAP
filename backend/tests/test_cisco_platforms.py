@@ -363,9 +363,19 @@ def test_audit_blocks_per_family():
     assert "UDP 514 only" in old and not any(line.startswith("logging host") for line in old.splitlines())
     nx = service.config_block(MON, "10.9.9.9", ("10.9.9.9", 5514), {"platform": "nxos", "series": "n9k-fx", "version": "9.3(8)"})
     assert "snmp-server community <community> use-ipv4acl EASYEAP-SNMP" in nx and "group network-operator" in nx
-    assert "logging server 10.9.9.9 5 port 5514 use-vrf management" in nx
+    assert "logging server 10.9.9.9 6 port 5514 use-vrf management" in nx   # informational: the whole log
     n5k = service.config_block(MON, "10.9.9.9", ("10.9.9.9", 5514), {"platform": "nxos", "series": "n5k"})
-    assert "UDP 514 only" in n5k
+    assert "UDP 514 only" in n5k and "logging server" not in n5k.replace("! ", "")
+    # When EasyEAP also listens on 514, the switches that can't send elsewhere send there.
+    n5k_514 = service.config_block(MON, "10.9.9.9", ("10.9.9.9", 5514), {"platform": "nxos", "series": "n5k"}, port_514=True)
+    assert "\nlogging server 10.9.9.9 6 use-vrf management\n" in n5k_514
+    assert "no logging server 10.9.9.9" in service.removal_block(MON, "abc", ("10.9.9.9", 5514), "10.9.9.9", {"platform": "nxos", "series": "n5k"},
+                                                                  port_514=True)
+    old_514 = service.config_block(MON, "10.9.9.9", ("10.9.9.9", 5514), {"platform": "classic", "version": "15.0(2)SE11"}, port_514=True)
+    assert "\nlogging host 10.9.9.9\n" in old_514 and "\ndot1x logging verbose\n" in old_514
+    assert service.removal_block(MON, "abc", ("10.9.9.9", 5514), "10.9.9.9",
+                                                                      {"platform": "classic", "version": "15.0(2)SE11"}, port_514=True).startswith("no logging host 10.9.9.9\n")
+    assert "\nauthentication logging verbose\n" in classic
     sb = service.config_block(MON, "10.9.9.9", None, {"platform": "cbs", "series": "sx350"})
     assert "snmp-server community <community> ro 10.9.9.9 view EASYEAP-RO" in sb
     rm = service.removal_block(MON, "abc", None, "10.9.9.9", {"platform": "cbs", "series": "sx350"})

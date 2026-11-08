@@ -67,3 +67,20 @@ If the tenant uses dedicated ports, replace 1812/1813 with the ports on its RADI
   `ip radius source-interface`) is the address registered in EasyEAP.
 - `show wireless client mac-address <mac> detail` shows the VLAN EasyEAP assigned.
 - `test aaa` can't test EAP-TLS. Use a real device and read the EasyEAP Authentication log.
+
+## Syslog
+
+EasyEAP can keep the controller's whole log and show it live (Investigate → Device syslog), decoded where it can: a
+client joining (with its SSID), an exclusion (with the AP and the reason, such as an 802.1X credential failure), 802.1X
+and AAA failures, RADIUS servers going dead. In **RADIUS**, select the controller, then **Syslog from …** → **Keep
+syslog from this device**, and paste the line it shows:
+
+```
+logging host <EasyEAP's address> transport udp port 5514
+```
+
+Client messages are severity 5 and 6: leave `logging trap` at its default (informational). The 9800 sends from its
+wireless management interface, the address it sends RADIUS from. From the service port (Gi0, IOS-XE 17.6 or later),
+use `logging host <EasyEAP's address> vrf Mgmt-intf transport udp port 5514` and add the service port's address to the
+controller's syslog addresses in the panel. To stop: `no logging host <EasyEAP's address> transport udp port 5514`.
+Syslog isn't authenticated: it explains what happened and is never acted on by itself.

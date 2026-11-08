@@ -27,6 +27,7 @@ from app.routers import (
     certificates,
     dashboard,
     device_admin,
+    device_syslog,
     directory,
     enroll_public,
     enrollments,
@@ -55,7 +56,8 @@ app = FastAPI(
 )
 
 for r in (setup, auth, tenants, admins, dashboard, identities, directory, pki, certificates, enrollments, enroll_public, policy, radius,
-          events, system, backup, logs, agent, pki_public, mac, device_admin, autoenroll, switch_audit):
+          events, system, backup, logs, agent, pki_public, mac, device_admin, autoenroll, switch_audit,
+          device_syslog):
     app.include_router(r.router)
 app.include_router(backup.setup_router)
 app.include_router(autoenroll.public)  # /cep and /ces: Windows, Kerberos

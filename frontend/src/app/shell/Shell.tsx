@@ -5,7 +5,7 @@ import { Dialog, DropdownMenu, Popover } from 'radix-ui'
 import { NavLink, useLocation, useNavigate } from 'react-router'
 import {
   Building, Cable, Check, ChevronsUpDown, Clock, Command, FileBadge, FileKey, FilePlus, KeyRound, LayoutDashboard, ListOrdered, LogOut, Menu, Router,
-  ScrollText, Search, ServerCog, Settings, ShieldCheck, SquareTerminal, UserCog, Users, X, BookUser, History,
+  Logs, ScrollText, Search, ServerCog, Settings, ShieldCheck, SquareTerminal, UserCog, Users, X, BookUser, History,
 } from 'lucide-react'
 import { LogoMark, Wordmark } from '@/ui/Logo'
 import { cn } from '@/ui/lib'
@@ -45,7 +45,7 @@ function TenantSwitcher({ onNavigated }: { onNavigated?: () => void }) {
     if (id === current?.id) return
     // Keep the same section when switching; entity pages belong to the previous tenant, so land on the list.
     const section = location.pathname.split('/')[3] ?? 'dashboard'
-    const keep = ['dashboard', 'users', 'certificates', 'radius', 'mac', 'device-admin', 'policy', 'directory', 'pki', 'events', 'audit', 'settings']
+    const keep = ['dashboard', 'users', 'certificates', 'radius', 'mac', 'device-admin', 'policy', 'directory', 'pki', 'events', 'syslog', 'audit', 'settings']
     navigate(`/t/${id}/${keep.includes(section) ? section : 'dashboard'}`)
     onNavigated?.()
   }
@@ -244,6 +244,7 @@ function SidebarContent({ inputRef, onNavigated, onPalette }: { inputRef: React.
               { to: paths.dashboard(tid), label: 'Dashboard', icon: <LayoutDashboard aria-hidden /> },
               { to: paths.users(tid), label: 'Users', icon: <Users aria-hidden />, perm: 'identities:read' },
               { to: paths.events(tid), label: 'Authentication log', icon: <ScrollText aria-hidden />, perm: 'events:read' },
+              { to: paths.syslog(tid), label: 'Device syslog', icon: <Logs aria-hidden />, perm: 'radius:read' },
             ]} />
             <div>
               <p className="ee-nav-group">Enroll</p>

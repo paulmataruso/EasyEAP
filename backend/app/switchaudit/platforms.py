@@ -43,14 +43,24 @@ def v3_algorithms(profile: dict | None) -> tuple[str, str] | None:
 
 
 def _no_syslog_port(dest: str, port: int) -> list[str]:
-    return ["!", f"! Syslog: this switch sends syslog to UDP 514 only, and EasyEAP listens on {port}. The switch audit works without it",
-            f"! (SNMP only). To add it, EasyEAP must listen on 514 (EASYEAP_SYSLOG_PORT=514), then: logging host {dest}"]
+    return ["!", f"! Syslog: this switch sends syslog to UDP 514 only, and this EasyEAP server listens on {port} only. The switch",
+            "! audit works without it (SNMP only). The server's operator can publish UDP 514 as well",
+            f"! (deploy/docker-compose.syslog514.yml); this block then has the logging line for {dest}."]
+
+
+def _syslog_port(port: int, port_ok: bool, port_514: bool) -> int | None:
+    """The port this switch sends syslog to: EasyEAP's own, or 514 when the switch can't send elsewhere and EasyEAP
+    also listens there; None: it can't send to EasyEAP."""
+    if port_ok or port == 514:
+        return port
+    return 514 if port_514 else None
 
 
 # ── Classic IOS ──────────────────────────────────────────────────────────────
 
 
-def classic_block(mon: dict, src: str, view: list[tuple[str, str]], syslog: tuple[str, int] | None, port_ok: bool) -> list[str]:
+def classic_block(mon: dict, src: str, view: list[tuple[str, str]], syslog: tuple[str, int] | None, port_ok: bool,
+                  port_514: bool = False) -> list[str]:
     out = ["! EasyEAP switch audit: read-only SNMP for the 802.1X tables, from EasyEAP's address only.",
            f"! {src} is the address the switch sees EasyEAP's requests come from. If access list {CLASSIC_ACL} is already in use",
            "! (show access-lists), pick a free number from 1 to 99 and change it on every line.",
@@ -63,25 +73,27 @@ def classic_block(mon: dict, src: str, view: list[tuple[str, str]], syslog: tupl
     else:
         out.append(f"snmp-server community {COMMUNITY_PLACEHOLDER} view EASYEAP-RO RO {CLASSIC_ACL}")
     if syslog:
+        from app.switchaudit.service import TRAP_NOTE, VERBOSE, VERBOSE_NOTE, earlier_filter
         dest, port = syslog
-        if port_ok or port == 514:
-            # No logging discriminator on classic IOS: Cisco notes a memory leak with it on 15.2(7)E; EasyEAP's receiver
-            # keeps only the messages it needs.
-            out += ["!", "! Syslog: EasyEAP keeps the 802.1X, MAB, err-disable, RADIUS server and configuration messages.",
-                    f"logging host {dest}" + ("" if port == 514 else f" transport udp port {port}"),
-                    "! Pasted EasyEAP's earlier block (show running-config | include discriminator shows EASYEAP)? Remove it:",
-                    f"!   no logging host {dest} transport udp port {port} discriminator EASYEAP",
-                    "!   no logging discriminator EASYEAP"]
+        to = _syslog_port(port, port_ok, port_514)
+        if to is not None:
+            # No logging discriminator on classic IOS: Cisco notes a memory leak with it on 15.2(7)E. The whole log goes to
+            # EasyEAP, which decodes it.
+            out += ["!", "! Syslog: the switch's whole log goes to EasyEAP, which decodes the 802.1X and MAB sessions, err-disable,",
+                    "! RADIUS server and configuration messages, and shows every line as it arrives (Device syslog).",
+                    *VERBOSE_NOTE, *VERBOSE, f"logging host {dest}" + ("" if to == 514 else f" transport udp port {to}"), *TRAP_NOTE,
+                    *earlier_filter(mon)]
         else:
             out += _no_syslog_port(dest, port)
     return out
 
 
-def classic_removal(mon: dict, community: str | None, view: list[tuple[str, str]], syslog: tuple[str, int] | None, port_ok: bool) -> list[str]:
+def classic_removal(mon: dict, community: str | None, view: list[tuple[str, str]], syslog: tuple[str, int] | None, port_ok: bool,
+                    port_514: bool = False) -> list[str]:
     out = []
-    if syslog and (port_ok or syslog[1] == 514):
-        dest, port = syslog
-        out.append(f"no logging host {dest}" + ("" if port == 514 else f" transport udp port {port}"))
+    to = _syslog_port(syslog[1], port_ok, port_514) if syslog else None
+    if syslog and to is not None:
+        out.append(f"no logging host {syslog[0]}" + ("" if to == 514 else f" transport udp port {to}"))
     if mon.get("version") == "v3":
         out += [f"no snmp-server user {mon.get('user') or 'easyeap'} EASYEAP v3", "no snmp-server group EASYEAP v3 priv"]
     else:
@@ -94,7 +106,7 @@ def classic_removal(mon: dict, community: str | None, view: list[tuple[str, str]
 # ── NX-OS ────────────────────────────────────────────────────────────────────
 
 
-def nxos_block(mon: dict, src: str, profile: dict, syslog: tuple[str, int] | None, port_ok: bool) -> list[str]:
+def nxos_block(mon: dict, src: str, profile: dict, syslog: tuple[str, int] | None, port_ok: bool, port_514: bool = False) -> list[str]:
     vrf = profile.get("vrf") or "management"
     out = ["! EasyEAP switch audit: read-only SNMP (role network-operator), from EasyEAP's address only.",
            "! NX-OS has no SNMP views: the community or user reads what network-operator can, which is read-only.",
@@ -112,18 +124,20 @@ def nxos_block(mon: dict, src: str, profile: dict, syslog: tuple[str, int] | Non
                 f"! If the switch rejects use-ipv4acl (older NX-OS, Nexus 3000): snmp-server community {COMMUNITY_PLACEHOLDER} use-acl EASYEAP-SNMP"]
     if syslog:
         dest, port = syslog
-        if port_ok or port == 514:
-            out += ["!", "! Syslog: NX-OS sends everything at notification level (5) and above; EasyEAP keeps the 802.1X, err-disable,",
-                    "! RADIUS server and configuration messages.",
-                    f"logging server {dest} 5" + ("" if port == 514 else f" port {port}") + f" use-vrf {vrf}"]
+        to = _syslog_port(port, port_ok, port_514)
+        if to is not None:
+            out += ["!", "! Syslog: everything at informational (6) and above goes to EasyEAP, which decodes the 802.1X, err-disable,",
+                    "! RADIUS server and configuration messages, and shows every line as it arrives (Device syslog).",
+                    f"logging server {dest} 6" + ("" if to == 514 else f" port {to}") + f" use-vrf {vrf}"]
         else:
             out += _no_syslog_port(dest, port)
     return out
 
 
-def nxos_removal(mon: dict, community: str | None, profile: dict, syslog: tuple[str, int] | None, port_ok: bool) -> list[str]:
+def nxos_removal(mon: dict, community: str | None, profile: dict, syslog: tuple[str, int] | None, port_ok: bool,
+                 port_514: bool = False) -> list[str]:
     out = []
-    if syslog and (port_ok or syslog[1] == 514):
+    if syslog and _syslog_port(syslog[1], port_ok, port_514) is not None:
         out.append(f"no logging server {syslog[0]}")
     if mon.get("version") == "v3":
         out.append(f"no snmp-server user {mon.get('user') or 'easyeap'}")
@@ -166,7 +180,7 @@ def cbs_block(mon: dict, src: str, profile: dict, syslog: tuple[str, int] | None
     if syslog:
         dest, port = syslog
         tail = " severity informational" + ("" if series == "cbs220" else " description EasyEAP")
-        out += ["!", "! Syslog: EasyEAP keeps the messages it knows (Cisco documents none for 802.1X on these switches yet).",
+        out += ["!", "! Syslog: the switch's log goes to EasyEAP, which shows every line as it arrives (Device syslog).",
                 f"logging host {dest} port {port}{tail}"]
     return out
 

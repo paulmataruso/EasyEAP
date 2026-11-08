@@ -108,5 +108,7 @@ isn't `AUTHORIZED` loses access once enforced.
 NX-OS has no CISCO-AUTH-FRAMEWORK-MIB, so the switch audit reads ports (and err-disabled ports on the Nexus 9000), not
 802.1X sessions. The SNMP block uses an IPv4 ACL and the `network-operator` role (NX-OS has no SNMP views). It's
 SNMPv2c only: on NX-OS an SNMPv3 user is also a login account on the switch. Syslog goes to
-EasyEAP's port with `logging server <EasyEAP> 5 port <port> use-vrf management`. The Nexus 5000 and 3548, and NX-OS
-before 9.3(3) on the Nexus 9000 and 3000, send syslog only to UDP 514: their block says so and the audit runs on SNMP alone.
+EasyEAP's port with `logging server <EasyEAP> 6 port <port> use-vrf management` (severity 6, informational: NX-OS logs
+session creation at 5 and EPM address learning at 6). The Nexus 5000 and 3548, and NX-OS before 9.3(3) on the Nexus 9000
+and 3000, send syslog only to UDP 514: when the server publishes 514 their block uses it; otherwise it says so and the
+audit runs on SNMP alone. Device syslog (Investigate) shows everything the switch sends, live.

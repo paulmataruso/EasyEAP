@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import { qk } from './keys'
+import type { LoggedSession } from './deviceSyslog'
 
 export type SnmpVersion = 'v2c' | 'v3'
 export interface Monitoring {
@@ -104,7 +105,7 @@ export interface RadiusDown extends SyslogLine {
   /** It's EasyEAP's RADIUS address (or every server). */
   ours: boolean
 }
-export interface SyslogStats { day?: string; received?: number; kept?: number; filtered?: number; quota?: number; last_at?: string; last_tag?: string }
+export interface SyslogStats { day?: string; received?: number; kept?: number; quota?: number; last_at?: string | null; last_tag?: string | null }
 export interface MonitoringResponse {
   monitoring: Monitoring
   default_host: string
@@ -131,6 +132,8 @@ export interface MonitoringResponse {
     recent: SyslogLine[]
     /** The RADIUS servers the switch last said aren't responding. */
     radius_down: RadiusDown[]
+    /** Sessions put together from what the switch logged (last 24 hours). Absent from older API versions. */
+    sessions?: LoggedSession[]
   }
 }
 export interface MonitoringInput { host: string; port?: number; version: SnmpVersion; user?: string; auth?: 'sha256' | 'sha'; priv?: 'aes128' | 'aes256'; interval_minutes: number }

@@ -7,6 +7,24 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Device syslog, live** (Investigate → Device syslog; [plan and critique](docs/plans/syslog-full.md)): everything
+  this tenant's switches and controllers send, as it arrives (checked every second while the page is open). A message
+  repeated within the minute moves to the top with its count. Filter by device, access messages, warnings and errors,
+  or any text; pause, clear and load earlier messages. Today's received, kept and over-the-limit counts per device.
+  MSP operators also see the addresses syslog comes from that aren't a device with syslog on, with an example message.
+- **The whole log, decoded**: EasyEAP keeps every message (access messages 14 days, the rest 3) instead of only the
+  access ones, and puts sessions together from them: **Sessions the switch logged** on the switch audit (started,
+  authenticated, authorized or failed and why, VLAN, IP, ended by link down or a MAC move), and the clients a
+  controller logged. The switch configuration adds `authentication logging verbose`, `dot1x logging verbose` and
+  `mab logging verbose` (session start and success messages, off by default), and drops the logging discriminator; a
+  switch set up earlier gets `no logging discriminator EASYEAP` in its block.
+- **Syslog from controllers and other devices**: Catalyst 9800, AireOS and the vWLC, UniFi (access points' `hostapd`
+  and the console's client events), Meraki and others. In RADIUS, select the device, then **Keep syslog from this
+  device**: the panel has the lines to paste or the steps, the extra addresses it sends from (up to 8), its counters,
+  what it said about access and the clients its log describes. An address that overlaps another tenant's device is
+  refused.
+- **UDP 514 for syslog** (`deploy/docker-compose.syslog514.yml`): `install.sh` publishes it when the host doesn't use
+  it, for AireOS controllers and switches that send only there.
 - **The switch audit polls every minute by default** (1 to 60 minutes; a poll takes about 0.1 s), and a failed
   authentication in the switch's syslog brings the next poll forward to within seconds (30 s after the last poll at
   the earliest).
@@ -198,9 +216,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 - **IOS-XE 16.6.1 and other releases rejected parts of the classic and IOS-XE configuration**: commands now follow
   the switch's release (see above). `DEFAULT_CRITICAL_DATA_TEMPLATE` is replaced by EasyEAP's own critical template,
   except on switches already enforcing with it, whose policy name stays the same.
-- **The switch audit's syslog line was refused on IOS-XE** (`% Invalid input` at `transport`): the discriminator now
-  ends the line, `logging host <EasyEAP> transport udp port 5514 discriminator EASYEAP`, as IOS-XE 16.6 requires.
-  A switch that refused it needs only that line; the rest of the block was accepted.
+- **The switch audit's syslog line was refused on IOS-XE** (`% Invalid input` at `transport`): the line is now
+  `logging host <EasyEAP> transport udp port 5514`, with no discriminator (EasyEAP keeps the whole log, above). A
+  switch that refused it needs only the syslog part of the block; the rest was accepted.
 - **IOS-XE asks a yes/no question before its first control policy** (converting to the new-style configuration), and
   inside a paste it took the next pasted line as the answer. The safe-paste steps now run
   `authentication convert-to new-style` first.
@@ -210,6 +228,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Nexus switches send syslog at severity 6 (informational) so the session and address-learning messages arrive.
+- A live page that refreshes itself (Device syslog) no longer keeps an idle console session signed in.
+- System health's "Switch syslog" check is now "Device syslog" and counts every device address it receives from.
 - **Linux Wi-Fi steps without the script** now work with GNOME: forget the network saved by an earlier try (GNOME
   never shows the form again and keeps Tunneled TLS, which then asks for a user name and password), choose
   **TLS**, and store the key password for all users. The "For IT staff" section's unexplained NetworkManager and

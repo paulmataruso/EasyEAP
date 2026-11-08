@@ -415,6 +415,14 @@ def update_client(client_id: uuid.UUID, body: ClientUpdate, ctx: TenantCtx = Dep
         c.address = _norm(_check_address(s, ctx.id, body.address, exclude_id=c.id))
         if c.admin_enabled:
             _check_admin_address(s, ctx.id, c.address, c.id)
+        if (c.syslog or {}).get("enabled"):
+            # Syslog arrives on one port for every tenant: the new address mustn't overlap another tenant's device.
+            from app.routers.device_syslog import syslog_conflict
+            from app.switchaudit.syslog import claim_network
+            net = claim_network(c.address)
+            why = syslog_conflict(s, ctx.id, [net] if net else [], c.id)
+            if why:
+                raise HTTPException(status.HTTP_409_CONFLICT, why + " Turn this device's syslog off first, or use another address.")
     for k in ("name", "site", "coa_enabled", "coa_port"):
         if k in given and given[k] is not None:
             setattr(c, k, given[k])

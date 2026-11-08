@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     radius_public_address: str = ""  # address controllers use to reach RADIUS (shown in guides)
     syslog_bind: str = ""  # where easyeap-syslog's port is published (empty or loopback: not reachable by switches)
     syslog_port: int = 5514
+    syslog_std_port: int = 0  # 514 when deploy/docker-compose.syslog514.yml also publishes UDP 514 (AireOS can't send elsewhere)
 
     @property
     def syslog_receiving(self) -> bool:

@@ -68,10 +68,10 @@ def health(p: Principal = Depends(platform("platform:read")), s: Session = Depen
         slast = datetime.fromisoformat(hb["at"]) if hb.get("at") else None
         salive = bool(slast and now - slast < timedelta(minutes=3))
         unknown = hb.get("unknown_top") or []
-        detail = (f"Receiving from {hb.get('sources', 0)} switch address{'es' if hb.get('sources', 0) != 1 else ''}"
+        detail = (f"Receiving from {hb.get('sources', 0)} device address{'es' if hb.get('sources', 0) != 1 else ''}"
                   + (f"; {hb.get('unknown_source', 0)} datagrams from other addresses (most from {unknown[0]['address']}: if that's "
-                     "a Docker gateway, the switches' addresses are being rewritten)" if unknown else "")) if salive else \
-            "No recent heartbeat: switch syslog isn't being received. Check the easyeap-syslog container."
+                     "a Docker gateway, the devices' addresses are being rewritten)" if unknown else "")) if salive else \
+            "No recent heartbeat: device syslog isn't being received. Check the easyeap-syslog container."
         check("switch_syslog", salive, "valid" if salive else "warn", "Running" if salive else "Not running", detail,
               last_seen_at=slast.isoformat() if slast else None)
     from app.logs import syslog

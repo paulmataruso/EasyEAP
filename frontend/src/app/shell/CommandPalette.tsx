@@ -6,7 +6,7 @@ import { Dialog } from 'radix-ui'
 import { useNavigate } from 'react-router'
 import {
   ArrowLeft, Building, CornerDownLeft, EthernetPort, FileBadge, FilePlus, FileX, FlaskConical, KeyRound, LayoutDashboard, ListOrdered, LogOut, RefreshCw, Router,
-  ScrollText, Search, ServerCog, ShieldCheck, SquareTerminal, Users,
+  Logs, ScrollText, Search, ServerCog, ShieldCheck, SquareTerminal, Users,
 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/ui/lib'
@@ -67,6 +67,7 @@ export function CommandPalette({ open, onOpenChange, start }: { open: boolean; o
         { id: 'go-users', label: 'Users', hint: 'Go to', icon: <Users aria-hidden />, run: () => go(paths.users(tid)) },
         { id: 'go-certs', label: 'Certificates', hint: 'Go to', icon: <ShieldCheck aria-hidden />, run: () => go(paths.certificates(tid)) },
         { id: 'go-events', label: 'Authentication log', hint: 'Go to', icon: <ScrollText aria-hidden />, keywords: 'radius events rejects', run: () => go(paths.events(tid)) },
+        { id: 'go-syslog', label: 'Device syslog', hint: 'Go to', icon: <Logs aria-hidden />, keywords: 'live log switch controller messages diagnose', perm: 'radius:read', run: () => go(paths.syslog(tid)) },
         { id: 'go-policy', label: 'Access policy', hint: 'Go to', icon: <ListOrdered aria-hidden />, keywords: 'vlan rules', run: () => go(paths.policy(tid)) },
         { id: 'go-radius', label: 'RADIUS, controllers and switches', hint: 'Go to', icon: <Router aria-hidden />, keywords: 'nas wired', run: () => go(paths.radius(tid)) },
         { id: 'go-device-admin', label: 'Device administration', hint: 'Go to', icon: <SquareTerminal aria-hidden />, keywords: 'tacacs aaa switch login admin accounts', perm: 'admin:read', run: () => go(paths.deviceAdmin(tid)) },

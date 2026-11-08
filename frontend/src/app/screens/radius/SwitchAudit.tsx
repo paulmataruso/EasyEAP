@@ -3,7 +3,8 @@
 // The community or SNMPv3 keys are returned once by setup; like a RADIUS shared secret they're kept only in the setup
 // dialog's state, filled into the configuration block in the browser, and dropped when the dialog closes.
 import { useCallback, useEffect, useId, useState } from 'react'
-import { Activity, Check, Eye, EyeOff, MessageSquareText, RefreshCw, Settings2, ShieldAlert, Trash2 } from 'lucide-react'
+import { Link } from 'react-router'
+import { Activity, Check, Eye, EyeOff, Logs, MessageSquareText, RefreshCw, Settings2, ShieldAlert, Trash2 } from 'lucide-react'
 import { errorField } from '../../api/client'
 import type { RadiusClient } from '../../api/radius'
 import {
@@ -15,7 +16,9 @@ import { useReveal } from '../../api/oneTime'
 import { useTenant } from '../../api/tenant'
 import { ago, fmtDateTime } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
+import { paths } from '../../routes'
 import { Btn, Callout, Chip, CopyButton, EDialog, ESelect, ESwitch, ErrorState, Field, FillSecretButton, LoadingBlock, OneTimeSecret, Seg, SeverityChip, errorMessage, toast, toastError } from '../../ui'
+import { LoggedSessions } from './DeviceSyslog'
 import { Marked } from './Guide'
 
 const macText = (m: string | null) => (m && m.length === 12 ? m.match(/../g)!.join(':') : m ?? '')
@@ -171,7 +174,7 @@ export function SwitchAuditPanel({ client }: { client: RadiusClient }) {
           <Btn size="sm" variant="ghost" onClick={() => setSaid((v) => !v)} aria-expanded={said}>
             <MessageSquareText aria-hidden />{said ? 'Hide what the switch says' : `What the switch says (${r.syslog.recent.length})`}
           </Btn>
-          {said && <SyslogSection data={r} now={now} />}
+          {said && <SyslogSection data={r} now={now} clientId={client.id} />}
         </div>
       )}
 
@@ -204,16 +207,21 @@ function SwitchSays({ lines, now, compact }: { lines: SyslogLine[]; now: Date; c
   )
 }
 
-function SyslogSection({ data, now }: { data: MonitoringResponse; now: Date }) {
+function SyslogSection({ data, now, clientId }: { data: MonitoringResponse; now: Date; clientId: string }) {
+  const { tid } = useTenant()
   const sl = data.syslog!
   const st = sl.stats
   return (
     <div className="mt-2 space-y-2 rounded-[8px] border border-[var(--ee-line)] px-3 py-2.5">
-      <p className="ee-small ee-ink-3">
-        Syslog from the switch: the 802.1X, MAB, err-disable, RADIUS server and configuration messages of the last 24 hours. Syslog isn’t
-        authenticated, so a message is never a finding on its own; err-disable, security-violation and configuration messages bring the
-        next poll forward (to five minutes after the last one at the earliest).
-      </p>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <p className="ee-small ee-ink-3 min-w-0 max-w-[680px]">
+          The switch’s whole log is kept (access messages 14 days, the rest 3); below are its 802.1X, MAB, err-disable, RADIUS server and
+          configuration messages of the last 24 hours. Syslog isn’t authenticated, so a message is never a finding on its own; err-disable,
+          security-violation, failure and configuration messages bring the next poll forward (to 10 seconds after the message and 30 seconds
+          after the last poll at the earliest).
+        </p>
+        <Link to={paths.syslog(tid, { device: clientId })} className="ee-btn ee-btn-sm"><Logs aria-hidden />Live view</Link>
+      </div>
       {!sl.receiving ? (
         <Callout tone="neutral" title="This server doesn’t receive syslog">
           Set <span className="ee-mono">EASYEAP_SYSLOG_BIND</span> in the server’s <span className="ee-mono">.env</span> to the address switches reach
@@ -233,11 +241,12 @@ function SyslogSection({ data, now }: { data: MonitoringResponse; now: Date }) {
         </p>
       ) : (
         <p className="ee-small ee-ink-2">
-          Last message {ago(st.last_at, now)}{st.last_tag ? ` (${st.last_tag})` : ''}. Today: {st.kept ?? 0} kept, {st.filtered ?? 0} not about access
-          {st.quota ? `, ${st.quota} dropped over the rate limit` : ''}.
+          Last message {ago(st.last_at, now)}{st.last_tag ? ` (${st.last_tag})` : ''}. Today: {st.received ?? 0} received, {st.kept ?? 0} kept
+          {st.quota ? `, ${st.quota} over the rate limit` : ''}.
         </p>
       )}
       {sl.recent.length > 0 && <SwitchSays lines={sl.recent} now={now} />}
+      {sl.sessions && <LoggedSessions sessions={sl.sessions} now={now} />}
     </div>
   )
 }

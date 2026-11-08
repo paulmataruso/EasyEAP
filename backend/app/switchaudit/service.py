@@ -14,6 +14,7 @@ import secrets
 import string
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -107,7 +108,14 @@ AUTH_PLACEHOLDER = "<authentication key>"
 PRIV_PLACEHOLDER = "<privacy key>"
 
 
-SYSLOG_FACILITIES = "SESSION_MGR|AUTHMGR|DOT1X|DOT1X_SWITCH|MAB|PM|RADIUS|SYS"
+# The switch's whole log goes to EasyEAP (docs/plans/syslog-full.md §2, §9). These make IOS and IOS-XE log successful
+# sessions (START, SUCCESS) as well as failures; the positive form shows them, `no …` filters them (Catalyst
+# configuration guides 12.2(55)SE to 17.12; Cisco-IOS-XE-dot1x/sanet YANG). Valid in IBNS 2.0 new-style mode too.
+VERBOSE = ["authentication logging verbose", "dot1x logging verbose", "mab logging verbose"]
+VERBOSE_NOTE = ["! These three make the switch log successful sessions (START, SUCCESS), not only failures. They're global: the",
+                "! switch's log buffer and any other syslog server get those lines too."]
+TRAP_NOTE = ["! Session messages are severity 5 (notifications): leave logging trap at its default (informational), or set it",
+             "! no lower than notifications (show running-config | include logging trap)."]
 
 
 def _family(profile: dict | None, vendor: str) -> tuple[cp.Caps | None, dict]:
@@ -116,19 +124,20 @@ def _family(profile: dict | None, vendor: str) -> tuple[cp.Caps | None, dict]:
 
 
 def config_block(mon: dict, source: str, syslog: tuple[str, int] | None = None, profile: dict | None = None,
-                 vendor: str = "cisco-switch") -> str:
+                 vendor: str = "cisco-switch", port_514: bool = False) -> str:
     """The lines to paste on the switch: a read-only view of the six subtrees EasyEAP reads, an ACL that only lets
     EasyEAP in, and the community or SNMPv3 user; with `syslog` (the address and port switches send it to), a logging
-    host for the messages EasyEAP keeps. Nothing global changes (no logging levels, timestamps or AAA). Classic IOS,
-    Nexus and Cisco Business get their own form (app/switchaudit/platforms.py)."""
+    host for the switch's whole log and the three `… logging verbose` commands. No logging level, timestamp or AAA
+    changes. `port_514`: EasyEAP also listens on UDP 514 (for switches that can't send elsewhere). Classic IOS, Nexus
+    and Cisco Business get their own form (app/switchaudit/platforms.py)."""
     src = source or "<EasyEAP's address>"
     caps, p = _family(profile, vendor)
     if caps is not None and caps.dialect != "ibns2":
         port_ok = platforms.syslog_port_ok(p, caps)
         if caps.dialect in ("authmgr", "dot1x"):
-            return "\n".join(platforms.classic_block(mon, src, VIEW, syslog, port_ok)) + "\n"
+            return "\n".join(platforms.classic_block(mon, src, VIEW, syslog, port_ok, port_514)) + "\n"
         if caps.dialect == "nxos":
-            return "\n".join(platforms.nxos_block(mon, src, p, syslog, port_ok)) + "\n"
+            return "\n".join(platforms.nxos_block(mon, src, p, syslog, port_ok, port_514)) + "\n"
         if caps.dialect in ("sx", "cbs220"):
             return "\n".join(platforms.cbs_block(mon, src, p, syslog)) + "\n"
     v6 = ":" in src
@@ -152,18 +161,32 @@ def config_block(mon: dict, source: str, syslog: tuple[str, int] | None = None, 
     if syslog:
         dest, port = syslog
         mgmt = mon.get("host") or "the management address"
-        out += ["!", "! Syslog: EasyEAP keeps the 802.1X, MAB, err-disable, RADIUS server and configuration messages.",
-                f"logging discriminator EASYEAP facility includes {SYSLOG_FACILITIES} rate-limit 100",
-                f"logging host {dest} transport udp port {port} discriminator EASYEAP",
+        out += ["!", "! Syslog: the switch's whole log goes to EasyEAP, which decodes the 802.1X and MAB sessions, err-disable, RADIUS",
+                "! server and configuration messages, and shows every line as it arrives (Device syslog).", *VERBOSE_NOTE, *VERBOSE,
+                f"logging host {dest} transport udp port {port}", *TRAP_NOTE,
                 f"! EasyEAP only keeps messages sent from {mgmt}. If the switch would send them from another address, add:",
                 "!   logging source-interface <the interface with that address>",
                 "! From the management port of a Catalyst 9000 (Mgmt-vrf), use instead:",
-                f"!   logging host {dest} vrf Mgmt-vrf transport udp port {port} discriminator EASYEAP"]
+                f"!   logging host {dest} vrf Mgmt-vrf transport udp port {port}"]
+        out += earlier_filter(mon)
     return "\n".join(out) + "\n"
 
 
+def earlier_filter(mon: dict) -> list[str]:
+    """EasyEAP's earlier blocks filtered syslog at the switch (logging discriminator EASYEAP). Removing the
+    discriminator detaches it from the logging host, which stays and now sends everything (ESM command reference: "the
+    associations of all entries in the logging host list are removed"). A switch set up before syslog_form 2 gets the
+    command; a newer one only the explanation (the name wouldn't exist, and the switch would say so)."""
+    if mon.get("credentials_set_at") and int(mon.get("syslog_form") or 1) < 2:
+        return ["! This switch was set up with EasyEAP's earlier block, whose filter sent only failures. Remove the filter (the",
+                "! logging host line stays and sends the whole log; if the switch says the discriminator isn't found, it's gone):",
+                "no logging discriminator EASYEAP"]
+    return ["! Pasted an earlier EasyEAP block (show running-config | include discriminator shows EASYEAP)? Remove its filter:",
+            "!   no logging discriminator EASYEAP"]
+
+
 def removal_block(mon: dict, community: str | None = None, syslog: tuple[str, int] | None = None, source: str = "",
-                  profile: dict | None = None, vendor: str = "cisco-switch") -> str:
+                  profile: dict | None = None, vendor: str = "cisco-switch", port_514: bool = False) -> str:
     """Undo config_block (also how the old community is retired when credentials are regenerated). The logging host is
     removed with the line exactly as it was added: IOS keeps a host on another port as a separate entry. The view is
     removed one subtree at a time, numerically, as it was added (IOS XE 17.12 and 17.15 accept nothing else)."""
@@ -171,17 +194,20 @@ def removal_block(mon: dict, community: str | None = None, syslog: tuple[str, in
     if caps is not None and caps.dialect != "ibns2":
         port_ok = platforms.syslog_port_ok(p, caps)
         if caps.dialect in ("authmgr", "dot1x"):
-            return "\n".join(platforms.classic_removal(mon, community, VIEW, syslog, port_ok)) + "\n"
+            return "\n".join(platforms.classic_removal(mon, community, VIEW, syslog, port_ok, port_514)) + "\n"
         if caps.dialect == "nxos":
-            return "\n".join(platforms.nxos_removal(mon, community, p, syslog, port_ok)) + "\n"
+            return "\n".join(platforms.nxos_removal(mon, community, p, syslog, port_ok, port_514)) + "\n"
         if caps.dialect in ("sx", "cbs220"):
             return "\n".join(platforms.cbs_removal(mon, community, p, syslog, source or "<EasyEAP's address>")) + "\n"
     out = []
     if syslog:
         dest, port = syslog
-        out = [f"no logging host {dest} transport udp port {port} discriminator EASYEAP",
-               f"! or, if it was added in Mgmt-vrf: no logging host {dest} vrf Mgmt-vrf transport udp port {port} discriminator EASYEAP",
-               "no logging discriminator EASYEAP"]
+        out = [f"no logging host {dest} transport udp port {port}",
+               f"! or, if it was added in Mgmt-vrf: no logging host {dest} vrf Mgmt-vrf transport udp port {port}",
+               "! Set up with an earlier EasyEAP block (show running-config | include discriminator shows EASYEAP)? Also:",
+               "!   no logging discriminator EASYEAP",
+               "! The logging verbose lines are global; remove them only if nothing else relies on the success messages:",
+               *(f"!   no {v}" for v in VERBOSE)]
     if mon.get("version") == "v3":
         out += [f"no snmp-server user {mon.get('user') or 'easyeap'} EASYEAP v3", "no snmp-server group EASYEAP v3 priv"]
     else:
@@ -478,20 +504,29 @@ def prune(s: Session) -> int:
 # ── Output ───────────────────────────────────────────────────────────────────
 
 
+def syslog_tag(facility: str, severity: int, mnemonic: str) -> str:
+    return f"{facility}-{severity}-{mnemonic}" if mnemonic else (facility or "syslog")
+
+
 def syslog_out(r: m.SwitchSyslog) -> dict:
-    return {"id": str(r.id), "first_at": r.first_at.isoformat(), "last_at": r.last_at.isoformat(), "count": r.count,
-            "tag": f"{r.facility}-{r.severity}-{r.mnemonic}", "severity": r.severity, "port": r.port or None, "mac": r.mac or None,
-            "subject": r.subject or None,
-            "session_id": r.session_id or None, "text": r.text}
+    return {"id": str(r.id), "seq": r.seq, "first_at": r.first_at.isoformat(), "last_at": r.last_at.isoformat(), "count": r.count,
+            "tag": syslog_tag(r.facility, r.severity, r.mnemonic), "facility": r.facility, "mnemonic": r.mnemonic or None,
+            "severity": r.severity, "port": r.port or None, "mac": r.mac or None, "subject": r.subject or None,
+            "session_id": r.session_id or None, "text": r.text, "notable": r.notable, "source": r.source or None}
 
 
-def recent_syslog(s: Session, client_id: uuid.UUID, hours: int = 24, limit: int = 200, port: str = "", mac: str = "") -> list[m.SwitchSyslog]:
+def recent_syslog(s: Session, client_id: uuid.UUID, hours: int = 24, limit: int = 200, port: str = "", mac: str = "",
+                  notable: bool | None = None, facilities: Iterable[str] | None = None) -> list[m.SwitchSyslog]:
     q = select(m.SwitchSyslog).where(m.SwitchSyslog.client_id == client_id,
                                      m.SwitchSyslog.last_at >= datetime.now(UTC) - timedelta(hours=hours))
     if port:
         q = q.where(m.SwitchSyslog.port == port)
     if mac:
         q = q.where(m.SwitchSyslog.mac == mac)
+    if notable is not None:
+        q = q.where(m.SwitchSyslog.notable.is_(notable))
+    if facilities is not None:
+        q = q.where(m.SwitchSyslog.facility.in_(list(facilities)))
     return list(s.scalars(q.order_by(m.SwitchSyslog.last_at.desc()).limit(limit)))
 
 

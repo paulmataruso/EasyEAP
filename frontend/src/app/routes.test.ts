@@ -30,6 +30,8 @@ describe('targetPath', () => {
     expect(paths.policy(tid, { test: 'u1' })).toBe('/t/t-1/policy?test=u1')
     expect(paths.mac(tid, { device: 'd1' })).toBe('/t/t-1/mac?device=d1')
     expect(paths.deviceAdmin(tid)).toBe('/t/t-1/device-admin')
+    expect(paths.syslog(tid)).toBe('/t/t-1/syslog')
+    expect(paths.syslog(tid, { device: 'c 1' })).toBe('/t/t-1/syslog?device=c%201')
     expect(paths.deviceAdmin(tid, { tab: 'log' })).toBe('/t/t-1/device-admin?tab=log')
     expect(paths.deviceAdmin(tid, { account: 'a1' })).toBe('/t/t-1/device-admin?account=a1')
     expect(paths.mac(tid, { allow: 'AA:BB:CC:DD:EE:FF' })).toBe('/t/t-1/mac?allow=AA%3ABB%3ACC%3ADD%3AEE%3AFF')

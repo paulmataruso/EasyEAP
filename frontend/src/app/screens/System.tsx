@@ -21,7 +21,7 @@ const SERVICE: Record<string, { name: string; icon: ReactNode; what: string }> =
   radius: { name: 'RADIUS', icon: <Router />, what: 'FreeRADIUS and its agent: authenticates devices from a local snapshot.' },
   worker: { name: 'Background worker', icon: <Cog />, what: 'Directory sync, hourly snapshot rebuilds, CRLs, renewals and retention.' },
   collector: { name: 'Switch collector', icon: <Network />, what: 'Polls monitored switches over SNMP for the switch audit.' },
-  switch_syslog: { name: 'Switch syslog', icon: <Network />, what: 'Receives monitored switches’ syslog for the switch audit (“the switch says”).' },
+  switch_syslog: { name: 'Device syslog', icon: <Network />, what: 'Receives switches’ and controllers’ syslog: the switch audit’s “the switch says”, and Investigate → Device syslog.' },
   syslog: { name: 'Remote syslog', icon: <Send />, what: 'Forwards the audit trail, authentication events and system log.' },
 }
 

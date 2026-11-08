@@ -64,3 +64,16 @@ how often they re-authenticate, and which `NAS-Port-Type` they send. If a UniFi 
 counts a request with no SSID as wired. Check the first requests' **Network** column says Wired. MAC-Based mode is
 unverified too: EasyEAP doesn't check the `Calling-Station-Id` UniFi reports.
 
+## Syslog
+
+EasyEAP can keep the access points' and console's logs and show them live (Investigate → Device syslog), decoded
+where it can: a client associating, authenticating (with the EAP type) or failing (each access point's `hostapd`), and
+the console's client events (connected, disconnected, roamed). In **RADIUS**, select the UniFi entry, then **Syslog
+from …** → **Keep syslog from this device**. In UniFi Network 8.5 or later: Settings → Control Plane → Integrations →
+Activity Logging (Syslog) → SIEM Server (some versions: Settings → CyberSecure → Traffic Logging → Activity Logging);
+earlier versions: Settings → Site → Remote Logging, Enable Remote Syslog Server. Server: EasyEAP's address, port 5514.
+Leave debug logs off.
+
+Each access point sends its own log, from its own address, so this RADIUS client's range must cover the access
+points. The console sends the client events from its own address: add it to the device's syslog addresses in the
+panel. If the UniFi Network application runs on the EasyEAP server, both want UDP 5514: change `EASYEAP_SYSLOG_PORT`.

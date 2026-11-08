@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { DropdownMenu } from 'radix-ui'
-import { BookOpen, ChevronDown, Ellipsis, EthernetPort, MonitorDown, Pencil, Plus, RotateCw, Router, Send, Trash2, Wifi } from 'lucide-react'
+import { BookOpen, ChevronDown, Ellipsis, EthernetPort, Logs, MonitorDown, Pencil, Plus, RotateCw, Router, Send, Trash2, Wifi } from 'lucide-react'
 import { cn } from '@/ui/lib'
 import { api } from '../api/client'
 import { qk } from '../api/keys'
@@ -18,6 +18,7 @@ import { useNow } from '../lib/useNow'
 import { paths } from '../routes'
 import { Btn, Callout, Chip, Empty, ErrorState, HealthDot, LoadingBlock, PageHeader, Panel, SectionHeader, Skeleton, toast, type Tone } from '../ui'
 import { AddControllerDialog, DeleteControllerDialog, EditControllerDialog, RotateSecretDialog } from './radius/Controllers'
+import { DeviceSyslogPanel } from './radius/DeviceSyslog'
 import { ControllerGuides } from './radius/Guide'
 import { AddSwitchDialog, ModeChip, ServesChips, SwitchPanel, WiredKitDialog } from './radius/Switches'
 import { GroupPolicyDialog } from './radius/GroupPolicy'
@@ -153,6 +154,12 @@ export default function Radius() {
             <section aria-labelledby="rad-sw-h" className="mt-5 border-t border-[var(--ee-line)] pt-4">
               <h3 id="rad-sw-h" className="ee-h3 mb-3 flex items-center gap-2"><EthernetPort className="size-4 ee-ink-3" aria-hidden />Wired 802.1X on {selected.name}</h3>
               <SwitchPanel client={selected} settings={s} />
+            </section>
+          )}
+          {s && selected && !(selected.vendor === 'cisco-switch' && selected.monitoring?.set_up) && (
+            <section aria-labelledby="rad-sl-h" className="mt-5 border-t border-[var(--ee-line)] pt-4">
+              <h3 id="rad-sl-h" className="ee-h3 mb-3 flex items-center gap-2"><Logs className="size-4 ee-ink-3" aria-hidden />Syslog from {selected.name}</h3>
+              <DeviceSyslogPanel key={selected.id} client={selected} />
             </section>
           )}
           {data.unattributed && <UnattributedNote u={data.unattributed} />}

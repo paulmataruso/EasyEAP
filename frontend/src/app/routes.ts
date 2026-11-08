@@ -20,6 +20,7 @@
 //   device-admin?account=<id>    open that local account
 //   device-admin?device=<id>     open that device's configuration
 //   autoenroll?tab=settings|log  show that tab
+//   syslog?device=<clientId>     show one device's syslog
 import type { ActionTarget } from './api/types'
 
 const t = (tid: string) => `/t/${tid}`
@@ -52,6 +53,7 @@ export const paths = {
   pki: (tid: string) => `${t(tid)}/pki`,
   events: (tid: string, q?: { reason?: string; result?: string; event?: string; network?: 'wired' | 'wireless' }) =>
     `${t(tid)}/events${q?.event ? `?event=${encodeURIComponent(q.event)}` : q?.reason ? `?reason=${q.reason}` : q?.result ? `?result=${q.result}` : q?.network ? `?network=${q.network}` : ''}`,
+  syslog: (tid: string, q?: { device?: string }) => `${t(tid)}/syslog${q?.device ? `?device=${encodeURIComponent(q.device)}` : ''}`,
   tenantAudit: (tid: string) => `${t(tid)}/audit`,
   setup: (tid: string) => `${t(tid)}/setup`,
   settings: (tid: string) => `${t(tid)}/settings`,

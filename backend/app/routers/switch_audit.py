@@ -17,7 +17,7 @@ from app.deps import TenantCtx, require
 from app.pki import crypto
 from app.radius import cisco_platforms as cp
 from app.security.ratelimit import limiter
-from app.switchaudit import platforms, service
+from app.switchaudit import devicelog, platforms, service, syslog
 from app.switchaudit.service import MonitoringError, MonitoringIn
 
 router = APIRouter(prefix="/api/tenants/{tenant_id}/radius", tags=["switch-audit"])
@@ -61,7 +61,7 @@ def removal_changes(c: m.RadiusClient, vendor: str, profile: dict | None) -> boo
         return False
     if unavailable(vendor, profile):
         return True
-    return _removal(mon, c) != service.removal_block(mon, syslog=_syslog_target(), source=_source_address(), profile=profile,
+    return _removal(mon, c) != service.removal_block(mon, syslog=_syslog_target(), source=_source_address(), profile=profile, port_514=_port_514(),
                                                      vendor=vendor)
 
 
@@ -81,9 +81,15 @@ def _syslog_target() -> tuple[str, int] | None:
     return (dest or "<EasyEAP's address>", st.syslog_port)
 
 
+def _port_514() -> bool:
+    """EasyEAP also receives syslog on UDP 514 (deploy/docker-compose.syslog514.yml), for devices that can't send elsewhere."""
+    st = get_settings()
+    return st.syslog_receiving and (st.syslog_std_port == 514 or st.syslog_port == 514)
+
+
 def _removal(mon: dict, c: m.RadiusClient, community: str | None = None) -> str:
     return service.removal_block(mon, community=community, syslog=_syslog_target(), source=_source_address(), profile=c.wired_profile,
-                                 vendor=c.vendor)
+                                 vendor=c.vendor, port_514=_port_514())
 
 
 def _heartbeat(s, key: str) -> dict:
@@ -124,19 +130,33 @@ def get_monitoring(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radiu
     resolved = s.scalars(select(m.SwitchFinding).where(m.SwitchFinding.client_id == c.id, m.SwitchFinding.resolved_at.is_not(None))
                          .order_by(m.SwitchFinding.resolved_at.desc()).limit(20)).all()
     requested = st.poll_requested_at if st else None
-    said = service.recent_syslog(s, c.id) if mon.get("host") else []
+    # Notable messages only: the whole log (links, PoE, …) would push the evidence out. RADIUS servers on their own query,
+    # so a server reported dead hours ago still shows.
+    said = service.recent_syslog(s, c.id, notable=True) if mon.get("host") else []
+    servers = service.recent_syslog(s, c.id, limit=50, facilities=syslog.RADIUS_FACILITIES) if mon.get("host") else []
     target = _syslog_target()
+    stats = s.get(m.SyslogStats, c.id)
     return {"monitoring": service.monitoring_out(c), "default_host": service.default_host(c), "state": service.state_out(st),
             "findings": [{**service.finding_out(f), "switch_says": service.says_about(said, f.port, f.mac)} for f in rows if f.opened_at is not None],
             "pending": sum(1 for f in rows if f.opened_at is None), "resolved": [service.finding_out(f) for f in resolved],
-            "config": service.config_block(mon or {"version": "v2c"}, _source_address(), target, c.wired_profile, c.vendor) if mon.get("host") else None,
+            "config": service.config_block(mon or {"version": "v2c"}, _source_address(), target, c.wired_profile, c.vendor, _port_514())
+            if mon.get("host") else None,
             "removal": _removal(mon, c) if mon.get("host") else None,
             "source_address": _source_address() or None, "collector": collector_status(s),
             "poll_requested_at": requested.isoformat() if requested else None,
             "syslog": {"receiving": target is not None, "listening": _heartbeat(s, "syslog_heartbeat")["alive"],
                        "address": target[0] if target else None, "port": target[1] if target else None,
-                       "stats": (st.syslog if st else None) or {}, "recent": [service.syslog_out(r) for r in said[:30]],
-                       "radius_down": service.radius_down(said, _source_address(), _heard_since(s, c.id))}}
+                       "stats": stats_out(stats), "recent": [service.syslog_out(r) for r in said[:30]],
+                       "radius_down": service.radius_down(servers, _source_address(), _heard_since(s, c.id)),
+                       "sessions": devicelog.syslog_sessions(devicelog.decode_rows(s, c.id)) if mon.get("host") else []}}
+
+
+def stats_out(st: m.SyslogStats | None) -> dict:
+    """Today's counters for one device (yesterday's read as nothing)."""
+    if st is None or st.day != datetime.now(UTC).date():
+        return {}
+    return {"day": st.day.isoformat(), "received": st.received, "kept": st.kept, "quota": st.quota,
+            "last_at": st.last_at.isoformat() if st.last_at else None, "last_tag": st.last_tag or None}
 
 
 @router.get("/clients/{client_id}/monitoring/syslog")
@@ -182,7 +202,9 @@ def setup_monitoring(client_id: uuid.UUID, body: dict, ctx: TenantCtx = Depends(
     creds = service.new_credentials(cfg.version)
     now = datetime.now(UTC)
     mon = {**cfg.model_dump(), "enabled": False, "credentials_set_at": now.isoformat(), "set_by": ctx.actor.label[:254],
-           "pinned": old.get("pinned") if old.get("host") == cfg.host else {}}
+           "pinned": old.get("pinned") if old.get("host") == cfg.host else {},
+           # 2: the syslog block without a discriminator. A switch first set up before keeps 1 (its block removes the filter).
+           "syslog_form": old.get("syslog_form") or (1 if old.get("credentials_set_at") else 2)}
     c.monitoring, c.snmp_secret_ct = mon, crypto.encrypt(ctx.id, json.dumps(creds))
     audit.record(ctx.session, ctx.actor, "radius.monitoring_setup", tenant_id=ctx.id, target_type="radius_client", target_id=c.id,
                  target_label=c.name, detail={"host": cfg.host, "version": cfg.version, "interval_minutes": cfg.interval_minutes,
@@ -198,7 +220,7 @@ def setup_monitoring(client_id: uuid.UUID, body: dict, ctx: TenantCtx = Depends(
         retire = "".join(line + "\n" for line in service.removal_block(old, profile=c.wired_profile, vendor=c.vendor).splitlines()
                          if line.startswith(("no snmp-server user", "no snmp-server group")))
     return {"monitoring": service.monitoring_out(c), "credentials": {**creds, "user": cfg.user if cfg.version == "v3" else None},
-            "config": service.config_block(mon, _source_address(), _syslog_target(), c.wired_profile, c.vendor), "retire": retire}
+            "config": service.config_block(mon, _source_address(), _syslog_target(), c.wired_profile, c.vendor, _port_514()), "retire": retire}
 
 
 class MonitoringUpdate(BaseModel):

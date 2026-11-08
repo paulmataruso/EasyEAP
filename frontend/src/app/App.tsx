@@ -19,6 +19,7 @@ const NewTenant = lazy(() => import('./screens/NewTenant'))
 const System = lazy(() => import('./screens/System'))
 const SystemLog = lazy(() => import('./screens/SystemLog'))
 const Events = lazy(() => import('./screens/Events'))
+const DeviceSyslog = lazy(() => import('./screens/DeviceSyslog'))
 const Users = lazy(() => import('./screens/Users'))
 const UserDetail = lazy(() => import('./screens/UserDetail'))
 const Certificates = lazy(() => import('./screens/Certificates'))
@@ -136,6 +137,7 @@ export function App() {
                   <Route path="certificates" element={<Certificates />} />
                   <Route path="certificates/:id" element={<CertificateDetail />} />
                   <Route path="events" element={<Events />} />
+                  <Route path="syslog" element={<DeviceSyslog />} />
                   <Route path="policy" element={<Policy />} />
                   <Route path="radius" element={<Radius />} />
                   <Route path="mac" element={<MacAllowList />} />

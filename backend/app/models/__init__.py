@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -422,6 +423,9 @@ class RadiusClient(Base):
     # MonitoringIn; no secrets) and the community or SNMPv3 keys as one Transit-encrypted JSON object.
     monitoring: Mapped[dict] = mapped_column(JSONB, default=dict)
     snmp_secret_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Device syslog (docs/plans/syslog-full.md §5): {"enabled": bool, "addresses": [extra source addresses]}. A switch
+    # with the audit set up sends from its verified SNMP address without this.
+    syslog: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
 
 
 class AuthEvent(Base):
@@ -653,7 +657,7 @@ class SwitchState(Base):
     slow: Mapped[bool] = mapped_column(Boolean, default=False)  # the last poll took over a minute: polled half as often
     next_poll_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     poll_requested_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)  # "Poll now", or a syslog message
-    syslog: Mapped[dict] = mapped_column(JSONB, default=dict)  # today's counters: received, kept, filtered, quota; last_at
+    syslog: Mapped[dict] = mapped_column(JSONB, default=dict)  # no longer written (0012): the counters are in syslog_stats
 
 
 class SwitchFinding(Base):
@@ -684,10 +688,14 @@ class SwitchFinding(Base):
 
 
 class SwitchSyslog(Base):
-    """What a switch said over syslog (app/switchaudit/syslog.py), coalesced per message, port and MAC per minute.
-    Unauthenticated: shown as "the switch says", never a finding. Kept 14 days."""
+    """What a device (switch or controller) said over syslog (app/switchaudit/syslog.py), every message, coalesced per
+    identical text per minute. Unauthenticated: shown as "the device says", never a finding. Notable rows (the ones
+    EasyEAP decodes) are kept 14 days, the rest 3. `seq` is set by a trigger on every insert and update: the live
+    view's cursor (one writer, the receiver, keeps commit order = seq order)."""
     __tablename__ = "switch_syslog"
-    __table_args__ = (Index("ix_switch_syslog_client_last", "client_id", "last_at"),)
+    __table_args__ = (Index("ix_switch_syslog_client_last", "client_id", "last_at"),
+                      Index("ix_switch_syslog_tenant_seq", "tenant_id", "seq"),
+                      Index("ix_switch_syslog_client_seq", "client_id", "seq"))
     id: Mapped[uuid.UUID] = uuid_pk()
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
     client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radius_clients.id", ondelete="CASCADE"))
@@ -700,8 +708,25 @@ class SwitchSyslog(Base):
     port: Mapped[str] = mapped_column(String(64), default="")
     mac: Mapped[str] = mapped_column(String(12), default="")
     session_id: Mapped[str] = mapped_column(String(64), default="")
-    subject: Mapped[str] = mapped_column(String(64), default="")  # a RADIUS server, who configured, an err-disable cause
+    subject: Mapped[str] = mapped_column(String(64), default="")  # a RADIUS server, who configured, an err-disable cause, an AP
     text: Mapped[str] = mapped_column(String(500))
+    seq: Mapped[int] = mapped_column(BigInteger, server_default=func.nextval("switch_syslog_seq"))
+    notable: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    source: Mapped[str] = mapped_column(String(64), default="", server_default="")  # the sender's address
+
+
+class SyslogStats(Base):
+    """Today's syslog counters per device, written by the receiver every few seconds (the quota reads `bytes`)."""
+    __tablename__ = "syslog_stats"
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radius_clients.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    day: Mapped[date] = mapped_column(Date)
+    received: Mapped[int] = mapped_column(BigInteger, default=0)
+    kept: Mapped[int] = mapped_column(BigInteger, default=0)
+    quota: Mapped[int] = mapped_column(BigInteger, default=0)  # not stored: over the tenant's daily bytes, the device's rate or the open-entry caps
+    bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    last_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    last_tag: Mapped[str] = mapped_column(String(100), default="")
 
 
 class AgentStatus(Base):

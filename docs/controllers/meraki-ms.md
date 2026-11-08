@@ -41,3 +41,10 @@ re-authenticate.
 No admin logins over TACACS+, no switch audit (Meraki exposes no 802.1X data over SNMP), and no CoA (above). EasyEAP
 doesn't require Message-Authenticator from Meraki switches; requests carrying Proxy-State without it are still
 dropped.
+
+## Syslog
+
+Meraki switches can send their event log: Dashboard → Network-wide → General → Reporting → Syslog servers → Add a
+syslog server, EasyEAP's address and port 5514, role Switch event log. Then, in **RADIUS**, select the switch, then
+**Syslog from …** → **Keep syslog from this device**. Each switch sends from its own address. Messages appear live in
+Investigate → Device syslog; EasyEAP doesn't decode Meraki's format into sessions yet.

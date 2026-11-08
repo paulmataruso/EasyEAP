@@ -49,8 +49,8 @@ export function messageFrom(body: unknown, status: number): string {
   return `Request failed (${status}).`
 }
 
-async function request<T>(method: string, path: string, body?: unknown, init?: { signal?: AbortSignal; raw?: boolean }): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' }
+async function request<T>(method: string, path: string, body?: unknown, init?: { signal?: AbortSignal; raw?: boolean; headers?: Record<string, string> }): Promise<T> {
+  const headers: Record<string, string> = { Accept: 'application/json', ...init?.headers }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (method !== 'GET' && method !== 'HEAD' && csrfToken) headers['X-CSRF-Token'] = csrfToken
   let res: Response
@@ -83,6 +83,8 @@ export function errorField(e: unknown): string | null {
 
 export const api = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, { signal }),
+  /** GET that doesn't count as activity: a page polling on its own doesn't keep an idle session alive (deps.py). */
+  poll: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, { signal, headers: { 'X-EasyEAP-Passive': '1' } }),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body ?? {}),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body ?? {}),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body ?? {}),

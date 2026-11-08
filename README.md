@@ -125,7 +125,8 @@ TACACS+, with roles, an admin log of every command, and the device's local accou
 **A switch audit that checks the switch**<br>
 EasyEAP reads what each Cisco switch reports over SNMP (v2c, or v3 encrypted) and compares it with its own answers:
 unprotected ports, devices it never accepted or has since denied, sessions in the wrong VLAN. With syslog it also shows
-what the switch says: 802.1X failures, err-disabled ports, RADIUS servers it can't reach.
+what the switch says: 802.1X failures, err-disabled ports, RADIUS servers it can't reach. **Device syslog** shows
+everything switches and controllers (Catalyst 9800, AireOS, UniFi) send, live, decoded into sessions and clients.
 
 </td>
 <td width="50%" valign="top">

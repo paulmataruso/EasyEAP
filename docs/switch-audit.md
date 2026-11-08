@@ -25,14 +25,12 @@ this page and the console differ, the console is current.
 | Classic IOS before 12.2(50)SE, SG200, Meraki MS | No. |
 | UniFi, others | No. UniFi switches publish no 802.1X MIB; a UniFi Network API audit may come later. |
 
-The SNMP and syslog block follows the switch's family: a numbered ACL (98) and no logging discriminator on classic
-IOS (Cisco links the discriminator to a memory leak there; the block says how to remove one an earlier EasyEAP block
-added); an IPv4 ACL and the `network-operator` role on NX-OS, which has no SNMP views; the community limited to
+The SNMP and syslog block follows the switch's family: a numbered ACL (98) on classic IOS; an IPv4 ACL and the `network-operator` role on NX-OS, which has no SNMP views; the community limited to
 EasyEAP's address on Cisco Business. SNMPv3 algorithms are chosen on IOS-XE only: classic IOS uses SHA-1 and AES-128,
 Cisco Business SHA-256 and AES-128. Nexus switches (where an SNMPv3 user is also a login account) and the SG300/SF300
 (DES only) use SNMPv2c. Switches that send syslog only
-to UDP 514 (classic IOS before 15.2(1)E, Nexus 5000 and 3548, NX-OS before 9.3(3) on the Nexus 9000 and 3000) get the
-SNMP block with a note: the audit works without syslog.
+to UDP 514 (classic IOS before 15.2(1)E, Nexus 5000 and 3548, NX-OS before 9.3(3) on the Nexus 9000 and 3000) send it
+there when the server publishes UDP 514 (below); otherwise their block says so, and the audit works without syslog.
 
 ## How it works
 
@@ -173,17 +171,24 @@ of asking you to paste `show access-session`. You can still paste it.
 | The last poll failed: "couldn't store this poll's result" | The database was unavailable or rejected the result; the collector's log has the error. The switch is polled again at the next interval. |
 | Sessions not readable over SNMP | `show snmp view` includes 1.3.6.1.4.1.9.9.656; some releases don't implement the MIB. Reachability and err-disable checks still run. |
 | The collector isn't running | System health → Switch collector. On the server: `docker compose up -d easyeap-collector`, and its log: `docker compose logs easyeap-collector`. |
-| No syslog from the switch | `EASYEAP_SYSLOG_BIND` is set (the audit says when it isn't); UDP 5514 (or `EASYEAP_SYSLOG_PORT`) is open from the switch to that address; `show logging` lists the host and counts messages sent; the switch sends from the address EasyEAP polls (`logging source-interface`); the switch's latest poll succeeded. System health → Switch syslog lists the busiest addresses messages came from that aren't a monitored switch: one gateway address for everything means Docker is rewriting the source address (see `docs/DEPLOYMENT.md`). |
+| No syslog from the switch | Device syslog (the live view) shows nothing from it. `EASYEAP_SYSLOG_BIND` is set (the audit says when it isn't); UDP 5514 (or `EASYEAP_SYSLOG_PORT`) is open from the switch to that address; `show logging` lists the host and counts messages sent; the switch sends from the address EasyEAP polls (`logging source-interface`); the switch's latest poll succeeded. Device syslog lists, for MSP operators, the busiest addresses messages came from that aren't a device with syslog on: one gateway address for everything means Docker is rewriting the source address (see `docs/DEPLOYMENT.md`). |
 | The syslog receiver isn't running | System health → Switch syslog. On the server: `docker compose up -d easyeap-syslog`, and its log: `docker compose logs easyeap-syslog`. |
 | Poll one switch by hand | `docker compose exec easyeap-collector python -m app.switchaudit.collector --once <switch id>` prints the result. |
 
 ## Syslog: what the switch says
 
-With syslog, the audit also shows what the switch logs about access: 802.1X and MAB failures, security violations,
-VLANs EasyEAP sent that the switch doesn't have, err-disabled and recovered ports, its RADIUS servers going dead or
-alive, and configuration changes. Messages appear on the switch's audit (**What the switch says**, last 24 hours) and
-under the findings for the same device or port; the API keeps 14 days (`GET …/clients/<id>/monitoring/syslog`, by port
-or MAC).
+With syslog, the audit also shows what the switch logs: 802.1X and MAB sessions starting, succeeding and failing (with
+the reason), security violations, VLANs EasyEAP sent that the switch doesn't have, err-disabled and recovered ports,
+its RADIUS servers going dead or alive, and configuration changes. The switch's audit shows **What the switch says**
+(the access messages of the last 24 hours) and **Sessions the switch logged**: each port and device's session put
+together from those messages (started, authenticated, authorized or failed and why, its VLAN and IP, and when it
+ended: link down, a MAC move). Messages also appear under the findings for the same device or port.
+
+**The whole log is kept**, not only the access messages: **Device syslog** (under Investigate) shows everything every
+switch and controller sends, live, each message as it arrives (it checks every second while the page is open; a
+message repeated within the minute moves to the top with its count). Filter by device, access messages only, warnings
+and errors, or any text (a port, a MAC, a user). Access messages are kept 14 days, the rest 3. The API keeps the same
+(`GET …/clients/<id>/monitoring/syslog`, by port or MAC; `GET …/syslog/live`).
 
 Syslog isn't authenticated, so a message is **never a finding on its own**: findings come only from SNMP. An
 err-disable, a failed authentication, a security violation or a configuration change brings the switch's next poll
@@ -198,26 +203,57 @@ RADIUS request from that switch reaches EasyEAP, since not every switch logs the
 **Turn it on** on the EasyEAP server: set `EASYEAP_SYSLOG_BIND` in `.env` to the address switches reach EasyEAP on
 (normally the RADIUS address), and `EASYEAP_SYSLOG_PORT` if UDP 5514 is taken on the host; then `docker compose up -d`.
 The receiver runs in its own container, `easyeap-syslog`; until the bind is set its port is published on 127.0.0.1
-only. The switch configuration EasyEAP generates for IOS-XE then includes (other families: see "What's supported"):
+only. `install.sh` also publishes UDP 514 when nothing on the host uses it (`docker-compose.syslog514.yml`, listed in
+`COMPOSE_FILE` in `.env`): AireOS controllers and older switches send only there. The switch configuration EasyEAP
+generates for IOS-XE then includes (other families: see "What's supported"):
 
 ```
-logging discriminator EASYEAP facility includes SESSION_MGR|AUTHMGR|DOT1X|DOT1X_SWITCH|MAB|PM|RADIUS|SYS rate-limit 100
-logging host <EasyEAP's address> transport udp port 5514 discriminator EASYEAP
+authentication logging verbose
+dot1x logging verbose
+mab logging verbose
+logging host <EasyEAP's address> transport udp port 5514
 ```
 
-with, as comments, `logging source-interface` and the `vrf Mgmt-vrf` form of the host line. Nothing global changes (no
-`logging trap` level or timestamps). A switch set to `logging trap warnings` or lower sends only the err-disable and
-RADIUS server messages; the 802.1X ones are at level 5 (notifications). To take it off the switch, the removal lines
-are the same with `no` in front.
+with, as comments, `logging source-interface` and the `vrf Mgmt-vrf` form of the host line. The three `verbose`
+commands turn on the session start and success messages, which IOS-XE (and classic IOS from 15.2(2)E) leaves out by
+default; the failures are logged either way. Nothing else global changes (no `logging trap` level or timestamps). A
+switch set to `logging trap warnings` or lower sends only the err-disable and RADIUS server messages; the 802.1X ones
+are at level 5 (notifications) and 6. To take it off the switch: `no logging host …` (in the lines EasyEAP shows when
+you remove monitoring), with the `no … logging verbose` lines as comments, since you may have had them before.
+
+A switch set up with an earlier EasyEAP has a logging discriminator that passed only the access messages. Its
+configuration now starts the syslog part with `no logging discriminator EASYEAP`, which leaves the host line in place
+and sends everything; paste the block again.
 
 **Which messages are kept**: only those sent from the address EasyEAP polls the switch on, once a poll there has
-succeeded (with the tenant's own SNMP credentials, in the last three intervals). An address two switches claim, in any
-tenant, is ignored. Of those messages, only the access-related ones above are kept; the rest are counted and dropped.
-User names and passwords are replaced with `<redacted>` before anything is stored. Repeats of one message (same port,
-device and server) are counted in a single line per minute. Each switch may send 100 new messages a second, and each
-tenant stores at most 50 MB a day (err-disable and RADIUS server messages are kept regardless); past that, messages are
-dropped and counted on the switch's audit. Messages are kept for 14 days.
+succeeded (with the tenant's own SNMP credentials, in the last three intervals). An address two tenants' devices
+claim is ignored. User names, passwords and keys are replaced with `<redacted>` before anything is stored (a logged
+configuration command keeps only its first two words). Repeats of one message are counted in a single line per minute.
+Each device may send 100 new messages a second. Each tenant stores at most 50 MB a day: past 80% only access messages
+are kept, and past 100% only err-disable and RADIUS server messages; what's dropped is counted on the device. The live
+view's per-device table shows today's received, kept and over-the-limit counts.
 
-> **Not yet verified on switch hardware.** The message formats come from Cisco's documentation and published logs
-> (IOS-XE 16 and 17, including `%RADIUS_AUDIT_MESSAGE` and `%PM-SP-…`), and the end-to-end test sends them from a
-> pretend switch.
+### Controllers and other devices
+
+Wireless controllers and switches without the audit (Catalyst 9800, AireOS and the vWLC, UniFi, Meraki, others) send
+syslog too: in **RADIUS**, select the device, then **Syslog from …** → **Keep syslog from this device**. The panel
+says how to point the device at EasyEAP (the lines to paste or the dashboard steps), the addresses it may send from (its
+RADIUS address, and up to eight more addresses or ranges: a 9800's service port, a UniFi console), today's counters,
+what it said about access, and the clients its log describes:
+
+| Device | What EasyEAP reads |
+|---|---|
+| Catalyst 9800 | `CLIENT_ORCH_LOG` (a client joining, with its SSID), `CLIENT_EXCLUSION_SERVER` (excluded, with the AP and reason), `DOT1X`, `AAA`, `RADIUS`. |
+| AireOS, vWLC | `APF` client association, authentication and disassociation (with SSID, IP and reason), exclusion, `AAA`. UDP 514 only. The client messages are off until `config logging syslog facility client … enable` (in the panel's lines). |
+| UniFi | Each access point's `hostapd` (associated, authenticated with the EAP type, failed), and the console's client events (CEF: connected, disconnected, roamed). |
+| Others | Shown in the live view as they arrive; Cisco-format messages are decoded like a switch's. |
+
+An address claimed by devices of two tenants on the same server is refused when you save it: syslog arrives on one
+port for every tenant, so their messages couldn't be told apart.
+
+MSP operators see, under the live view, the addresses syslog came from that aren't a device with syslog on (any
+tenant), with an example message, and how many datagrams the server dropped before the receiver read them.
+
+> **Checked on a Catalyst 3850 (IOS-XE 16.6.1)**: its 802.1X and session messages arrive and are decoded. The other
+> formats come from Cisco's and Ubiquiti's documentation and published logs (IOS-XE 16 and 17, NX-OS, AireOS 8,
+> Catalyst 9800 17.x, UniFi 6 to 8), and the tests send them from pretend devices.
