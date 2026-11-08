@@ -17,6 +17,13 @@ export interface KeytabInfo {
   entries: number
   sha256: string
   uploaded_at: string | null
+  /** console: EasyEAP made the account with an administrator's credentials; upload: a keytab file. */
+  source?: 'console' | 'upload'
+  account_dn?: string
+  /** The administrator account that made or reset it (never its password). */
+  created_by?: string
+  /** The SPN was checked in the whole forest (global catalog), not only this domain. */
+  forest_checked?: boolean
 }
 
 export interface KeytabTest { ok: boolean; step: string; message: string; at: string; uploaded_at: string }
@@ -73,6 +80,8 @@ export interface AutoenrollStatus {
   /** The host name PCs use; the SPN is HTTP/<host>. */
   host: string
   realm: string | null
+  /** The directory connection checks the domain controller's certificate. */
+  directory_verified?: boolean
   urls: { policy: string; enrollment: string }
   templates: AutoenrollTemplate[]
   readiness: ReadinessItem[]
@@ -117,6 +126,22 @@ export const useSaveAutoenroll = (tid: string) => useStatusMutation(tid, (body: 
 export const useUploadKeytab = (tid: string) => useStatusMutation(tid, (keytab_b64: string) => api.put<AutoenrollStatus>(`${base(tid)}/keytab`, { keytab_b64 }))
 export const useDeleteKeytab = (tid: string) => useStatusMutation(tid, () => api.del<AutoenrollStatus>(`${base(tid)}/keytab`))
 export const useTestKeytab = (tid: string) => useStatusMutation(tid, () => api.post<AutoenrollStatus>(`${base(tid)}/keytab/test`))
+
+export interface ServiceAccountInput { username: string; password: string; container?: string; accept_unverified?: boolean }
+export type ServiceAccountResult = AutoenrollStatus & { service_account: { dn: string; created: boolean; forest_checked: boolean } }
+/** Creates (or resets) the service account with an administrator's credentials. They're sent once and not kept:
+ * the mutation keeps no variables in the cache (gcTime 0) and the dialog clears its fields. */
+export function useCreateServiceAccount(tid: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: ServiceAccountInput) => api.post<ServiceAccountResult>(`${base(tid)}/service-account`, body),
+    gcTime: 0,
+    onSuccess: (data) => {
+      qc.setQueryData(key(tid), data)
+      void qc.invalidateQueries({ queryKey: [...key(tid), 'events'] })
+    },
+  })
+}
 export const useReenroll = (tid: string) => useStatusMutation(tid, (kind: 'computer' | 'user') => api.post<AutoenrollStatus>(`${base(tid)}/reenroll`, { kind }))
 
 export const fetchScript = (tid: string, flavor: 'windows' | 'samba') =>

@@ -39,7 +39,11 @@ certificate is marked as replaced and its renewal stops: one PC, one source of m
 - **TLS ends at EasyEAP's proxy.** A load balancer or TLS-inspecting proxy that re-encrypts breaks channel binding
   (see [Security](#security)). Pass TLS through, or turn off **Require channel binding**.
 - **Active Directory connected** (Directory) and the **certificate authority** set up.
-- A **Domain Admin**, once, to run the service-account script.
+- **A Domain Admin's user name and password, once**, typed into the console to create the service account (or, if
+  you'd rather not type them into EasyEAP, a Domain Admin to run the service-account script on a domain controller).
+- **Kerberos (88/tcp) from EasyEAP to a domain controller**, and LDAPS (636/tcp, or StartTLS on 389) as for the
+  directory sync. The global catalog over TLS (3269/tcp) is used to check the whole forest for a duplicate SPN when
+  it answers.
 - After upgrading from a release without autoenrollment: the new `docker-compose.yml`, which mounts the proxy's
   certificate into the API (`./secrets/tls.crt:/etc/easyeap/proxy-tls.crt:ro`). Without it, readiness says the API
   can't check channel binding. It's a single-file mount, so when you replace the proxy's certificate, restart
@@ -49,34 +53,70 @@ certificate is marked as replaced and its renewal stops: one PC, one source of m
 
 ### 1. Create the service account
 
-**GPO autoenrollment → Set up → Script for Windows AD** downloads `easyeap-service-account.ps1`. Run it on a domain
-controller, or a PC with the RSAT Active Directory tools, as a Domain Admin:
+**GPO autoenrollment → Set up → Create the service account…** asks for a domain account that may create users (a
+Domain Admin, or one delegated **Create User objects** on the container). Then EasyEAP, in one step:
+
+- checks first that `ktutil` is there and a domain controller answers Kerberos (88/tcp): without it EasyEAP couldn't
+  make the keys, so it stops before anything in Active Directory changes;
+- signs in with it to a domain controller from Directory, over LDAPS or StartTLS only (Active Directory sets
+  passwords only on an encrypted connection; a directory set to plain LDAP is refused), and checks that the domain is
+  the tenant's realm. If Directory doesn't verify the domain controller's certificate, the dialog says so and sends
+  the password only after you confirm (recorded in the audit log): someone on the network between EasyEAP and the
+  domain controller could otherwise pose as it. Turning on **Verify the certificate** in Directory is better;
+- checks that neither `HTTP/<console name>` nor `HOST/<console name>` is registered to another account: in the whole
+  forest through the global catalog (3269/tcp, TLS) when it answers, otherwise in the domain. A duplicate SPN breaks
+  Kerberos for that name, and Active Directory treats `HOST/` as covering `HTTP/`: if EasyEAP's name is a
+  domain-joined computer's, give EasyEAP a DNS name of its own;
+- creates the user `easyeap-cep` in the domain's Users container, or the OU you give (**Create it in**), with a
+  random 40-character password, AES only (`msDS-SupportedEncryptionTypes` 24), not delegable, password never
+  expires, and `HTTP/<console name>` as its SPN. A new account is added disabled, then given its password, then
+  enabled (Windows doesn't accept a password in the add);
+- derives the account's AES-256 and AES-128 keys from that password with the salt the domain controller reports for
+  the account (MIT `ktutil addent -f`, over Kerberos 88/tcp), at the key version Active Directory reports
+  (`msDS-KeyVersionNumber`), and keeps them as the keytab for `HTTP/<console name>`, encrypted with the tenant's key;
+- runs the **Test** below.
+
+The administrator's credentials and the account's password are used only during that request: they aren't stored,
+logged or audited (the audit log records which administrator account was used, never a password). The Set up tab
+shows the account, its key version and who created it. **Create it again…** sets a new password: Windows' tickets
+made with the old key are refused until they expire (10 hours by default; `klist purge` on a PC clears them).
+
+**If `easyeap-cep` already exists**, EasyEAP resets it only if it's the account EasyEAP made (the objectGUID it keeps),
+or one the service-account script made (description "EasyEAP certificate enrollment…") that is owned by Domain Admins,
+Administrators or you, has no other service names and nothing unusual set (no smart card requirement, delegation or
+protected-group membership). Anyone who owns the account could set its key themselves and forge tickets to EasyEAP,
+so an account a delegated user created is refused: remove it, and EasyEAP creates a new one. Create it in the Users
+container or an OU only administrators control, for the same reason.
+
+A reset derives the new keys before the password changes (the salt stays the same), so a failure before that point
+changes nothing; once the password has changed, EasyEAP always keeps the keys that match it, and says which step
+didn't finish. Only one run per tenant at a time.
+
+If it fails, the console says which step: Kerberos (88/tcp blocked, or the domain controller doesn't know a new
+account yet), signing in (403 with the directory's reason), the duplicate SPN or an account EasyEAP won't take over
+(409). A new account can take a moment to reach every domain controller: EasyEAP asks the one it wrote to first and
+retries for about ten seconds; if it still fails, try again and EasyEAP finishes the account it made.
+
+**Test** asks your domain controller for a ticket to `HTTP/<console name>` with the directory's bind account, the
+way a PC would, and opens it with the key. That needs Kerberos (88/tcp) from EasyEAP to the domain controller;
+enrollment itself doesn't, because PCs bring their tickets with them.
+
+#### Without typing administrator credentials into EasyEAP
+
+**Other ways → Script for Windows AD** downloads `easyeap-service-account.ps1`. Run it on a domain controller, or a PC
+with the RSAT Active Directory tools, as a Domain Admin:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\easyeap-service-account.ps1
 ```
 
-It:
+It makes the same checks and the same account, runs `ktpass` to write `easyeap-cep.keytab` (AES-256) next to the
+script, and the password never leaves the domain controller. **Upload keytab**, then delete the file: EasyEAP keeps
+only the keys for `HTTP/<console name>`, encrypted. Running the script again sets a new password, so upload the new
+keytab. For Samba AD, use **Script for Samba AD** (`samba-tool user add`, `spn add`, `domain exportkeytab`) as root on
+a domain controller.
 
-- checks the domain is the one EasyEAP's directory is connected to, and that `HTTP/<console name>` isn't registered to
-  another account anywhere in the forest (a duplicate SPN breaks Kerberos for it);
-- creates the user `easyeap-cep` with a random 40-character password that never leaves the domain controller, AES
-  only, not delegable, password never expires;
-- runs `ktpass` to register `HTTP/<console name>` on it and write `easyeap-cep.keytab` (AES-256) next to the script.
-
-Running it again sets a new password, so the old keytab stops working: upload the new one. For Samba AD, use
-**Script for Samba AD** (`samba-tool user add`, `spn add`, `domain exportkeytab`) as root on a domain controller.
-
-### 2. Upload and test the keytab
-
-Upload `easyeap-cep.keytab`, then delete the file. EasyEAP keeps it encrypted with the tenant's key and checks that it
-has an AES key for `HTTP/<console name>` in your domain's realm.
-
-**Test** asks your domain controller for a ticket to `HTTP/<console name>` with the directory's bind account, the
-way a PC would, and opens it with the keytab. That needs Kerberos (88/tcp) from EasyEAP to the domain controller;
-enrollment itself doesn't, because PCs bring their tickets with them.
-
-### 3. Turn it on
+### 2. Turn it on
 
 **Settings**: turn on autoenrollment, and choose computers, users or both.
 
@@ -92,7 +132,7 @@ certificate type **Domain computers**. In **Access policy**, add for example "Do
 applying to Domain computers. Rules for "any certificate" also apply to computers; rules for user or device
 certificates don't. Readiness warns while no rule would let a computer on.
 
-### 4. Point Group Policy at EasyEAP
+### 3. Point Group Policy at EasyEAP
 
 In a GPO linked to the PCs' OU, under **Computer Configuration → Policies → Windows Settings → Security Settings →
 Public Key Policies**:
@@ -108,7 +148,7 @@ Public Key Policies**:
    **User or computer authentication** so the computer's certificate connects at the sign-in screen and the user's
    after sign-in. The issuer filter (EasyEAP's CA) makes Windows pick the EasyEAP certificate.
 
-### 5. Try one PC
+### 4. Try one PC
 
 1. `gpupdate /force`, then `certutil -pulse`. Within a minute **certlm.msc → Personal → Certificates** has a
    certificate from the `EasyEAP-Computer` template, issued by your EasyEAP issuing CA, with the PC's DNS name.
@@ -191,7 +231,7 @@ line per request with who, from which PC, and why it was refused.
 | Request log | Meaning | What to do |
 |---|---|---|
 | NTLM, not Kerberos | The PC couldn't get a ticket | Check the SPN (`setspn -Q HTTP/<name>`), that the URL uses the console's DNS name, and that the name isn't a CNAME |
-| Keytab problem | The keytab can't open the ticket | The account's password changed (the script was run again): upload the new keytab |
+| Keytab problem | The keytab can't open the ticket | The account's password changed (the script was run again, or the password was reset in AD): **Create it again…**, or upload the new keytab |
 | Channel binding | The ticket isn't bound to this TLS connection | Something between the PC and EasyEAP ends TLS; or turn off the requirement |
 | Not a computer in AD / Not a workstation | `NAME$` isn't a member computer | Domain controllers and trust accounts don't get computer certificates |
 | Not in the group | The computer isn't in the computer group | Add it in AD; EasyEAP re-reads it within 6 hours, or at the next sync |

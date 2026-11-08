@@ -513,6 +513,23 @@ drive call POST /autoenroll/keytab/test | jok "keytab test: the DC issues a tick
 FULL="$($AD sh -c 'rm -f /tmp/ae/full.kt && samba-tool domain exportkeytab /tmp/ae/full.kt >/dev/null && base64 -w0 /tmp/ae/full.kt; rm -f /tmp/ae/full.kt')"
 drive call PUT /autoenroll/keytab "{\"keytab_b64\": \"$FULL\"}" | jok "a whole-domain keytab (with krbtgt) is refused, not stored" 'd["status"] == 400 and "krbtgt" in d["body"]["detail"]'
 
+# The console path (no script, no file): EasyEAP creates the account with an administrator's credentials, typed once,
+# derives the keytab with the salt the KDC reports, keeps it and tests it. The credentials are never kept or logged.
+LABADM="$(cat secrets/lab_ad_password)"
+sa_body() { python3 -c 'import json,sys; print(json.dumps({"username": sys.argv[1], "password": sys.argv[2]}))' "$1" "$2"; }
+drive call POST /autoenroll/service-account "$(sa_body Administrator not-the-password)" \
+  | jok "a wrong administrator password is refused at sign-in (403), nothing changed" 'd["status"] == 403 and d["body"]["detail"]["step"] == "permission"'
+$AD samba-tool user delete easyeap-cep >/dev/null 2>&1 || true
+drive call POST /autoenroll/service-account "$(sa_body Administrator "$LABADM")" | jok "the console creates easyeap-cep with HTTP/$AE_HOST, keeps its key (AES) and the test passes" \
+  "d['status'] == 200 and d['body']['service_account']['created'] and d['body']['config']['keytab']['source'] == 'console' and d['body']['config']['keytab']['principal'] == 'HTTP/$AE_HOST@LAB.EASYEAP.TEST' and any('aes256' in e for e in d['body']['config']['keytab']['enctypes']) and d['body']['config']['keytab_test']['ok']"
+SAU="$($AD samba-tool user show easyeap-cep 2>/dev/null)"
+echo "$SAU" | grep -qx "servicePrincipalName: HTTP/$AE_HOST" && echo "$SAU" | grep -qx "msDS-SupportedEncryptionTypes: 24" && echo "$SAU" | grep -qx "userAccountControl: 1114624" \
+  && ok "in AD: the SPN, AES only, enabled, password never expires, not delegable" || bad "easyeap-cep in AD isn't as EasyEAP set it: $($AD samba-tool user show easyeap-cep 2>&1 | grep -E 'servicePrincipalName|userAccountControl|SupportedEncryption' | tr '\n' ' ')"
+KV1="$(drive call GET /autoenroll | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"]["config"]["keytab"]["kvno"])')"
+drive call POST /autoenroll/service-account "$(sa_body Administrator "$LABADM")" | jok "again: the account EasyEAP made is reset (new key version) and the test still passes" \
+  "d['status'] == 200 and not d['body']['service_account']['created'] and d['body']['config']['keytab']['kvno'] > $KV1 and d['body']['config']['keytab_test']['ok']"
+[ "$($DC logs easyeap-api 2>&1 | grep -c -F "$LABADM")" = 0 ] && ok "the administrator's password appears nowhere in the API's log" || bad "the administrator's password is in the API's log"
+
 # Computers and a user in AD. --prepare-oldjoin sets a computer's password to its name in lower case.
 # A domain join sets dNSHostName; samba-tool computer create doesn't.
 for c in PC-AE01 PC-AE02; do
@@ -630,11 +647,11 @@ drive call POST "/radius/clients/$SW1_ID/monitoring/setup" "{\"host\": \"$LABSW_
   | jok "AES-256 with SHA-1 is refused" 'd["status"] == 422 and d["body"]["detail"]["field"] == "priv"'
 SETUP="$(drive call POST "/radius/clients/$SW1_ID/monitoring/setup" "{\"host\": \"$LABSW_IP\", \"version\": \"v3\", \"interval_minutes\": 15}")"
 echo "$SETUP" | jok "SNMPv3 set up: keys shown once, the block has placeholders, monitoring off until tested" \
-  'd["status"] == 200 and len(d["body"]["credentials"]["auth_key"]) == 24 and d["body"]["credentials"]["auth_key"] not in d["body"]["config"] and "snmp-server user easyeap EASYEAP v3 auth sha-2 256 <authentication key> priv aes 128 <privacy key>" in d["body"]["config"] and not d["body"]["monitoring"]["enabled"]'
+  'd["status"] == 200 and len(d["body"]["credentials"]["auth_key"]) == 24 and d["body"]["credentials"]["auth_key"] not in d["body"]["config"] and "snmp-server user easyeap EASYEAP v3 auth sha <authentication key> priv aes 128 <privacy key>" in d["body"]["config"] and not d["body"]["monitoring"]["enabled"]'
 AUTHK="$(echo "$SETUP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"]["credentials"]["auth_key"])')"
 PRIVK="$(echo "$SETUP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["body"]["credentials"]["priv_key"])')"
 drive call POST "/radius/clients/$SW1_ID/monitoring/test" | jok "Test connection before the switch is configured: no answer" 'd["status"] == 200 and not d["body"]["ok"] and d["body"]["error_kind"] in ("timeout", "auth")'
-must "configure the lab switch (SNMPv3 SHA-256/AES-128)" $LABSW /lab/configure.sh - easyeap "$AUTHK" "$PRIVK" SHA-256 AES
+must "configure the lab switch (SNMPv3 SHA-1/AES-128, the default)" $LABSW /lab/configure.sh - easyeap "$AUTHK" "$PRIVK" SHA AES
 sleep 2
 drive call POST "/radius/clients/$SW1_ID/monitoring/test" | jok "Test connection: the model, IOS-XE version and serial, the 802.1X tables answer; monitoring on" \
   'd["body"]["ok"] and d["body"]["facts"]["model"] == "C9300-48P" and d["body"]["facts"]["version"] == "17.9.4a" and d["body"]["facts"]["serial"] == "FOC1234X0AB" and d["body"]["capabilities"] == {"caf": True, "errdisable": True} and d["body"]["monitoring"]["enabled"]'
@@ -745,7 +762,7 @@ say "<188>109: %RADIUS-4-RADIUS_ALIVE: RADIUS server $RADIUS_IP:1812,1813 is bei
 sleep 4
 syslog_json | jok "RADIUS server marked alive: no longer shown as down" 'd["radius_down"] == []'
 drive call DELETE "/radius/clients/$SW1_ID/monitoring" | jok "monitoring removed: the lines to take EasyEAP's access off the switch" \
-  'd["status"] == 200 and "no snmp-server view EASYEAP-RO" in d["body"]["removal"]'
+  'd["status"] == 200 and "no snmp-server view EASYEAP-RO 1.3.6.1.2.1.1 included" in d["body"]["removal"]'
 drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "nothing open after removal, credentials gone" 'not d["body"]["findings"] and not d["body"]["monitoring"]["set_up"]'
 drive call POST "/radius/clients/$SW1_ID/wired-mode" '{"mode": "monitor"}' >/dev/null
 fi

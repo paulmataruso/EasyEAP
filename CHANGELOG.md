@@ -121,8 +121,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   - Two templates per tenant with AD CS-style OIDs and revisions, issued through OpenBao CEL roles that fix key usage,
     client authentication and the validity cap; **Re-enroll everyone** publishes a new major revision.
   - The **GPO autoenrollment** screen: readiness (DNS name, directory, CA, keytab, test, channel binding, an access
-    rule for computers, MachineAccountQuota), service-account scripts for Windows AD (`ktpass`) and Samba AD, keytab
-    upload and a live Kerberos test against the domain controller, settings, and a request log with reasons.
+    rule for computers, MachineAccountQuota), **Create the service account…**, settings, and a request log with
+    reasons. EasyEAP creates the Kerberos service account itself with a Domain Admin's credentials, typed once and
+    never kept or logged: over LDAPS or StartTLS it checks that `HTTP/<name>` (and `HOST/<name>`) isn't another
+    account's anywhere in the forest, creates or resets `easyeap-cep` (AES only, not delegable, only an account
+    EasyEAP made), derives its keys with the salt the domain controller reports (MIT `ktutil`), keeps them encrypted
+    and runs a live Kerberos test against the domain controller. Scripts for Windows AD (`ktpass`) and Samba AD with a
+    keytab upload remain for administrators who won't type credentials into EasyEAP.
   - Upgrading: the new `docker-compose.yml` mounts the proxy's certificate into the API for channel binding (restart
     `easyeap-api` too when you replace that certificate); the proxy accepts the larger Kerberos headers on `/cep` and
     `/ces`, with its own per-address limit.
@@ -143,6 +148,14 @@ versions follow [Semantic Versioning](https://semver.org/).
   a switch.
 - On a switch with admin logins on, the wired 802.1X configuration no longer sets `aaa authentication login default
   local` and `aaa authorization exec default local`, so re-pasting it doesn't undo TACACS+.
+- Cisco wired 802.1X: the configuration always starts with `aaa new-model`, which `radius server` and every `aaa`
+  command need. On a switch whose `show running-config | include aaa new-model` printed `no aaa new-model`, ticking
+  "Already uses AAA" left it out and IOS-XE answered "radius server" isn't a command (seen on a 3850 with 16.6.1). The
+  preflight now looks for `^aaa new-model`, `aaa accounting identity` comes after the first control policy (it needs
+  IBNS 2.0 policy mode), and the platform advice no longer sends 3650/3850 to classic configuration.
+- Switch audit: SNMPv3 defaults to SHA-1 with AES-128 (`auth sha`), which every IOS-XE Catalyst accepts; `auth sha-2
+  256` is documented only from IOS XE 17.10.1a. Removal deletes each view subtree as it was added (IOS XE 17.12 and
+  17.15 require it) and only the ACL that was created.
 
 ## [1.0.1] - 2026-11-06
 

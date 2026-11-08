@@ -2,7 +2,8 @@
 
 `public`: the two endpoints Windows calls, POST /cep/{slug} (MS-XCEP, which templates) and POST /ces/{slug}
 (MS-WSTEP, issue), authenticated with Kerberos (HTTP Negotiate) and bound to the TLS connection.
-`router`: the console's settings, keytab, test, scripts and request log.
+`router`: the console's settings, the service account (made from the console with an administrator's credentials, or
+by a script and an uploaded keytab), the keytab test and the request log.
 """
 from __future__ import annotations
 
@@ -21,14 +22,15 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
+from ldap3.core.exceptions import LDAPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app import audit
 from app import models as m
-from app.autoenroll import kerberos, keytab_test, soap
+from app.autoenroll import account, kerberos, keytab_test, soap
 from app.autoenroll import service as svc
 from app.config import get_settings
 from app.db import set_platform, set_tenant
@@ -373,7 +375,7 @@ def _readiness(s: Session, tenant: m.Tenant, cfg: m.AutoenrollConfig, host: str)
     info = cfg.keytab_info or {}
     want = svc.realm(s, tenant.id)
     if not cfg.keytab_ct:
-        item("keytab", "error", f"Upload the keytab for HTTP/{host} (run the service-account script to make it).")
+        item("keytab", "error", f"Create the service account for HTTP/{host} (Set up → Create with an administrator account).")
     elif info.get("problems"):
         item("keytab", "error", " ".join(info["problems"]))
     elif want and info.get("realm") and info["realm"].upper() != want:
@@ -417,6 +419,13 @@ def _readiness(s: Session, tenant: m.Tenant, cfg: m.AutoenrollConfig, host: str)
     return out
 
 
+def _directory_verified(s: Session, tenant_id: uuid.UUID) -> bool:
+    """Whether the directory connection checks the domain controller's certificate (an administrator's password is
+    sent over it to create the service account)."""
+    d = s.get(m.DirectoryConfig, tenant_id)
+    return bool(d and d.transport != "plain" and d.verify_certificate)
+
+
 def _status(s: Session, tenant: m.Tenant, cfg: m.AutoenrollConfig) -> dict:
     host = console_host()
     group = s.get(m.DirectoryGroup, cfg.computer_group_id) if cfg.computer_group_id else None
@@ -439,7 +448,7 @@ def _status(s: Session, tenant: m.Tenant, cfg: m.AutoenrollConfig) -> dict:
                    "keytab_test": cfg.keytab_test or None, "machine_account_quota": cfg.machine_account_quota,
                    "last_success_at": cfg.last_success_at.isoformat() if cfg.last_success_at else None,
                    "last_error_at": cfg.last_error_at.isoformat() if cfg.last_error_at else None, "last_error": cfg.last_error},
-        "host": host, "realm": svc.realm(s, tenant.id),
+        "host": host, "realm": svc.realm(s, tenant.id), "directory_verified": _directory_verified(s, tenant.id),
         "urls": {"policy": f"{_base_url()}/cep/{tenant.slug}", "enrollment": f"{_base_url()}/ces/{tenant.slug}"},
         "templates": [_template_out(tpls[k]) for k in svc.KINDS if k in tpls],
         "readiness": readiness, "ready": not any(i["level"] == "error" for i in readiness),
@@ -546,14 +555,12 @@ class KeytabIn(BaseModel):
     keytab_b64: str = Field(min_length=8, max_length=200_000)
 
 
-@router.put("/keytab")
-def upload_keytab(body: KeytabIn, ctx: TenantCtx = Depends(require("directory:write"))) -> dict:
-    s = ctx.session
-    cfg = svc.ensure_config(s, ctx.id)
+def _store_keytab(s: Session, ctx: TenantCtx, cfg: m.AutoenrollConfig, data: bytes, *, source: str, extra: dict | None = None) -> dict:
+    """Check a keytab for HTTP/<console host> and keep only those keys, encrypted with the tenant's key. Raises 400 with
+    the reason when it can't be used."""
     try:
-        data = base64.b64decode("".join(body.keytab_b64.split()), validate=True)
         entries = kerberos.parse_keytab(data)
-    except (binascii.Error, ValueError) as exc:
+    except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"That file can't be used: {exc}") from None
     host = console_host()
     problem = kerberos.upload_problem(entries)
@@ -569,12 +576,176 @@ def upload_keytab(body: KeytabIn, ctx: TenantCtx = Depends(require("directory:wr
     now = datetime.now(UTC)
     _forget_keytab(ctx.id, cfg)
     cfg.keytab_ct = crypto.encrypt(ctx.id, data)
-    cfg.keytab_info = {**summary, "entries": len(kerberos.parse_keytab(data)), "sha256": hashlib.sha256(data).hexdigest()[:16]}
+    cfg.keytab_info = {**summary, "entries": len(kerberos.parse_keytab(data)), "sha256": hashlib.sha256(data).hexdigest()[:16],
+                       "source": source, **(extra or {})}
     cfg.keytab_uploaded_at, cfg.keytab_test, cfg.updated_at = now, {}, now
-    audit.record(s, ctx.actor, "autoenroll.keytab_uploaded", tenant_id=ctx.id, target_type="autoenroll", target_label=summary.get("principal") or host,
+    return summary
+
+
+@router.put("/keytab")
+def upload_keytab(body: KeytabIn, ctx: TenantCtx = Depends(require("directory:write"))) -> dict:
+    s = ctx.session
+    cfg = svc.ensure_config(s, ctx.id)
+    try:
+        data = base64.b64decode("".join(body.keytab_b64.split()), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"That file can't be used: {exc}") from None
+    summary = _store_keytab(s, ctx, cfg, data, source="upload")
+    audit.record(s, ctx.actor, "autoenroll.keytab_uploaded", tenant_id=ctx.id, target_type="autoenroll", target_label=summary.get("principal") or console_host(),
                  detail={"kvno": summary.get("kvno"), "enctypes": summary.get("enctypes"), "problems": summary["problems"]})
     s.commit()
     return _status(s, ctx.tenant, cfg)
+
+
+class ServiceAccountIn(BaseModel):
+    """A domain account that may create users, typed once; it isn't stored."""
+    username: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1, max_length=256, repr=False)
+    # Where to create the account (a DN); empty: the domain's default users container.
+    container: str = Field(default="", max_length=512)
+    # The directory connection doesn't verify the domain controller's certificate: send the password anyway.
+    accept_unverified: bool = False
+
+
+@router.post("/service-account")
+def create_service_account(body: ServiceAccountIn, ctx: TenantCtx = Depends(require("directory:write"))) -> dict:
+    """Create (or reset) the service account in Active Directory with the administrator's credentials, derive its
+    keytab, keep it, and test it: no script, no file. Nothing of the credentials or the account's password is kept."""
+    s = ctx.session
+    cfg = svc.ensure_config(s, ctx.id)
+    if not limiter.hit(f"ae-sa:{ctx.id}", 5):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Wait a minute before trying again.")
+    _lock_service_account(s, ctx.id)
+    host = console_host()
+    if _host_problem(host):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _host_problem(host))
+    d = s.get(m.DirectoryConfig, ctx.id)
+    realm = svc.realm(s, ctx.id)
+    if d is None or not realm or not d.hosts:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Connect Active Directory first (Directory).")
+    if not _ACCOUNT.match(cfg.service_account):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The service account name isn't valid.")
+    container = body.container.strip()
+    if container and (not re.fullmatch(r"(?:[A-Za-z]+=[^,=\r\n]+,)*DC=[^,=\r\n]+(?:,DC=[^,=\r\n]+)*", container, re.IGNORECASE)):
+        raise _account_error(account.AccountError("account", "Enter the container as a distinguished name, for example "
+                                                             "OU=Service Accounts,DC=corp,DC=example."))
+    p = directory_params(d)
+    if p.transport != "plain" and not p.verify_certificate and not body.accept_unverified:
+        raise _account_error(account.AccountError("tls", "The directory connection doesn't verify the domain controller's certificate, so "
+                                                         "EasyEAP can't be sure it sends the administrator's password to your domain controller. "
+                                                         "Turn on certificate verification in Directory, or confirm to send it anyway."))
+    spn = f"HTTP/{host}"
+    acct = cfg.service_account
+    st = {"touched": False, "created": False, "dn": "", "guid": "", "forest": False, "kvno": 0, "keys": None, "later": None, "kdc": ""}
+    try:
+        user = account.admin_user(body.username, realm)
+        kdcs = account.kerberos_ready(realm, [h.strip().split(":", 1)[0] for h in d.hosts if h.strip()])
+        conn = account.connect(p, user, body.password)
+        try:
+            _make_account(conn, p, user, body.password, cfg, realm=realm, host=host, spn=spn, container=container, kdcs=kdcs, st=st)
+        finally:
+            conn.unbind()
+    except (account.AccountError, LDAPException) as exc:
+        err = exc if isinstance(exc, account.AccountError) else account.AccountError("directory", "The directory connection failed.", str(exc))
+        log.info("Autoenrollment service account for tenant %s: %s (%s)", ctx.tenant.slug, err, err.step)
+        if not st["keys"]:
+            if st["touched"]:  # in AD, but without a key EasyEAP knows: the next try resets it
+                err = account.AccountError(err.step, f"{acct} was {'created' if st['created'] else 'reset'} in Active Directory, but then: "
+                                                     f"{err} Try again: EasyEAP resets the account it made.", err.detail)
+            raise _account_error(err) from None
+        st["later"] = err  # the password changed: keep the keys that match it, then say what didn't finish
+    summary = _store_keytab(s, ctx, cfg, account.keytab_for(realm, host, st["keys"], st["kvno"]), source="console",
+                            extra={"account_dn": st["dn"], "account_guid": st["guid"], "created_by": user, "forest_checked": st["forest"]})
+    if st["later"]:
+        summary["problems"].append(f"Not finished: {st['later']}")
+        cfg.keytab_info = {**cfg.keytab_info, "problems": summary["problems"]}
+    audit.record(s, ctx.actor, "autoenroll.service_account_created" if st["created"] else "autoenroll.service_account_reset", tenant_id=ctx.id,
+                 target_type="autoenroll", target_label=st["dn"],
+                 detail={"administrator": user, "spn": spn, "kvno": summary.get("kvno"), "enctypes": summary.get("enctypes"),
+                         "forest_checked": st["forest"], "unverified_tls": not p.verify_certificate,
+                         **({"not_finished": str(st["later"])} if st["later"] else {})})
+    s.commit()
+    _run_test(s, ctx, cfg, prefer=st["kdc"])
+    if st["later"]:
+        later = st["later"]
+        raise _account_error(account.AccountError(later.step, f"The password of {acct} was changed and EasyEAP keeps the new key, but then: "
+                                                              f"{later} Try again to finish.", later.detail))
+    return {**_status(s, ctx.tenant, cfg), "service_account": {"dn": st["dn"], "created": st["created"], "forest_checked": st["forest"]}}
+
+
+def _lock_service_account(s: Session, tenant_id: uuid.UUID) -> None:
+    """One run per tenant at a time (until the request's transaction ends): two would reset the password twice and
+    keep the keys of whichever finished last."""
+    if not s.execute(text("select pg_try_advisory_xact_lock(hashtext(:k))"), {"k": f"easyeap-ae-sa:{tenant_id}"}).scalar():
+        raise HTTPException(status.HTTP_409_CONFLICT, {"step": "busy", "message": "The service account is being created right now. Wait for "
+                                                                                  "that to finish.", "detail": ""})
+
+
+def _make_account(conn, p, user: str, password: str, cfg: m.AutoenrollConfig, *, realm: str, host: str, spn: str, container: str,
+                  kdcs: list[str], st: dict) -> None:
+    """The directory part, recording in `st` how far it got (the caller keeps the keys whenever the password changed)."""
+    acct = cfg.service_account
+    info = account.domain_info(conn)
+    if info["realm"] != realm:
+        raise account.AccountError("directory", f"That domain controller serves {info['realm']}, but this tenant's directory is {realm}.")
+    if container and not container.lower().endswith(info["base"].lower()):
+        raise account.AccountError("account", f"The container must be inside {info['base']}.")
+    existing = account.find_account(conn, info, acct)
+    if existing:
+        account.check_takeover(existing, account=acct, spn=spn, known_guid=(cfg.keytab_info or {}).get("account_guid"),
+                               owners=account.admin_sids(conn, info))
+    owners, st["forest"] = account.spn_owners(p, user, password, conn, info, host)
+    others = [o for o in owners if not existing or o.get("guid") != existing["guid"]]
+    if others:
+        raise account.AccountError("spn", _spn_conflict(spn, host, others))
+    wrote_to = str(getattr(conn.server, "host", "") or "")
+    kdcs = [wrote_to, *(k for k in kdcs if k != wrote_to)] if wrote_to in kdcs else kdcs
+    st["kdc"] = kdcs[0]
+    new = account.new_password()
+    if existing and not existing["uac"] & account.UF_ACCOUNTDISABLE:
+        st["dn"], st["guid"] = existing["dn"], existing["guid"]
+        # An account in use: the keys first. The salt doesn't change with the password, and a KDC that doesn't answer
+        # stops here, before anything in AD changes; once the password has changed, EasyEAP has the keys that match it.
+        keys = account.derive_keys(realm=realm, kdcs=kdcs, account=acct, password=new, retries=1)
+        old = account.key_version(conn, existing["dn"])
+        account.set_password(conn, existing["dn"], new, acct)
+        st["keys"], st["kvno"], st["touched"] = keys, old + 1, True
+        account.finish_account(conn, existing["dn"], account=acct, spn=spn, spns=existing["spns"], created=False)
+        st["kvno"] = account.key_version(conn, existing["dn"])
+        return
+    # A new account, or a disabled one (an earlier run that didn't finish; nothing can be using it, and a KDC won't
+    # give a disabled account's salt): password, enable, then the keys.
+    if existing:
+        st["dn"], st["guid"] = existing["dn"], existing["guid"]
+    else:
+        st["dn"], st["guid"] = account.create_account(conn, info, account=acct, spn=spn, container=container or None)
+        st["created"] = True
+    st["touched"] = True
+    account.set_password(conn, st["dn"], new, acct)
+    account.finish_account(conn, st["dn"], account=acct, spn=spn, spns=existing["spns"] if existing else [spn], created=st["created"])
+    kvno = account.key_version(conn, st["dn"])
+    st["keys"], st["kvno"] = account.derive_keys(realm=realm, kdcs=kdcs, account=acct, password=new), kvno
+
+
+def _spn_conflict(spn: str, host: str, others: list[dict]) -> str:
+    names = []
+    for o in others:
+        name = str(account._first(o.get("sAMAccountName")) or o.get("dn"))
+        holds = [str(v) for v in (o.get("servicePrincipalName") or []) if str(v).lower() in (f"http/{host}", f"host/{host}")]
+        names.append((name, any(v.lower().startswith("host/") for v in holds)))
+    who = ", ".join(n for n, _ in names)
+    if any(h for _, h in names):
+        return (f"A computer account ({who}) already uses the name {host}: its HOST/{host} covers {spn}, so Windows would ask for "
+                f"tickets made for that computer. Give EasyEAP a DNS name of its own (EASYEAP_HOSTNAME), not a domain-joined "
+                "computer's.")
+    return (f"{spn} is already registered to {who}. Kerberos breaks for a name two accounts claim: remove it from {who} (Active "
+            "Directory Users and Computers → the account → Attribute Editor → servicePrincipalName), then try again.")
+
+
+def _account_error(exc: account.AccountError) -> HTTPException:
+    code = status.HTTP_403_FORBIDDEN if exc.step == "permission" else status.HTTP_409_CONFLICT if exc.step in ("spn", "account") \
+        else status.HTTP_400_BAD_REQUEST
+    return HTTPException(code, {"step": exc.step, "message": str(exc), "detail": exc.detail})
 
 
 @router.delete("/keytab")
@@ -594,34 +765,45 @@ def test_keytab(ctx: TenantCtx = Depends(require("directory:write"))) -> dict:
     s = ctx.session
     cfg = svc.ensure_config(s, ctx.id)
     if not cfg.keytab_ct:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Upload a keytab first.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Create the service account (or upload a keytab) first.")
     if not limiter.hit(f"ae-test:{ctx.id}", 6):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Wait a minute before testing again.")
+    if s.get(m.DirectoryConfig, ctx.id) is None or not svc.realm(s, ctx.id):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Connect Active Directory first: the test signs in with its bind account.")
+    _run_test(s, ctx, cfg)
+    return _status(s, ctx.tenant, cfg)
+
+
+def _run_test(s: Session, ctx: TenantCtx, cfg: m.AutoenrollConfig, prefer: str = "") -> dict:
+    """The keytab test, recorded on the configuration (and committed). `prefer`: the domain controller to ask first
+    (the one that has a new account already)."""
     d = s.get(m.DirectoryConfig, ctx.id)
     r = svc.realm(s, ctx.id)
     if d is None or not d.bind_password_ct or not r:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Connect Active Directory first: the test signs in with its bind account.")
-    p = directory_params(d)
-    try:
-        conn = ldap.connect(p)
-        try:
-            user = ldap.bind_account_name(conn, p)
-        finally:
-            conn.unbind()
-    except ldap.DirectoryError as exc:
-        result = {"ok": False, "step": "directory", "message": f"EasyEAP couldn't reach Active Directory: {exc}"}
+        result = {"ok": False, "step": "directory", "message": "Connect Active Directory first: the test signs in with its bind account."}
     else:
-        if user:
-            kdcs = [h.strip().split(":", 1)[0] for h in d.hosts if h.strip()]
-            result = keytab_test.run(realm=r, kdcs=kdcs, user=user, password=p.bind_password, host=console_host(),
-                                     keytab=_keytab(ctx.id, cfg))
+        p = directory_params(d)
+        try:
+            conn = ldap.connect(p)
+            try:
+                user = ldap.bind_account_name(conn, p)
+            finally:
+                conn.unbind()
+        except ldap.DirectoryError as exc:
+            result = {"ok": False, "step": "directory", "message": f"EasyEAP couldn't reach Active Directory: {exc}"}
         else:
-            result = {"ok": False, "step": "directory", "message": "EasyEAP couldn't work out the bind account's sAMAccountName."}
+            if user:
+                kdcs = [h.strip().split(":", 1)[0] for h in d.hosts if h.strip()]
+                kdcs = [prefer, *(k for k in kdcs if k != prefer)] if prefer else kdcs
+                result = keytab_test.run(realm=r, kdcs=kdcs, user=user, password=p.bind_password, host=console_host(),
+                                         keytab=_keytab(ctx.id, cfg))
+            else:
+                result = {"ok": False, "step": "directory", "message": "EasyEAP couldn't work out the bind account's sAMAccountName."}
     result = {**result, "at": datetime.now(UTC).isoformat(),
               "uploaded_at": cfg.keytab_uploaded_at.isoformat() if cfg.keytab_uploaded_at else ""}
     cfg.keytab_test = result
     s.commit()
-    return _status(s, ctx.tenant, cfg)
+    return result
 
 
 def windows_script(*, host: str, realm: str, account: str, tenant: str) -> str:

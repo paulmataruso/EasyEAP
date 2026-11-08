@@ -2,11 +2,11 @@
 // get certificates from EasyEAP through Group Policy, as from AD CS. PCs authenticate with Kerberos; EasyEAP checks
 // every computer and user in Active Directory.
 // Intents: ?tab=settings|log
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
-import { CheckCircle2, CircleAlert, Download, FileBadge, FlaskConical, RefreshCw, Trash2, TriangleAlert, Upload } from 'lucide-react'
+import { CheckCircle2, CircleAlert, Download, FileBadge, FlaskConical, KeyRound, RefreshCw, Trash2, TriangleAlert, Upload } from 'lucide-react'
 import {
-  codeLabels, fetchScript, useAutoenroll, useAutoenrollEvents, useDeleteKeytab, useReenroll, useSaveAutoenroll, useTestKeytab,
+  codeLabels, fetchScript, useAutoenroll, useAutoenrollEvents, useCreateServiceAccount, useDeleteKeytab, useReenroll, useSaveAutoenroll, useTestKeytab,
   useUploadKeytab, type AutoenrollEvent, type AutoenrollStatus, type AutoenrollTemplate, type EventOutcome, type ReadinessItem,
   type ResponseFormat,
 } from '../api/autoenroll'
@@ -116,8 +116,10 @@ function SetupTab({ data, write, onSettings }: { data: AutoenrollStatus; write: 
   const test = useTestKeytab(tid)
   const file = useRef<HTMLInputElement>(null)
   const [scriptBusy, setScriptBusy] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
   const k = data.config.keytab
   const t = data.config.keytab_test
+  const hostProblem = data.readiness.find((x) => x.key === 'host' && x.level === 'error')
 
   const download = async (flavor: 'windows' | 'samba') => {
     setScriptBusy(flavor)
@@ -151,42 +153,53 @@ function SetupTab({ data, write, onSettings }: { data: AutoenrollStatus; write: 
         <SectionHeader id="ae-steps-h" title="Set it up" />
         <ol className="space-y-6">
           <Step n={1} title="Create the service account">
-            <p>Run the script on a domain controller, as a Domain Admin. It creates <code className="ee-mono">{data.config.service_account}</code>, registers <code className="ee-mono">HTTP/{data.host}</code> on it (Kerberos tickets for EasyEAP are made for that name) and writes <code className="ee-mono">easyeap-cep.keytab</code>. Running it again sets a new password, so upload the new keytab afterwards.</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Btn size="sm" busy={scriptBusy === 'windows'} onClick={() => download('windows')}><Download aria-hidden />Script for Windows AD (.ps1)</Btn>
-              <Btn size="sm" busy={scriptBusy === 'samba'} onClick={() => download('samba')}><Download aria-hidden />Script for Samba AD (.sh)</Btn>
-            </div>
-          </Step>
-          <Step n={2} title="Upload and test the keytab">
-            {k ? (
-              <Dl items={[
-                ['Principal', <span className="ee-mono text-[12.5px] break-all">{k.principal ?? '—'}</span>, 'wide'],
-                ['Key version', <span className="ee-num">{k.kvno}</span>],
-                ['Encryption', k.enctypes.join(', ') || '—'],
-                ['Uploaded', k.uploaded_at ? <span title={fmtDateTime(k.uploaded_at)}>{ago(k.uploaded_at, now)}</span> : '—'],
-                ['Test', t ? <span className="inline-flex flex-wrap items-center gap-2"><Chip tone={t.ok ? 'valid' : 'crit'}>{t.ok ? 'Passed' : 'Failed'}</Chip><span className="ee-small ee-ink-3">{ago(t.at, now)}</span></span> : 'Not run'],
-              ]} />
-            ) : <p>Upload the keytab the script wrote, then delete the file. EasyEAP keeps it encrypted.</p>}
-            {t && !t.ok && <Callout tone="crit" className="mt-2" title="The test failed">{t.message}</Callout>}
-            {k && k.problems.length > 0 && <Callout tone="crit" className="mt-2" title="This keytab won’t work">{k.problems.join(' ')}</Callout>}
-            {write && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                <input ref={file} type="file" accept=".keytab,application/octet-stream" className="sr-only" id="ae-keytab" onChange={(e) => onFile(e.target.files?.[0])} />
-                <Btn size="sm" variant={k ? 'default' : 'primary'} busy={upload.isPending} onClick={() => file.current?.click()}><Upload aria-hidden />{k ? 'Replace keytab' : 'Upload keytab'}</Btn>
-                {k && <Btn size="sm" busy={test.isPending} onClick={() => test.mutate(undefined, {
-                  onSuccess: (d) => toast(d.config.keytab_test?.ok ? 'The keytab works' : 'The test failed', d.config.keytab_test?.message, d.config.keytab_test?.ok ? 'valid' : 'crit'),
-                  onError: (e) => toast('The test didn’t run', errorMessage(e), 'crit'),
-                })}><FlaskConical aria-hidden />Test</Btn>}
-                {k && <Btn size="sm" variant="ghost" busy={remove.isPending} onClick={() => remove.mutate(undefined, { onSuccess: () => toast('Keytab removed'), onError: (e) => toast('It wasn’t removed', errorMessage(e), 'crit') })}><Trash2 aria-hidden />Remove</Btn>}
+            <p>EasyEAP creates <code className="ee-mono">{data.config.service_account}</code> in Active Directory, registers <code className="ee-mono">HTTP/{data.host}</code> on it (Kerberos tickets for EasyEAP are made for that name), keeps its key encrypted, and tests it. You need an account that may create users, such as a Domain Admin: EasyEAP uses it once, over the directory’s encrypted connection, and doesn’t keep it.</p>
+            {hostProblem && <Callout tone="crit" className="mt-2" title="EasyEAP needs a DNS name first">{hostProblem.message}</Callout>}
+            {k && (
+              <div className="mt-2">
+                <Dl items={[
+                  ['Principal', <span className="ee-mono text-[12.5px] break-all">{k.principal ?? '—'}</span>, 'wide'],
+                  ...(k.account_dn ? [['Account', <span className="ee-mono text-[12.5px] break-all">{k.account_dn}</span>, 'wide'] as [string, ReactNode, 'wide']] : []),
+                  ['Key version', <span className="ee-num">{k.kvno}</span>],
+                  ['Encryption', k.enctypes.join(', ') || '—'],
+                  [k.source === 'console' ? 'Created' : 'Uploaded', k.uploaded_at ? <span title={fmtDateTime(k.uploaded_at)}>{ago(k.uploaded_at, now)}{k.created_by ? ` by ${k.created_by}` : ''}</span> : '—'],
+                  ['Test', t ? <span className="inline-flex flex-wrap items-center gap-2"><Chip tone={t.ok ? 'valid' : 'crit'}>{t.ok ? 'Passed' : 'Failed'}</Chip><span className="ee-small ee-ink-3">{ago(t.at, now)}</span></span> : 'Not run'],
+                ]} />
               </div>
             )}
-            <p className="ee-small ee-ink-3 mt-2">The test asks your domain controller for a ticket to <span className="ee-mono">HTTP/{data.host}</span> with the directory’s bind account, as a PC would, and opens it with the keytab. It needs Kerberos (88/tcp) from EasyEAP to the domain controller; enrollment itself doesn’t.</p>
+            {t && !t.ok && <Callout tone="crit" className="mt-2" title="The test failed">{t.message}</Callout>}
+            {k && k.problems.length > 0 && <Callout tone="crit" className="mt-2" title="This key won’t work">{k.problems.join(' ')}</Callout>}
+            {write && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Btn size="sm" variant={k ? 'default' : 'primary'} disabled={!!hostProblem} onClick={() => setCreating(true)}><KeyRound aria-hidden />{k ? 'Create it again…' : 'Create the service account…'}</Btn>
+                {k && <Btn size="sm" busy={test.isPending} onClick={() => test.mutate(undefined, {
+                  onSuccess: (d) => toast(d.config.keytab_test?.ok ? 'The key works' : 'The test failed', d.config.keytab_test?.message, d.config.keytab_test?.ok ? 'valid' : 'crit'),
+                  onError: (e) => toast('The test didn’t run', errorMessage(e), 'crit'),
+                })}><FlaskConical aria-hidden />Test</Btn>}
+                {k && <Btn size="sm" variant="ghost" busy={remove.isPending} onClick={() => remove.mutate(undefined, { onSuccess: () => toast('Key removed'), onError: (e) => toast('It wasn’t removed', errorMessage(e), 'crit') })}><Trash2 aria-hidden />Remove</Btn>}
+              </div>
+            )}
+            <p className="ee-small ee-ink-3 mt-2">The test asks your domain controller for a ticket to <span className="ee-mono">HTTP/{data.host}</span> with the directory’s bind account, as a PC would, and opens it with the key. It needs Kerberos (88/tcp) from EasyEAP to the domain controller; enrollment itself doesn’t.</p>
+            {write && (
+              <details className="mt-3 rounded-[var(--ee-r-2)] border border-[var(--ee-line)] px-3 py-2">
+                <summary className="cursor-pointer text-[13px] font-semibold">Other ways: a script on a domain controller, and a keytab file</summary>
+                <p className="ee-small ee-ink-2 mt-2">If your administrators won’t type their credentials into EasyEAP: run the script on a domain controller as a Domain Admin. It creates the same account and writes <code className="ee-mono">easyeap-cep.keytab</code>; upload that file here, then delete it.</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Btn size="sm" busy={scriptBusy === 'windows'} onClick={() => download('windows')}><Download aria-hidden />Script for Windows AD (.ps1)</Btn>
+                  <Btn size="sm" busy={scriptBusy === 'samba'} onClick={() => download('samba')}><Download aria-hidden />Script for Samba AD (.sh)</Btn>
+                  <input ref={file} type="file" accept=".keytab,application/octet-stream" className="sr-only" id="ae-keytab" onChange={(e) => onFile(e.target.files?.[0])} />
+                  <Btn size="sm" busy={upload.isPending} onClick={() => file.current?.click()}><Upload aria-hidden />Upload keytab</Btn>
+                </div>
+              </details>
+            )}
+            <ServiceAccountDialog open={creating} onClose={() => setCreating(false)} account={data.config.service_account} host={data.host} realm={data.realm} again={!!k}
+              verified={data.directory_verified !== false} />
           </Step>
-          <Step n={3} title="Turn it on">
+          <Step n={2} title="Turn it on">
             <p>{data.config.enabled ? <>Autoenrollment is on for {[data.config.computers && 'computers', data.config.users && 'users'].filter(Boolean).join(' and ') || 'nobody'}.</> : 'Choose who gets certificates and turn autoenrollment on.'}</p>
             <div className="mt-2"><Btn size="sm" onClick={onSettings}>Open settings</Btn></div>
           </Step>
-          <Step n={4} title="Point Group Policy at EasyEAP">
+          <Step n={3} title="Point Group Policy at EasyEAP">
             <p className="mb-2">In a GPO linked to the PCs’ OU, under <b>Computer Configuration → Policies → Windows Settings → Security Settings → Public Key Policies</b>:</p>
             <ol className="list-decimal space-y-1.5 pl-5 marker:text-[var(--ee-ink-3)]">
               <li className="pl-1"><b>Certificate Services Client – Certificate Enrollment Policy</b>: Enabled. Add a server: paste the URL below, authentication <b>Windows integrated</b>, <b>Validate Server</b>, <b>Add</b>. Tick <b>Default</b> on it.</li>
@@ -201,7 +214,7 @@ function SetupTab({ data, write, onSettings }: { data: AutoenrollStatus; write: 
             </div>
             {can('radius:read') && <p className="ee-small ee-ink-3 mt-2"><Link className="underline" to={paths.radius(tid)}>RADIUS → Group Policy</Link> has the Wi-Fi and wired policies and the root CA for trusted roots.</p>}
           </Step>
-          <Step n={5} title="Try one PC">
+          <Step n={4} title="Try one PC">
             <ol className="list-decimal space-y-1.5 pl-5 marker:text-[var(--ee-ink-3)]">
               <li className="pl-1">On the PC: <code className="ee-mono">gpupdate /force</code>, then <code className="ee-mono">certutil -pulse</code>. <b>certlm.msc → Personal</b> shows a certificate from the “{data.templates.find((x) => x.kind === 'computer')?.common_name ?? 'EasyEAP-Computer'}” template within a minute.</li>
               <li className="pl-1">Signed in as a user (when user certificates are on): <code className="ee-mono">certutil -user -pulse</code>; <b>certmgr.msc → Personal</b>.</li>
@@ -213,6 +226,62 @@ function SetupTab({ data, write, onSettings }: { data: AutoenrollStatus; write: 
         </ol>
       </Panel>
     </div>
+  )
+}
+
+function ServiceAccountDialog({ open, onClose, account, host, realm, again, verified }: {
+  open: boolean; onClose: () => void; account: string; host: string; realm: string | null; again: boolean; verified: boolean
+}) {
+  const { tid } = useTenant()
+  const id = useId()
+  const create = useCreateServiceAccount(tid)
+  const [user, setUser] = useState('')
+  const [password, setPassword] = useState('')
+  const [container, setContainer] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [unverified, setUnverified] = useState(false)
+  // Not while it runs: closing would hide how it ended, and a second run would reset the password again.
+  const close = () => { if (create.isPending) return; setPassword(''); setError(null); setUnverified(false); create.reset(); onClose() }
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    create.mutate({ username: user.trim(), password, container: container.trim(), ...(verified ? {} : { accept_unverified: unverified }) }, {
+      onSuccess: (d) => {
+        const ok = d.config.keytab_test?.ok
+        toast(d.service_account.created ? 'Service account created' : 'Service account reset',
+          ok ? 'The test passed: your domain controller’s tickets open with its key.' : `The test failed: ${d.config.keytab_test?.message ?? 'see Set it up.'}`, ok ? 'valid' : 'warn')
+        setPassword(''); setError(null); setUnverified(false); onClose()
+      },
+      onError: (err) => { setPassword(''); setError(errorMessage(err)) },
+    })
+  }
+  return (
+    <EDialog open={open} onOpenChange={(o) => !o && close()} title={again ? 'Create the service account again' : 'Create the service account'}
+      footer={<><Btn variant="ghost" onClick={close} disabled={create.isPending}>Cancel</Btn><Btn variant="primary" type="submit" form={`${id}-f`} busy={create.isPending}
+        disabled={!user.trim() || !password || (!verified && !unverified)}>{again ? 'Reset and test' : 'Create and test'}</Btn></>}>
+      <form id={`${id}-f`} onSubmit={submit} className="space-y-3 text-[13px]">
+        <p>EasyEAP signs in to {realm ?? 'your domain'} with this account, checks that <span className="ee-mono">HTTP/{host}</span> isn’t another account’s, {again ? <>gives <span className="ee-mono">{account}</span> a new password (the old key stops working)</> : <>creates <span className="ee-mono">{account}</span> (a user that can’t be used to sign in to PCs: AES only, not delegable)</>}, and keeps its key. The credentials below are used for this once and aren’t stored.</p>
+        <Field label="Administrator" htmlFor={`${id}-u`} hint="A Domain Admin, or an account that may create users: Administrator@corp.example or CORP\Administrator.">
+          <input id={`${id}-u`} className="ee-input" autoComplete="off" spellCheck={false} value={user} onChange={(e) => setUser(e.target.value)} disabled={create.isPending} />
+        </Field>
+        <Field label="Password" htmlFor={`${id}-p`}>
+          <input id={`${id}-p`} type="password" className="ee-input" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={create.isPending} />
+        </Field>
+        <Field label="Create it in" optional htmlFor={`${id}-c`} hint="An OU as a distinguished name, for example OU=Service Accounts,DC=corp,DC=example. Empty: the domain’s Users container.">
+          <input id={`${id}-c`} className="ee-input" spellCheck={false} value={container} onChange={(e) => setContainer(e.target.value)} disabled={create.isPending} />
+        </Field>
+        {!verified && (
+          <Callout tone="warn" title="EasyEAP doesn’t check your domain controller’s certificate">
+            <p>The directory connection is encrypted, but its certificate isn’t verified, so someone on the network between EasyEAP and the domain controller could pose as it and read this password. Turn on <b>Verify the certificate</b> in <Link to={paths.directory(tid)} className="ee-link">Directory</Link> (with your domain’s CA certificate) first, or:</p>
+            <label className="mt-2 flex items-start gap-2">
+              <input type="checkbox" className="ee-check mt-0.5" checked={unverified} onChange={(e) => setUnverified(e.target.checked)} disabled={create.isPending} />
+              <span>Send it anyway over this connection (recorded in the audit log)</span>
+            </label>
+          </Callout>
+        )}
+        {error && <Callout tone="crit" title="It didn’t finish">{error}</Callout>}
+      </form>
+    </EDialog>
   )
 }
 
