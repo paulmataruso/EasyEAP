@@ -95,6 +95,10 @@ def syslog_sessions(rows: Iterable) -> list[dict]:
             if not mac:
                 continue
             cur = get(port, mac, at, fresh=mn == "START")
+            if mn == "START" and port:   # one MAC, one port: starting on another ends the one before (its link-down may not be logged)
+                for (p2, m2), other in sessions.items():
+                    if m2 == mac and p2 and p2 != port and other["first_at"] < at:
+                        end(other, at, f"started on {port}")
             if sid:
                 cur["session_id"], by_sid[sid] = sid, (port, mac)
             if mn == "START":

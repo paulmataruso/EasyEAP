@@ -84,6 +84,13 @@ def test_mac_move_and_a_new_session_after_the_end():
     ))
     by_port = {s["port"]: s for s in got}
     assert by_port["GigabitEthernet1/0/5"]["ended"].startswith("moved to") and by_port["GigabitEthernet1/0/9"]["active"]
+    # No MACMOVE (the old port went down before the switch logged to EasyEAP): starting elsewhere ends the old one.
+    got = devicelog.syslog_sessions(rows(
+        (0, b"%SESSION_MGR-5-FAIL: Authorization failed or unapplied for client (0005.1b31.576e) on Interface GigabitEthernet1/0/24 AuditSessionID 01"),
+        (600, b"%SESSION_MGR-5-START: Starting 'dot1x' for client (0005.1B31.576E) on Interface GigabitEthernet1/0/23 AuditSessionID 02"),
+    ))
+    by_port = {s["port"]: s for s in got}
+    assert by_port["GigabitEthernet1/0/24"]["ended"] == "started on GigabitEthernet1/0/23" and by_port["GigabitEthernet1/0/23"]["active"]
 
 
 def test_nexus_sessions_name_a_port():
