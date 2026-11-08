@@ -106,6 +106,11 @@ export async function getWindowsHelper(token: string): Promise<Blob> {
   return (await call(`${base(token)}/windows.ps1`)).blob()
 }
 
+/** The Linux setup script (NetworkManager, iwd or wpa_supplicant). Doesn't consume the link; the script itself posts the CSR. */
+export async function getLinuxHelper(token: string): Promise<Blob> {
+  return (await call(`${base(token)}/linux.sh`)).blob()
+}
+
 /** Windows WLAN profile (EAP-TLS, server name pinned). Nothing secret; only while the link is pending. */
 export async function getWifiXml(token: string): Promise<string> {
   return (await call(`${base(token)}/wifi.xml`)).text()

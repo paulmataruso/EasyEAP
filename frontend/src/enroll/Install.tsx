@@ -3,7 +3,7 @@ import { ArrowRight, CircleCheck, Download, FileCheck2, LoaderCircle } from 'luc
 import { EnrollError, getLink, isPending, type PendingInfo, type Platform } from './api'
 import { PackageAck } from './Create'
 import { MIME, saveFile } from './files'
-import { InstallSteps, type GuideCtx, type Route } from './guides'
+import { InstallSteps, linuxCommand, type GuideCtx, type Route } from './guides'
 import { closedReason, fileNames, type FlowResult, type GoneReason, type HelperResult } from './model'
 import { Button, Command, CopyButton, Disclosure, Note, StepHeading } from './ui'
 
@@ -72,12 +72,12 @@ export function InstallStep({ token, info, platform, route, result, c, onResult,
       <StepHeading
         focusKey={`install-${route}`}
         lede={
-          route === 'helper' ? <>Run the helper you just downloaded. It installs your certificate and the <b>{c.ssid}</b> network.</>
+          route === 'helper' ? <>Run the {platform === 'linux' ? 'setup script' : 'helper'} you just downloaded. It installs your certificate and the <b>{c.ssid}</b> network.</>
           : result.kind === 'package' ? <>Your {result.format === 'mobileconfig' ? 'Wi-Fi profile' : 'certificate file'} is on this device. Now install it.</>
           : <>Your certificate is ready. It’s only on this page until you install it, so keep the page open.</>
         }
       >
-        {route === 'helper' ? 'Install with the setup helper' : 'Install your certificate'}
+        {route === 'helper' ? (platform === 'linux' ? 'Run the setup script' : 'Install with the setup helper') : 'Install your certificate'}
       </StepHeading>
 
       {result.kind === 'browser' && (
@@ -104,7 +104,7 @@ export function InstallStep({ token, info, platform, route, result, c, onResult,
                   <DownloadItem
                     label="Download the CA certificate"
                     filename={platform === 'android' ? n.caCrt : n.caPem}
-                    onSave={() => saveFile(result.csr.issuing_ca_pem + (result.csr.root_ca_pem ?? ''), platform === 'android' ? n.caCrt : n.caPem, platform === 'android' ? MIME.crt : MIME.pem)}
+                    onSave={() => saveFile(platform === 'linux' ? (result.csr.root_ca_pem ?? '') + result.csr.issuing_ca_pem : result.csr.issuing_ca_pem + (result.csr.root_ca_pem ?? ''), platform === 'android' ? n.caCrt : n.caPem, platform === 'android' ? MIME.crt : MIME.pem)}
                     hint={platform === 'android' ? 'Usually not needed: your phone takes it from the certificate file. Keep it in case the next step asks for it.' : 'Your computer uses it to check it’s talking to the real Wi-Fi server.'}
                   />
                 )}
@@ -120,7 +120,7 @@ export function InstallStep({ token, info, platform, route, result, c, onResult,
       )}
 
       {result.kind === 'helper' && (
-        <HelperInstall token={token} result={result} c={c} onResult={onResult} onUseBrowser={onUseBrowser} onGone={onGone} />
+        <HelperInstall token={token} platform={platform} result={result} c={c} onResult={onResult} onUseBrowser={onUseBrowser} onGone={onGone} />
       )}
 
       {result.kind === 'package' && (
@@ -142,7 +142,7 @@ export function InstallStep({ token, info, platform, route, result, c, onResult,
             <DownloadItem
               label="Download the CA certificate"
               filename={platform === 'android' ? n.caCrt : n.caPem}
-              onSave={() => saveFile(result.caPem!, platform === 'android' ? n.caCrt : n.caPem, platform === 'android' ? MIME.crt : MIME.pem)}
+              onSave={() => saveFile(platform === 'linux' ? rootFirst(result.caPem!) : result.caPem!, platform === 'android' ? n.caCrt : n.caPem, platform === 'android' ? MIME.crt : MIME.pem)}
               hint={platform === 'android' ? 'Usually not needed: your phone takes it from the certificate file. Keep it in case the next step asks for it.' : 'Your computer uses it to check it’s talking to the real Wi-Fi server.'}
             />
           )}
@@ -164,8 +164,9 @@ export function InstallStep({ token, info, platform, route, result, c, onResult,
   )
 }
 
-function HelperInstall({ token, result, c, onResult, onUseBrowser, onGone }: {
+function HelperInstall({ token, platform, result, c, onResult, onUseBrowser, onGone }: {
   token: string
+  platform: Platform
   result: HelperResult
   c: GuideCtx
   onResult: (r: FlowResult) => void
@@ -194,25 +195,42 @@ function HelperInstall({ token, result, c, onResult, onUseBrowser, onGone }: {
     return () => { stop = true; window.clearInterval(id) }
   }, [token, result, onResult, onGone])
 
-  const cmd = `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\\Downloads\\${c.files.helper}"`
+  const linux = platform === 'linux'
+  const file = c.files.helper ?? (linux ? 'EasyEAP-WiFi-Setup.sh' : 'EasyEAP-WiFi-Setup.ps1')
+  const what = linux ? 'script' : 'helper'
   return (
     <div className="space-y-6">
-      <SavedFile name={c.files.helper ?? 'EasyEAP-WiFi-Setup.ps1'} onAgain={() => saveFile(result.script, c.files.helper ?? 'EasyEAP-WiFi-Setup.ps1', MIME.ps1)} />
+      <SavedFile name={file} onAgain={() => saveFile(result.script, file, linux ? MIME.sh : MIME.ps1)} />
       <section aria-labelledby="h-run">
         <h2 id="h-run" className="en-h2 mb-4">Run it</h2>
-        <InstallSteps platform="windows" route="helper" c={c} />
+        <InstallSteps platform={platform} route="helper" c={c} />
       </section>
       <div role="status" aria-live="polite">
         {result.finished ? (
           <Note tone="valid" title="Your certificate was issued" icon={<CircleCheck aria-hidden />}>
-            The helper used this link to get your certificate. When it says <b>Done</b>, the Wi-Fi profile is installed and you can connect.
+            The {what} used this link to get your certificate. When it says <b>Done</b>, {linux ? 'the network is set up' : 'the Wi-Fi profile is installed'} and you can connect.
           </Note>
         ) : (
-          <Note icon={<LoaderCircle className="en-spin" aria-hidden />} title="Waiting for the helper to finish">
-            This page checks every few seconds. If the helper says <b>Done</b>, you can continue.
+          <Note icon={<LoaderCircle className="en-spin" aria-hidden />} title={`Waiting for the ${what} to finish`}>
+            This page checks every few seconds. If the {what} says <b>Done</b>, you can continue.
           </Note>
         )}
       </div>
+      {linux ? <LinuxHelperDetails c={c} file={file} /> : <WindowsHelperDetails c={c} file={file} />}
+      {!result.finished && (
+        <p className="en-small">
+          The {what} didn’t work?{' '}
+          <button type="button" className="underline underline-offset-[3px] text-[var(--ee-ink)] min-h-[44px]" onClick={onUseBrowser}>Create the certificate in this browser instead</button>
+        </p>
+      )}
+    </div>
+  )
+}
+
+function WindowsHelperDetails({ c, file }: { c: GuideCtx; file: string }) {
+  const cmd = `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\\Downloads\\${file}"`
+  return (
+    <>
       <Disclosure summary="Prefer to type a command?">
         <p className="en-body mb-3">Open <b>PowerShell</b> (press Start, type <b>PowerShell</b>, press Enter), paste this and press Enter. The window stays open and says <b>Done</b> when it’s finished.</p>
         <Command value={cmd} what="PowerShell command" />
@@ -228,70 +246,106 @@ function HelperInstall({ token, result, c, onResult, onUseBrowser, onGone }: {
           <li>If it can’t finish, it shows the reason in red. Tell your IT administrator what it says.</li>
         </ul>
       </Disclosure>
-      {!result.finished && (
-        <p className="en-small">
-          The helper didn’t work?{' '}
-          <button type="button" className="underline underline-offset-[3px] text-[var(--ee-ink)] min-h-[44px]" onClick={onUseBrowser}>Create the certificate in this browser instead</button>
-        </p>
-      )}
-    </div>
+    </>
   )
 }
 
+function LinuxHelperDetails({ c, file }: { c: GuideCtx; file: string }) {
+  return (
+    <>
+      <Disclosure summary="Check first, without changing anything">
+        <p className="en-body mb-3">This shows what the script found on your computer and what it would do. It doesn’t use your link or change anything:</p>
+        <Command value={`${linuxCommand(file)} --check`} what="check command" />
+      </Disclosure>
+      <Disclosure summary="What the script does">
+        <ul className="en-bullets">
+          <li>Finds what your computer uses for networks: NetworkManager (Ubuntu, Debian, Fedora, Linux Mint, Raspberry Pi OS and most desktops), iwd, or wpa_supplicant with systemd-networkd (Ubuntu Server).</li>
+          <li>Creates a private key on this computer and sends only a certificate request, never the key, to {c.tenant} using this link, which then stops working.</li>
+          <li>Saves the certificate, the key and {c.rootCn ? `“${c.rootCn}”` : 'your organisation’s certificate authority'} in <span className="ee-mono">/etc/easyeap/</span>. Only administrators can read the key.</li>
+          <li>Adds <b>{c.ssid}</b> for everyone who uses this computer{c.wired ? ', and network ports that ask for 802.1X,' : ''} and connects if it’s in range. It only trusts the server <b>{c.serverName}</b>, and nothing asks for a password.</li>
+          <li>Replaces settings for <b>{c.ssid}</b> left by an earlier try, and renews the certificate by itself before it expires.</li>
+          <li><span className="ee-mono">{linuxCommand(file)} --remove</span> undoes all of it.</li>
+        </ul>
+      </Disclosure>
+    </>
+  )
+}
+
+/** Issuing CA then Root CA (as the API returns it) → Root CA first. */
+function rootFirst(chainPem: string): string {
+  const blocks = chainPem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----\s*/g)
+  return blocks && blocks.length > 1 ? [...blocks].reverse().join('') : chainPem
+}
+
 function LinuxAdvanced({ result, c, n }: { result: Extract<FlowResult, { kind: 'browser' }>; c: GuideCtx; n: ReturnType<typeof fileNames> }) {
-  const nm = result.csr.profiles.networkmanager
-  const wpa = result.csr.profiles.wpa_supplicant
-  const nmWired = result.csr.profiles.networkmanager_wired ?? null
-  const wpaWired = result.csr.profiles.wpa_supplicant_wired ?? null
-  if (!nm && !wpa && !nmWired && !wpaWired) return null
-  const prep = [
-    'sudo mkdir -p /etc/easyeap',
-    `sudo cp ${n.caPem} /etc/easyeap/ca-chain.pem`,
-    `openssl pkcs12 -in ${n.p12} -clcerts -nokeys -out client.pem`,
-    `openssl pkcs12 -in ${n.p12} -nocerts -nodes -out client.key`,
-    'sudo install -m 644 client.pem /etc/easyeap/client.pem',
-    'sudo install -m 600 client.key /etc/easyeap/client.key && rm client.key',
+  const q = (v: string) => (/^[\w@%+=:,./-]+$/.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`)
+  const dir = '/etc/easyeap'
+  const p12 = `${dir}/${n.p12}`
+  const ca = `${dir}/${n.caPem}`
+  const copy = [
+    `sudo mkdir -p ${dir}`,
+    `sudo cp ~/Downloads/${q(n.p12)} ~/Downloads/${q(n.caPem)} ${dir}/`,
+    `sudo chmod 600 ${q(p12)}`,
+  ].join('\n')
+  const nm = [
+    `sudo nmcli connection add type wifi con-name ${q(c.ssid)} ssid ${q(c.ssid)} wifi-sec.key-mgmt wpa-eap \\`,
+    `  802-1x.eap tls 802-1x.identity ${q(c.identity)} 802-1x.domain-suffix-match ${q(c.serverName)} \\`,
+    `  802-1x.ca-cert ${q(ca)} 802-1x.client-cert ${q(p12)} 802-1x.private-key ${q(p12)} \\`,
+    `  802-1x.private-key-password-flags 0 802-1x.private-key-password ${q(result.password)}${c.wpa3 ? ' wifi-sec.pmf required' : ''}`,
+    `sudo nmcli connection up ${q(c.ssid)}`,
+  ].join('\n')
+  const wiredName = `Wired 802.1X (${c.tenant})`
+  const nmWired = [
+    `sudo nmcli connection add type ethernet con-name ${q(wiredName)} connection.autoconnect-priority 10 \\`,
+    `  802-1x.eap tls 802-1x.identity ${q(c.identity)} 802-1x.domain-suffix-match ${q(c.serverName)} \\`,
+    `  802-1x.ca-cert ${q(ca)} 802-1x.client-cert ${q(p12)} 802-1x.private-key ${q(p12)} \\`,
+    `  802-1x.private-key-password-flags 0 802-1x.private-key-password ${q(result.password)} 802-1x.optional yes`,
+  ].join('\n')
+  // Hex: wpa_supplicant takes any value this way, quotes and # included.
+  const hex = (v: string) => [...new TextEncoder().encode(v)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  const wpa = [
+    'network={',
+    `    ssid=${hex(c.ssid)}`,
+    '    key_mgmt=WPA-EAP WPA-EAP-SHA256',
+    `    ieee80211w=${c.wpa3 ? 2 : 1}`,
+    '    eap=TLS',
+    `    identity=${hex(c.identity)}`,
+    `    ca_cert="${ca}"`,
+    `    private_key="${p12}"`,
+    `    private_key_passwd=${hex(result.password)}`,
+    `    domain_suffix_match="${c.serverName}"`,
+    '}',
   ].join('\n')
   return (
-    <Disclosure summary={nmWired || wpaWired ? 'For IT staff: NetworkManager or wpa_supplicant (Wi-Fi and wired)' : 'For IT staff: NetworkManager or wpa_supplicant'}>
-      <p className="en-body">EasyEAP’s configuration files expect the CA chain, the certificate and an unencrypted private key in <span className="ee-mono">/etc/easyeap/</span>. From the folder with your downloads, run (OpenSSL asks for the certificate password):</p>
-      <pre className="ee-code mt-3">{prep}</pre>
-      <div className="mt-2"><CopyButton text={prep} what="preparation commands" /></div>
-      {nm && (
-        <>
-          <h3 className="en-h2 mt-5 text-[15px]">NetworkManager</h3>
+    <Disclosure summary="For IT staff: set it up from a terminal instead">
+      <p className="en-body">The <b>Linux setup script</b> does all of this by itself, with a key made on the computer and no password to keep: go back to the first step and choose it. To use the files from this page instead:</p>
+      <ol className="en-howto mt-4" aria-label="Terminal setup">
+        <li>
+          Copy both files to <span className="ee-mono">{dir}</span>, where only administrators can read the certificate:
+          <pre className="ee-code mt-2">{copy}</pre>
+          <div className="mt-2"><CopyButton text={copy} what="copy commands" /></div>
+        </li>
+        <li>
+          <b>NetworkManager</b> (Ubuntu and Debian desktops, Fedora, Linux Mint, Raspberry Pi OS): add the network for all users. The certificate password is saved with it, so nothing asks for it when connecting:
           <pre className="ee-code mt-2">{nm}</pre>
-          <div className="mt-2"><CopyButton text={nm} what="NetworkManager profile" /></div>
-        </>
-      )}
-      {wpa && (
-        <>
-          <h3 className="en-h2 mt-5 text-[15px]">wpa_supplicant</h3>
-          <pre className="ee-code mt-2">{wpa}</pre>
-          <div className="mt-2"><CopyButton text={wpa} what="wpa_supplicant block" /></div>
-        </>
-      )}
-      {(nmWired || wpaWired) && (
-        <>
-          <h3 className="en-h2 mt-6 text-[15px]">Wired network ports (802.1X)</h3>
-          <p className="en-body mt-1">For computers plugged into a network port that asks for 802.1X. They use the same files in <span className="ee-mono">/etc/easyeap/</span>. On a port without 802.1X the NetworkManager connection still comes up.</p>
-          {nmWired && (
+          <div className="mt-2"><CopyButton text={nm} what="NetworkManager commands" /></div>
+          <span className="en-sub">If a <b>{c.ssid}</b> connection is already saved, delete it first: <span className="ee-mono">sudo nmcli connection delete {q(c.ssid)}</span>.</span>
+          {c.wired && (
             <>
-              <h3 className="en-h2 mt-4 text-[15px]">NetworkManager (wired)</h3>
+              <span className="en-sub">For network ports that ask for 802.1X (other ports keep working as before):</span>
               <pre className="ee-code mt-2">{nmWired}</pre>
-              <div className="mt-2"><CopyButton text={nmWired} what="wired NetworkManager profile" /></div>
+              <div className="mt-2"><CopyButton text={nmWired} what="wired NetworkManager command" /></div>
             </>
           )}
-          {wpaWired && (
-            <>
-              <h3 className="en-h2 mt-4 text-[15px]">wpa_supplicant (wired)</h3>
-              <pre className="ee-code mt-2">{wpaWired}</pre>
-              <div className="mt-2"><CopyButton text={wpaWired} what="wired wpa_supplicant file" /></div>
-            </>
-          )}
-        </>
-      )}
-      <p className="en-small mt-3">{[nm, wpa, nmWired, wpaWired].filter(Boolean).length > 1 ? 'Each one checks' : 'It checks'} that the server is <b>{c.serverName}</b>.</p>
+        </li>
+        <li>
+          <b>No NetworkManager</b> (Ubuntu Server, minimal installs): find the Wi-Fi interface with <span className="ee-mono">iw dev</span> (for example <span className="ee-mono">wlan0</span>). Put this in <span className="ee-mono">/etc/wpa_supplicant/wpa_supplicant-wlan0.conf</span>, with the line <span className="ee-mono">ctrl_interface=/run/wpa_supplicant</span> above it if the file is new, and make the file <span className="ee-mono">chmod 600</span>:
+          <pre className="ee-code mt-2">{wpa}</pre>
+          <div className="mt-2"><CopyButton text={wpa} what="wpa_supplicant settings" /></div>
+          <span className="en-sub">Start it now and at every boot with <span className="ee-mono">sudo systemctl enable --now wpa_supplicant@wlan0</span>, and get an address with <span className="ee-mono">DHCP=yes</span> in a systemd-networkd <span className="ee-mono">.network</span> file for <span className="ee-mono">wlan0</span>. <span className="ee-mono">wpa_cli -i wlan0 status</span> shows <span className="ee-mono">wpa_state=COMPLETED</span> once it’s connected.</span>
+        </li>
+      </ol>
+      <p className="en-small mt-3">Both only trust the server <b>{c.serverName}</b>. Renewing is up to you: this certificate expires and won’t renew itself.</p>
     </Disclosure>
   )
 }

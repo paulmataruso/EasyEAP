@@ -473,9 +473,11 @@ def instructions(platform: str, ssid: str, server_name: str, wired: bool = False
                 f"Open Wi-Fi → “{ssid}”: EAP method TLS, CA certificate = the one you installed, Domain = {server_name}, "
                 "Identity = your sign-in name (shown on this page).",
                 "Save and connect."]
-    out = ["Save the certificate, key and CA chain under /etc/easyeap/ (key mode 600).",
-           "Install the NetworkManager profile or add the wpa_supplicant block.",
-           f"Connect to “{ssid}”. The profile checks that the server name is {server_name}."]
+    out = ["Download the setup script (EasyEAP-WiFi-Setup.sh) on this computer.",
+           "Open Terminal and run: bash ~/Downloads/EasyEAP-WiFi-Setup.sh. It asks for your password once.",
+           f"It finds NetworkManager, iwd or wpa_supplicant, creates the key on this computer, saves the certificate "
+           f"under /etc/easyeap/ and adds “{ssid}”, trusting only the server {server_name}. "
+           "It renews the certificate by itself."]
     if wired:
-        out.append("Network ports with 802.1X: also install the wired NetworkManager profile (or the wired wpa_supplicant file).")
+        out.append("Network ports with 802.1X: on computers with NetworkManager, the script sets those up too.")
     return out

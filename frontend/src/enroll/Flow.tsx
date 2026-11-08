@@ -20,11 +20,11 @@ export function useNow(intervalMs = 30_000): Date {
 
 export function Flow({ token, info, env, onGone }: { token: string; info: PendingInfo; env: Environment; onGone: (r: GoneReason) => void }) {
   const [platform, setPlatform] = useState<Platform>(info.platform)
-  const [winRoute, setWinRoute] = useState<'helper' | 'browser'>('helper')
+  const [helperRoute, setHelperRoute] = useState<'helper' | 'browser'>('helper')
   const [step, setStep] = useState(0)
   const [result, setResult] = useState<FlowResult | null>(null)
   const now = useNow()
-  const route = routeFor(info, platform, winRoute)
+  const route = routeFor(info, platform, helperRoute)
 
   // A link that runs out before anything was created is simply expired.
   useEffect(() => {
@@ -45,7 +45,7 @@ export function Flow({ token, info, env, onGone }: { token: string; info: Pendin
 
   const labels = ['Check your details', info.method === 'server' ? 'Download certificate' : 'Create certificate', 'Install', 'Connect']
   const c = guideCtx(info, platform, result)
-  const useBrowser = () => { setWinRoute('browser'); setResult(null); setStep(1) }
+  const useBrowser = () => { setHelperRoute('browser'); setResult(null); setStep(1) }
   const onResult = useCallback((r: FlowResult) => setResult(r), [])
   const created = (r: FlowResult) => { setResult(r); setStep(2) }
   const createProps = { token, info, platform, onBack: () => setStep(0), onGone }
@@ -63,7 +63,7 @@ export function Flow({ token, info, env, onGone }: { token: string; info: Pendin
             route={route}
             now={now}
             onContinue={() => setStep(1)}
-            onUseHelper={() => setWinRoute('helper')}
+            onUseHelper={() => setHelperRoute('helper')}
           />
         )}
         {step === 1 && route === 'package' && <PackageCreate {...createProps} onDone={created} />}

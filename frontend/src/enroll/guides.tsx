@@ -50,7 +50,7 @@ const rootName = (c: GuideCtx) => (c.rootCn ? <b>{q(c.rootCn)}</b> : <>your orga
 
 // ── Install ──────────────────────────────────────────────────────────────
 export function InstallSteps({ platform, route, c }: { platform: Platform; route: Route; c: GuideCtx }) {
-  if (route === 'helper') return <WindowsHelperSteps c={c} />
+  if (route === 'helper') return platform === 'linux' ? <LinuxHelperSteps c={c} /> : <WindowsHelperSteps c={c} />
 
   if (platform === 'ios') {
     return (
@@ -130,7 +130,7 @@ export function InstallSteps({ platform, route, c }: { platform: Platform; route
         <li>Download {route === 'package' ? 'the files' : 'both files'} above.</li>
         <li>
           Move them to a folder you’ll keep, for example a folder called <b>wifi</b> in your home folder.
-          <Sub>Your computer reads them every time it connects, so don’t delete them.</Sub>
+          <Sub>Your computer reads them every time it connects, so don’t delete or move them afterwards.</Sub>
         </li>
       </HowTo>
     )
@@ -153,6 +153,34 @@ export function InstallSteps({ platform, route, c }: { platform: Platform; route
           <Sub>If your browser saved the file somewhere else or renamed it, change the path to match.</Sub>
         </li>
       )}
+    </HowTo>
+  )
+}
+
+/** The terminal command that runs the Linux setup script from the Downloads folder. */
+export const linuxCommand = (file: string) => `bash ~/Downloads/${file}`
+
+export function LinuxHelperSteps({ c }: { c: GuideCtx }) {
+  const file = c.files.helper ?? 'EasyEAP-WiFi-Setup.sh'
+  return (
+    <HowTo label="Run the setup script">
+      <li>
+        Open <b>Terminal</b>: press <b>Ctrl+Alt+T</b>.
+        <Sub>Or open your list of apps and search for <Path>Terminal</Path>.</Sub>
+      </li>
+      <li>
+        Paste this command, then press <b>Enter</b>:
+        <span className="mt-2 block"><Command value={linuxCommand(file)} what="setup command" /></span>
+        <Sub>To paste in Terminal, press <b>Ctrl+Shift+V</b>. If your browser saved the file somewhere else, or saved it as <Path>{file.replace(/\.sh$/, ' (1).sh')}</Path> because you downloaded it before, type <b>bash</b> and a space, drag the newest file into the Terminal window, and press <b>Enter</b>.</Sub>
+      </li>
+      <li>
+        When it asks for your password, type the password you use to sign in to this computer and press <b>Enter</b>.
+        <Sub>Nothing shows while you type. Adding a network for the whole computer needs administrator rights; if it says you aren’t allowed, ask your IT administrator to run it for you.</Sub>
+      </li>
+      <li>
+        When it says <b>Done</b>, the network is set up, and connected if you’re near it. This page notices, too.
+        <Sub>If it says <b>Setup did not finish</b> instead, the message explains why. Tell your IT administrator what it says.</Sub>
+      </li>
     </HowTo>
   )
 }
@@ -205,27 +233,45 @@ export function ConnectSteps({ platform, route, c, password }: { platform: Platf
       </div>
     )
   }
+  if (platform === 'linux' && route === 'helper') {
+    return (
+      <HowTo label="Connect on Linux">
+        <li>If you were near <b>{c.ssid}</b>, the script already connected you. Your computer joins it by itself from now on, for everyone who uses it.</li>
+        <li>Somewhere else? Choose <b>{c.ssid}</b> in the Wi-Fi menu (top right) when you’re there. You won’t be asked for a password.</li>
+        {c.wired && <li>Using a network cable at work? Network ports that ask for 802.1X use the same certificate; the script set those up too.</li>}
+      </HowTo>
+    )
+  }
   if (platform === 'linux') {
+    const pw = password ? <Value value={password} what="certificate password" /> : <span className="en-plain">{route === 'package' ? 'The password from your IT administrator' : 'The password you chose'}</span>
     return (
       <div className="space-y-4">
         <HowTo label="Connect on Linux">
-          <li>Open <b>Settings → Wi-Fi</b> (or your network menu) and choose <b>{c.ssid}</b>.</li>
-          <li>Fill in these settings, then click <b>Connect</b>.</li>
+          <li>
+            Open <b>Settings → Wi-Fi</b>. If <b>{c.ssid}</b> is already listed as saved (from an earlier try), click the gear or arrow next to it and choose <b>Forget</b> first.
+            <Sub>Once a network is saved, clicking it reuses the old settings and asks for things that don’t apply, such as a user name and password.</Sub>
+          </li>
+          <li>Click <b>{c.ssid}</b>. In the window that opens, fill in these settings exactly, then click <b>Connect</b>.</li>
         </HowTo>
         <Settings
           label="Linux Wi-Fi settings"
           rows={[
             ['Security', c.wpa3 ? 'WPA3 Enterprise' : 'WPA & WPA2 Enterprise'],
-            ['Authentication', 'TLS'],
+            ['Authentication', <span className="en-plain"><b>TLS</b> (not the preselected Tunneled TLS or Protected EAP)</span>],
             ['Identity', <Value value={c.identity} what="identity" />],
             ['Domain', <Value value={c.serverName} what="domain" />],
             ['CA certificate', <span className="en-plain">Choose <b>{c.files.ca ?? 'the CA certificate file'}</b></span>],
-            ['User certificate', <span className="en-plain">Choose <b>{c.files.p12 ?? 'your certificate file'}</b></span>],
-            ['User key password', password ? <Value value={password} what="certificate password" /> : <span className="en-plain">{route === 'package' ? 'The password from your IT administrator' : 'The password you chose'}</span>],
+            ['User certificate', <span className="en-plain">Choose <b>{c.files.p12 ?? 'your certificate file'}</b>. <b>User private key</b> fills itself in.</span>],
+            ['User key password', pw],
           ]}
         />
-        <p className="en-small">Some versions call it <b>User certificate password</b>. When you choose the certificate file, the private key field fills itself in.</p>
-        {c.wired && <p className="en-small">Using a network cable at work? Network ports that ask for 802.1X need a wired connection set up with the same certificate. The files for it are under <b>For IT staff</b>.</p>}
+        <ul className="en-bullets">
+          <li><b>Paste</b> the password rather than typing it: the window checks the file after every key you press, which makes typing slow.</li>
+          <li>Set the password’s storage option (the icon in the password field) to <b>Store the password for all users</b>. Otherwise your computer may ask for your keyring password, or for the key password again, each time it connects.</li>
+          <li>If you’re asked for an administrator password, that’s your computer saving the network for all users. Ask your IT administrator if you don’t have one.</li>
+          <li>If the same window comes back asking for a <b>Private key password</b>, connecting failed. The password is almost never the problem: check the <b>Domain</b> and <b>CA certificate</b> above, then forget the network and try again.</li>
+        </ul>
+        {c.wired && <p className="en-small">Using a network cable at work? Network ports that ask for 802.1X need a wired connection with the same certificate. The <b>Linux setup script</b> sets that up for you.</p>}
       </div>
     )
   }
@@ -276,14 +322,18 @@ export function ConnectSteps({ platform, route, c, password }: { platform: Platf
   )
 }
 
-export function Troubleshoot({ c, platform, serial }: { c: GuideCtx; platform: Platform; serial: string | null }) {
+export function Troubleshoot({ c, platform, route, serial }: { c: GuideCtx; platform: Platform; route?: Route; serial: string | null }) {
   return (
     <ul className="en-bullets">
       <li>Make sure you’re near the <b>{c.ssid}</b> network and that this device’s date and time are set automatically. Certificates don’t work when the clock is wrong.</li>
-      <li>
-        Forget <b>{c.ssid}</b> in your Wi-Fi settings, then join again.
-        {(platform === 'android' || platform === 'linux') && ' Check each setting above, especially the domain and identity.'}
-      </li>
+      {platform === 'linux' && route === 'helper' ? (
+        <li>Run the setup script again: it repairs the settings and keeps your certificate. <b>{`${linuxCommand(c.files.helper ?? 'EasyEAP-WiFi-Setup.sh')} --remove`}</b> undoes everything it set up.</li>
+      ) : (
+        <li>
+          Forget <b>{c.ssid}</b> in your Wi-Fi settings, then join again.
+          {(platform === 'android' || platform === 'linux') && ' Check each setting above, especially the domain and identity.'}
+        </li>
+      )}
       <li>Never accept a certificate for a server other than <b>{c.serverName}</b>. If you see a different name, stop and tell your IT administrator.</li>
       <li>
         Still not connecting? Contact your IT administrator at {c.tenant}. Tell them your name, the device ({q(c.deviceName)}) and the time you tried

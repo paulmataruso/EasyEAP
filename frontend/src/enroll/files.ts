@@ -7,6 +7,7 @@ export const MIME = {
   crt: 'application/x-x509-ca-cert',
   xml: 'application/xml',
   ps1: 'text/plain',
+  sh: 'text/plain',
 } as const
 
 /** Set while handing a file to the browser by navigation, so the page's own "leave this page?" guard stays quiet. */

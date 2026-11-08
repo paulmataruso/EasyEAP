@@ -218,6 +218,9 @@ def renew(session: Session, bao: OpenBao, *, certificate_der: bytes, csr_pem: st
     if old.status == "revoked":
         raise EnrollmentError("This certificate was revoked, so it can't be renewed. Enroll again.")
     if old.status == "superseded" or old.renewed_at is not None:
+        again = _earlier_renewal(session, old, csr_pem, now)
+        if again is not None:  # the answer to the same request got lost on the way: send it again
+            return old, again
         raise EnrollmentError("This certificate was already renewed. Use the newer one.")
     if old.not_after <= now:
         raise EnrollmentError("This certificate has expired, so it can't be renewed. Enroll again.")
@@ -249,6 +252,20 @@ def renew(session: Session, bao: OpenBao, *, certificate_der: bytes, csr_pem: st
     old.status, old.renewed_at = "superseded", now  # still accepted until it expires, as after any renewal
     recompute_tenant(session, tenant.id)
     return old, new
+
+
+def _earlier_renewal(session: Session, old: m.Certificate, csr_pem: str, now: datetime) -> m.Certificate | None:
+    """The certificate an earlier renewal of `old` issued for this request's key, still valid; else None. A client
+    whose renewal answer was lost (timeout, sleep, Wi-Fi drop) keeps its pending key and asks again with it."""
+    prev = session.scalars(select(m.Certificate).where(m.Certificate.renewal_of == old.id).order_by(m.Certificate.not_after.desc())).first()
+    if prev is None or prev.status != "active" or prev.not_after <= now:
+        return None
+    try:
+        csr, _ = crypto.csr_info(csr_pem)
+        issued = x509.load_pem_x509_certificate(prev.certificate_pem.encode())
+    except ValueError:
+        return None
+    return prev if _spki(csr.public_key()) == _spki(issued.public_key()) else None
 
 
 def _csr_der(csr_pem: str) -> bytes:

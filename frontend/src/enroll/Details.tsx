@@ -68,8 +68,8 @@ export function DetailsStep({ info, env, platform, setPlatform, route, now, onCo
         {noCrypto && (
           <Note tone="crit" title="This page needs a secure connection" role="alert">
             <p>Your browser only creates private keys on secure (https) pages, and this one isn’t. Ask your IT administrator for a link that starts with <b>https://</b>.</p>
-            {platform === 'windows' && (
-              <div className="mt-3"><Button onClick={onUseHelper}>Use the Windows setup helper instead</Button></div>
+            {(platform === 'windows' || platform === 'linux') && (
+              <div className="mt-3"><Button onClick={onUseHelper}>{platform === 'windows' ? 'Use the Windows setup helper instead' : 'Use the Linux setup script instead'}</Button></div>
             )}
           </Note>
         )}

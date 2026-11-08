@@ -7,6 +7,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Linux setup script.** Linux enrollment links now offer `EasyEAP-WiFi-Setup.sh`: one command in Terminal finds
+  NetworkManager, iwd, or wpa_supplicant with systemd-networkd or dhcpcd, creates the key on the computer, adds the
+  Wi-Fi network (and wired 802.1X with NetworkManager, keeping each existing wired profile's own settings) for all
+  users, and renews the certificate by itself. `--check` and `--remove`. Tested on Ubuntu 22.04, 24.04 and 26.04, Ubuntu Server 24.04, Debian 13 and Fedora 43
+  ([docs/enrollment.md](docs/enrollment.md#linux-computers-the-setup-script)). `POST /api/enroll/{token}/csr` and
+  `/renew` take `?format=pem`.
+- **Renewal survives a lost answer.** A renewal request for an already-renewed certificate, signed by its key and
+  carrying the same new key, gets the certificate issued the first time instead of "already renewed" (the Linux
+  renewal keeps its pending key for this; the Windows renewal makes a new key each run, so after a lost answer a
+  Windows PC still needs its setup file run again).
+
 - **Wired 802.1X for Cisco Catalyst and UniFi switches**, with the same device certificates as Wi-Fi
   ([docs/controllers/cisco-catalyst-switch.md](docs/controllers/cisco-catalyst-switch.md),
   [plan and critique](docs/plans/wired-8021x.md)).
@@ -142,6 +153,11 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Linux Wi-Fi steps without the script** now work with GNOME: forget the network saved by an earlier try (GNOME
+  never shows the form again and keeps Tunneled TLS, which then asks for a user name and password), choose
+  **TLS**, and store the key password for all users. The "For IT staff" section's unexplained NetworkManager and
+  `wpa_supplicant` cards are replaced by complete `nmcli` and `wpa_supplicant` steps, and the Linux CA file lists the
+  root CA first (NetworkManager 1.54 only trusts the first certificate of a per-user profile's CA file).
 - Upgrading keeps behaviour: existing controllers serve both Wi-Fi and wired (a switch registered as "Other" keeps
   working), every VLAN is the same VLAN on switch ports, and enrollment packages stay Wi-Fi only.
 - "Wireless controllers" is now "Controllers and switches" on the RADIUS screen; Add offers a wireless controller or

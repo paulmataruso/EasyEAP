@@ -161,7 +161,7 @@ def test_message_binds_certificate_time_and_request():
 
 class FakeSession:
     def __init__(self, cert, identity, tpl, tenant, device):
-        self.cert, self.objs = cert, {}
+        self.cert, self.objs, self.renewal = cert, {}, None
         for o in (identity, tpl, tenant, device):
             if o is not None:
                 self.objs[o.id] = o
@@ -169,6 +169,8 @@ class FakeSession:
     def scalars(self, stmt):
         # The row only matches the fingerprint the code really looks up, in the stored format.
         wanted = stmt.whereclause.right.value
+        if self.cert is not None and wanted == self.cert.id:  # the certificate an earlier renewal of it issued
+            return SimpleNamespace(first=lambda: self.renewal)
         return SimpleNamespace(first=lambda: self.cert if self.cert is not None and wanted == self.cert.fingerprint_sha256 else None)
 
     def get(self, _model, ident):
@@ -238,6 +240,21 @@ def test_refusals(world, setup, message):
     with pytest.raises(enr.EnrollmentError, match=message):
         world.call()
     assert "names" not in world.issued
+
+
+def test_a_lost_renewal_answer_is_sent_again(world):
+    """The client asks again with the same pending key: it gets the certificate already issued for it, nothing new."""
+    k = ec.generate_private_key(ec.SECP256R1())
+    world.cert.status, world.cert.renewed_at = "superseded", NOW - timedelta(hours=3)
+    world.session.renewal = SimpleNamespace(status="active", not_after=NOW + timedelta(days=300),
+                                            certificate_pem=_pem(_cert("pc1.nina", k, ROOT_KEY, days=365)))
+    old, again = world.call(csr_key=k)
+    assert again is world.session.renewal and old is world.cert and "names" not in world.issued
+    with pytest.raises(enr.EnrollmentError, match="already renewed"):
+        world.call()  # another key: that's a second renewal, refused
+    world.session.renewal.status = "revoked"
+    with pytest.raises(enr.EnrollmentError, match="already renewed"):
+        world.call(csr_key=k)
 
 
 def test_signature_time_and_key_checks(world):
