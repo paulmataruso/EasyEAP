@@ -3,13 +3,13 @@
 // The community or SNMPv3 keys are returned once by setup; like a RADIUS shared secret they're kept only in the setup
 // dialog's state, filled into the configuration block in the browser, and dropped when the dialog closes.
 import { useEffect, useId, useState } from 'react'
-import { Activity, Check, Eye, EyeOff, RefreshCw, Settings2, ShieldAlert, Trash2 } from 'lucide-react'
+import { Activity, Check, Eye, EyeOff, MessageSquareText, RefreshCw, Settings2, ShieldAlert, Trash2 } from 'lucide-react'
 import { errorField } from '../../api/client'
 import type { RadiusClient } from '../../api/radius'
 import {
   AUTH_PLACEHOLDER, COMMUNITY_PLACEHOLDER, PRIV_PLACEHOLDER, fillCredentials, findingTitles, useAckFinding, useMonitoring, usePollNow, useRemoveMonitoring,
   useSetupMonitoring, useTestMonitoring, useUpdateMonitoring,
-  type Finding, type MonitoringInput, type MonitoringResponse, type SetupResult, type SnmpVersion, type TestResult,
+  type Finding, type MonitoringInput, type MonitoringResponse, type SetupResult, type SnmpVersion, type SyslogLine, type TestResult,
 } from '../../api/switchAudit'
 import { useTenant } from '../../api/tenant'
 import { ago, fmtDateTime } from '../../lib/format'
@@ -52,6 +52,7 @@ export function SwitchAuditPanel({ client }: { client: RadiusClient }) {
   const [settings, setSettings] = useState(false)
   const [ack, setAck] = useState<Finding | null>(null)
   const [details, setDetails] = useState(false)
+  const [said, setSaid] = useState(false)
   const write = can('radius:write')
   const secrets = can('radius:secrets')
   if (q.isLoading) return <LoadingBlock rows={2} label="Loading the switch audit" />
@@ -101,6 +102,17 @@ export function SwitchAuditPanel({ client }: { client: RadiusClient }) {
           Nothing is polled until it is. On the EasyEAP server: <span className="ee-mono">docker compose up -d easyeap-collector</span> (System health shows its last heartbeat).
         </Callout>
       )}
+      {r.syslog?.radius_down.map((d) => (
+        <Callout key={d.id} tone={d.ours ? 'warn' : 'neutral'}
+          title={d.server === null ? 'The switch says no RADIUS server is responding'
+            : d.ours ? 'The switch says EasyEAP’s RADIUS server isn’t responding' : `The switch says RADIUS server ${d.server} isn’t responding`}>
+          {d.text} ({ago(d.last_at, now)}).{' '}
+          {d.ours
+            ? 'Until the switch reaches it again it may admit devices on its own (critical authentication) or turn them away. Check System health and that the switch can reach EasyEAP’s RADIUS address.'
+            : 'It isn’t EasyEAP’s address; if the switch is still configured to use it, remove it from the switch’s RADIUS group.'}{' '}
+          Syslog isn’t authenticated: this is what a message from the switch’s address says.
+        </Callout>
+      ))}
       {mon.set_up && !mon.enabled && (
         <Callout tone="neutral" title="Monitoring is set up but not polling" action={write ? <Btn size="sm" onClick={() => setSetup(true)}>Test connection…</Btn> : undefined}>
           It turns on when Test connection reaches the switch, or from Settings.
@@ -121,6 +133,7 @@ export function SwitchAuditPanel({ client }: { client: RadiusClient }) {
                 </p>
                 <p className="ee-small ee-ink-2 mt-0.5">{f.meaning} {detailText(f)}</p>
                 <p className="ee-small ee-ink-3 mt-0.5">{f.fix}</p>
+                {(f.switch_says?.length ?? 0) > 0 && <SwitchSays lines={f.switch_says!} now={now} compact />}
                 {f.acknowledged_at && <p className="ee-small ee-ink-3 mt-0.5">Acknowledged by {f.acknowledged_by} {ago(f.acknowledged_at, now)}{f.ack_note ? `: “${f.ack_note}”` : ''}.</p>}
                 <p className="ee-small ee-ink-3 mt-0.5">Since {fmtDateTime(f.opened_at ?? f.first_seen_at)}</p>
               </div>
@@ -144,6 +157,15 @@ export function SwitchAuditPanel({ client }: { client: RadiusClient }) {
         </div>
       )}
 
+      {mon.set_up && r.syslog && (
+        <div>
+          <Btn size="sm" variant="ghost" onClick={() => setSaid((v) => !v)} aria-expanded={said}>
+            <MessageSquareText aria-hidden />{said ? 'Hide what the switch says' : `What the switch says (${r.syslog.recent.length})`}
+          </Btn>
+          {said && <SyslogSection data={r} now={now} />}
+        </div>
+      )}
+
       {r.resolved.length > 0 && details && (
         <div className="ee-small ee-ink-3">
           <p className="font-semibold ee-ink-2">Recently resolved</p>
@@ -155,6 +177,59 @@ export function SwitchAuditPanel({ client }: { client: RadiusClient }) {
       <SettingsDialog client={client} data={r} open={settings} onClose={() => setSettings(false)} onReconfigure={() => { setSettings(false); setSetup(true) }} />
       <AckDialog client={client} finding={ack} onClose={() => setAck(null)} />
     </section>
+  )
+}
+
+function SwitchSays({ lines, now, compact }: { lines: SyslogLine[]; now: Date; compact?: boolean }) {
+  return (
+    <ul className={`ee-small ${compact ? 'mt-1 ee-ink-3' : 'ee-ink-2'} space-y-0.5`} aria-label="What the switch says">
+      {lines.map((l) => (
+        <li key={l.id} className="min-w-0 break-words">
+          {compact && 'The switch says: '}<span className="ee-mono text-[12px]">{l.tag}</span>{l.count > 1 && ` ×${l.count}`} · {ago(l.last_at, now)}
+          {!compact && l.port && <> · <span className="ee-mono text-[12px]">{l.port}</span></>}
+          {!compact && l.mac && <> · <span className="ee-mono text-[12px]">{macText(l.mac)}</span></>}
+          {' · '}{l.text}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function SyslogSection({ data, now }: { data: MonitoringResponse; now: Date }) {
+  const sl = data.syslog!
+  const st = sl.stats
+  return (
+    <div className="mt-2 space-y-2 rounded-[8px] border border-[var(--ee-line)] px-3 py-2.5">
+      <p className="ee-small ee-ink-3">
+        Syslog from the switch: the 802.1X, MAB, err-disable, RADIUS server and configuration messages of the last 24 hours. Syslog isn’t
+        authenticated, so a message is never a finding on its own; err-disable, security-violation and configuration messages bring the
+        next poll forward (to five minutes after the last one at the earliest).
+      </p>
+      {!sl.receiving ? (
+        <Callout tone="neutral" title="This server doesn’t receive syslog">
+          Set <span className="ee-mono">EASYEAP_SYSLOG_BIND</span> in the server’s <span className="ee-mono">.env</span> to the address switches reach
+          EasyEAP on, then <span className="ee-mono">docker compose up -d</span>. The switch configuration then includes the logging lines.
+        </Callout>
+      ) : !sl.listening ? (
+        <Callout tone="warn" title="The syslog receiver isn’t running">
+          Messages from the switch are lost until it is. On the EasyEAP server: <span className="ee-mono">docker compose up -d easyeap-syslog</span> (System
+          health shows its last heartbeat).
+        </Callout>
+      ) : !st.last_at ? (
+        <p className="ee-small ee-ink-2">
+          Nothing from this switch yet. The configuration (Settings → Show the configuration) has the <span className="ee-mono">logging</span> lines,
+          sending to <span className="ee-mono">{sl.address}</span> on UDP port {sl.port}. EasyEAP keeps only messages sent from the address it
+          polls, <span className="ee-mono">{data.monitoring.host}</span>, once a poll has succeeded; a switch that sends from another interface
+          needs <span className="ee-mono">logging source-interface</span> (it’s in the configuration as a comment).
+        </p>
+      ) : (
+        <p className="ee-small ee-ink-2">
+          Last message {ago(st.last_at, now)}{st.last_tag ? ` (${st.last_tag})` : ''}. Today: {st.kept ?? 0} kept, {st.filtered ?? 0} not about access
+          {st.quota ? `, ${st.quota} dropped over the rate limit` : ''}.
+        </p>
+      )}
+      {sl.recent.length > 0 && <SwitchSays lines={sl.recent} now={now} />}
+    </div>
   )
 }
 

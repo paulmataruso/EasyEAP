@@ -63,7 +63,8 @@ def check(expr):
     raw = sys.stdin.read()
     try:
         d = json.loads(raw)
-        good = bool(eval(expr, {"__builtins__": {}, "any": any, "all": all, "len": len, "set": set, "sorted": sorted, "str": str, "next": next, "sum": sum}, {"d": d}))  # noqa: S307 — test-authored
+        good = bool(eval(expr, {"__builtins__": {}, "any": any, "all": all, "len": len, "set": set, "sorted": sorted, "str": str, "next": next, "sum": sum,
+                                "datetime": datetime}, {"d": d}))  # noqa: S307 — test-authored
     except Exception as e:  # noqa: BLE001 — report any failure as a failed check
         good, raw = False, f"{type(e).__name__}: {e} in {raw[:600]}"
     if not good:

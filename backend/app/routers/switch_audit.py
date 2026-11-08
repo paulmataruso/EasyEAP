@@ -6,12 +6,13 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import func, select
 
 from app import audit
 from app import models as m
+from app.config import get_settings
 from app.deps import TenantCtx, require
 from app.pki import crypto
 from app.security.ratelimit import limiter
@@ -36,16 +37,42 @@ def _source_address() -> str:
     return controller_address()["radius_address"]
 
 
-def collector_status(s) -> dict:
+def _syslog_target() -> tuple[str, int] | None:
+    """Where switches send syslog (address, port), when this server publishes easyeap-syslog (EASYEAP_SYSLOG_BIND): the
+    bind address, or the RADIUS address when it binds every interface."""
+    st = get_settings()
+    if not st.syslog_receiving:
+        return None
+    bind = st.syslog_bind.strip()
+    dest = _source_address() if bind in ("0.0.0.0", "::") else bind  # noqa: S104 — comparing, not binding
+    return (dest or "<EasyEAP's address>", st.syslog_port)
+
+
+def _removal(mon: dict) -> str:
+    return service.removal_block(mon, syslog=_syslog_target())
+
+
+def _heartbeat(s, key: str) -> dict:
     from app.db import set_platform, set_tenant
     tid = s.info.get("tenant_id")
     set_platform(s)
     try:
-        hb = s.get(m.PlatformSetting, "collector_heartbeat")
+        hb = s.get(m.PlatformSetting, key)
     finally:
         set_tenant(s, tid)
     at = datetime.fromisoformat(hb.value["at"]) if hb and (hb.value or {}).get("at") else None
     return {"alive": bool(at and datetime.now(UTC) - at < COLLECTOR_STALE), "last_seen_at": at.isoformat() if at else None}
+
+
+def collector_status(s) -> dict:
+    return _heartbeat(s, "collector_heartbeat")
+
+
+def _heard_since(s, client_id: uuid.UUID):
+    """Whether EasyEAP has had a RADIUS request from the switch since `at`."""
+    def check(at: datetime) -> bool:
+        return s.scalar(select(m.AuthEvent.id).where(m.AuthEvent.nas_client_id == client_id, m.AuthEvent.at > at).limit(1)) is not None
+    return check
 
 
 def _bad(field: str, message: str) -> HTTPException:
@@ -63,13 +90,31 @@ def get_monitoring(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radiu
     resolved = s.scalars(select(m.SwitchFinding).where(m.SwitchFinding.client_id == c.id, m.SwitchFinding.resolved_at.is_not(None))
                          .order_by(m.SwitchFinding.resolved_at.desc()).limit(20)).all()
     requested = st.poll_requested_at if st else None
+    said = service.recent_syslog(s, c.id) if mon.get("host") else []
+    target = _syslog_target()
     return {"monitoring": service.monitoring_out(c), "default_host": service.default_host(c), "state": service.state_out(st),
-            "findings": [service.finding_out(f) for f in rows if f.opened_at is not None],
+            "findings": [{**service.finding_out(f), "switch_says": service.says_about(said, f.port, f.mac)} for f in rows if f.opened_at is not None],
             "pending": sum(1 for f in rows if f.opened_at is None), "resolved": [service.finding_out(f) for f in resolved],
-            "config": service.config_block(mon or {"version": "v2c"}, _source_address()) if mon.get("host") else None,
-            "removal": service.removal_block(mon) if mon.get("host") else None,
+            "config": service.config_block(mon or {"version": "v2c"}, _source_address(), target) if mon.get("host") else None,
+            "removal": _removal(mon) if mon.get("host") else None,
             "source_address": _source_address() or None, "collector": collector_status(s),
-            "poll_requested_at": requested.isoformat() if requested else None}
+            "poll_requested_at": requested.isoformat() if requested else None,
+            "syslog": {"receiving": target is not None, "listening": _heartbeat(s, "syslog_heartbeat")["alive"],
+                       "address": target[0] if target else None, "port": target[1] if target else None,
+                       "stats": (st.syslog if st else None) or {}, "recent": [service.syslog_out(r) for r in said[:30]],
+                       "radius_down": service.radius_down(said, _source_address(), _heard_since(s, c.id))}}
+
+
+@router.get("/clients/{client_id}/monitoring/syslog")
+def switch_syslog(client_id: uuid.UUID, hours: int = Query(default=24, ge=1, le=24 * 14), port: str = Query(default="", max_length=64),
+                  mac: str = Query(default="", max_length=17), ctx: TenantCtx = Depends(require("radius:read"))) -> dict:
+    """What the switch said over syslog (14 days at most), newest first; filtered by port or MAC."""
+    from app.radius.wired import canonical_port
+    from app.switchaudit.syslog import mac_of
+    c = _switch(ctx, client_id)
+    rows = service.recent_syslog(ctx.session, c.id, hours=hours, limit=500, port=canonical_port(port) if port else "",
+                                 mac=mac_of(mac) or mac.replace(":", "").replace("-", "").replace(".", "").upper()[:12] if mac else "")
+    return {"messages": [service.syslog_out(r) for r in rows], "truncated": len(rows) == 500}
 
 
 @router.post("/clients/{client_id}/monitoring/setup")
@@ -105,7 +150,7 @@ def setup_monitoring(client_id: uuid.UUID, body: dict, ctx: TenantCtx = Depends(
     elif old.get("version") == "v3" and (cfg.version != "v3" or (old.get("user") or "easyeap") != cfg.user):
         retire = service.removal_block(old).split("no snmp-server view")[0]
     return {"monitoring": service.monitoring_out(c), "credentials": {**creds, "user": cfg.user if cfg.version == "v3" else None},
-            "config": service.config_block(mon, _source_address()), "retire": retire}
+            "config": service.config_block(mon, _source_address(), _syslog_target()), "retire": retire}
 
 
 class MonitoringUpdate(BaseModel):
@@ -226,7 +271,7 @@ def remove_monitoring(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("ra
     """Stop polling and forget the credentials. Returns the lines that remove EasyEAP's SNMP access from the switch."""
     c = _switch(ctx, client_id)
     old = c.monitoring or {}
-    removal = service.removal_block(old) if old.get("host") else None
+    removal = _removal(old) if old.get("host") else None
     _resolve_open(ctx, c)
     st = ctx.session.get(m.SwitchState, c.id)
     if st is not None:

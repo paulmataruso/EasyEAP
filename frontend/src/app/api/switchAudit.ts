@@ -79,7 +79,32 @@ export interface Finding {
   acknowledged_at: string | null
   acknowledged_by: string | null
   ack_note: string | null
+  /** What the switch said over syslog about this device or port (last 24 hours). Not evidence on its own. */
+  switch_says?: SyslogLine[]
 }
+/** One syslog message (coalesced per minute): "the switch says". Unauthenticated, so never a finding by itself. */
+export interface SyslogLine {
+  id: string
+  first_at: string
+  last_at: string
+  count: number
+  tag: string
+  severity: number
+  port: string | null
+  mac: string | null
+  session_id: string | null
+  /** The RADIUS server, the err-disable cause or who configured the switch, when the message names one. */
+  subject: string | null
+  text: string
+}
+/** A RADIUS server the switch last said isn't responding. */
+export interface RadiusDown extends SyslogLine {
+  /** null: "no RADIUS server is responding". */
+  server: string | null
+  /** It's EasyEAP's RADIUS address (or every server). */
+  ours: boolean
+}
+export interface SyslogStats { day?: string; received?: number; kept?: number; filtered?: number; quota?: number; last_at?: string; last_tag?: string }
 export interface MonitoringResponse {
   monitoring: Monitoring
   default_host: string
@@ -94,6 +119,19 @@ export interface MonitoringResponse {
   source_address: string | null
   collector: { alive: boolean; last_seen_at: string | null }
   poll_requested_at: string | null
+  syslog?: {
+    /** This server publishes its syslog port (EASYEAP_SYSLOG_BIND); the configuration then includes a logging host. */
+    receiving: boolean
+    /** The easyeap-syslog service's heartbeat is recent. */
+    listening: boolean
+    /** Where the switch sends syslog. */
+    address: string | null
+    port: number | null
+    stats: SyslogStats
+    recent: SyslogLine[]
+    /** The RADIUS servers the switch last said aren't responding. */
+    radius_down: RadiusDown[]
+  }
 }
 export interface MonitoringInput { host: string; port?: number; version: SnmpVersion; user?: string; auth?: 'sha256' | 'sha'; priv?: 'aes128' | 'aes256'; interval_minutes: number }
 export interface SetupResult {

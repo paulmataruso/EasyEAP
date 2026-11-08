@@ -96,6 +96,14 @@ versions follow [Semantic Versioning](https://semver.org/).
   - A new **`easyeap-collector`** container polls the switches (at most eight at once, every 15 minutes by default,
     "Poll now"), with its own heartbeat in System health and its own source in the system log.
   - **Enforce** uses the switch's polled session list instead of a pasted `show access-session` when it's recent.
+  - **Syslog** ("what the switch says"): a new **`easyeap-syslog`** container receives the switches' 802.1X, MAB,
+    err-disable, RADIUS server and configuration messages on UDP 5514, published when `EASYEAP_SYSLOG_BIND` is set.
+    Only messages from a switch's polled management address count, once a poll there has succeeded; an address two
+    switches claim is ignored. Shown on the switch's audit and under the matching findings, never a finding on its
+    own. An err-disable, a security violation or a configuration change brings the next poll forward (five minutes
+    after the last at the earliest). Each RADIUS server the switch says is dead is shown until it's alive again or
+    the switch's requests reach EasyEAP. Redacted, coalesced per minute, rate-limited per switch and per tenant, kept
+    14 days; heartbeat in System health. Migration `0010`.
 - **Group Policy autoenrollment (preview)**: domain PCs and the users who sign in to them get certificates from
   EasyEAP through Group Policy, as from AD CS, and Windows renews them
   ([docs/autoenrollment.md](docs/autoenrollment.md), [plan and critique](docs/plans/gpo-autoenrollment.md)).

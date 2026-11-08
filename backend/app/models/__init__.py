@@ -650,9 +650,10 @@ class SwitchState(Base):
     ports: Mapped[list] = mapped_column(JSONB, default=list)
     sessions: Mapped[list] = mapped_column(JSONB, default=list)
     truncated: Mapped[bool] = mapped_column(Boolean, default=False)
-    slow: Mapped[bool] = mapped_column(Boolean, default=False)  # the last poll took over half the interval: polled half as often
+    slow: Mapped[bool] = mapped_column(Boolean, default=False)  # the last poll took over a minute: polled half as often
     next_poll_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
-    poll_requested_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)  # "Poll now"
+    poll_requested_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)  # "Poll now", or a syslog message
+    syslog: Mapped[dict] = mapped_column(JSONB, default=dict)  # today's counters: received, kept, filtered, quota; last_at
 
 
 class SwitchFinding(Base):
@@ -680,6 +681,27 @@ class SwitchFinding(Base):
     acknowledged_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
     ack_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     ack_hash: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class SwitchSyslog(Base):
+    """What a switch said over syslog (app/switchaudit/syslog.py), coalesced per message, port and MAC per minute.
+    Unauthenticated: shown as "the switch says", never a finding. Kept 14 days."""
+    __tablename__ = "switch_syslog"
+    __table_args__ = (Index("ix_switch_syslog_client_last", "client_id", "last_at"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radius_clients.id", ondelete="CASCADE"))
+    first_at: Mapped[datetime] = mapped_column(TS)
+    last_at: Mapped[datetime] = mapped_column(TS, index=True)
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    severity: Mapped[int] = mapped_column(Integer)
+    facility: Mapped[str] = mapped_column(String(32))
+    mnemonic: Mapped[str] = mapped_column(String(48))
+    port: Mapped[str] = mapped_column(String(64), default="")
+    mac: Mapped[str] = mapped_column(String(12), default="")
+    session_id: Mapped[str] = mapped_column(String(64), default="")
+    subject: Mapped[str] = mapped_column(String(64), default="")  # a RADIUS server, who configured, an err-disable cause
+    text: Mapped[str] = mapped_column(String(500))
 
 
 class AgentStatus(Base):

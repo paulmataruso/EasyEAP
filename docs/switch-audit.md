@@ -1,4 +1,4 @@
-# Switch audit (SNMP)
+# Switch audit (SNMP and syslog)
 
 EasyEAP can read a Cisco Catalyst switch's own view of its ports and 802.1X/MAB sessions over SNMP, read-only, and
 compare it with what EasyEAP decided and sent. Where they differ you get a **finding**: a port the plan protects that
@@ -144,6 +144,9 @@ of asking you to paste `show access-session`. You can still paste it.
 - The collector container holds only the application database role's password; the credentials are decrypted through
   OpenBao.
 - The audit's findings never feed a RADIUS decision.
+- Syslog (below) is received by its own container, `easyeap-syslog`, which holds the same database password and nothing
+  else. Messages are kept only from addresses EasyEAP has polled successfully, never open or resolve a finding, and
+  can at most bring a switch's next poll forward to five minutes after the last.
 
 ## Troubleshooting
 
@@ -154,7 +157,50 @@ of asking you to paste `show access-session`. You can still paste it.
 | The last poll failed: "couldn't store this poll's result" | The database was unavailable or rejected the result; the collector's log has the error. The switch is polled again at the next interval. |
 | Sessions not readable over SNMP | `show snmp view` includes 1.3.6.1.4.1.9.9.656; some releases don't implement the MIB. Reachability and err-disable checks still run. |
 | The collector isn't running | System health → Switch collector. On the server: `docker compose up -d easyeap-collector`, and its log: `docker compose logs easyeap-collector`. |
+| No syslog from the switch | `EASYEAP_SYSLOG_BIND` is set (the audit says when it isn't); UDP 5514 (or `EASYEAP_SYSLOG_PORT`) is open from the switch to that address; `show logging` lists the host and counts messages sent; the switch sends from the address EasyEAP polls (`logging source-interface`); the switch's latest poll succeeded. System health → Switch syslog lists the busiest addresses messages came from that aren't a monitored switch: one gateway address for everything means Docker is rewriting the source address (see `docs/DEPLOYMENT.md`). |
+| The syslog receiver isn't running | System health → Switch syslog. On the server: `docker compose up -d easyeap-syslog`, and its log: `docker compose logs easyeap-syslog`. |
 | Poll one switch by hand | `docker compose exec easyeap-collector python -m app.switchaudit.collector --once <switch id>` prints the result. |
 
-Syslog from switches (allow-listed messages, shown as "the switch says") is planned next
-([plan](plans/switch-audit.md) §9).
+## Syslog: what the switch says
+
+With syslog, the audit also shows what the switch logs about access: 802.1X and MAB failures, security violations,
+VLANs EasyEAP sent that the switch doesn't have, err-disabled and recovered ports, its RADIUS servers going dead or
+alive, and configuration changes. Messages appear on the switch's audit (**What the switch says**, last 24 hours) and
+under the findings for the same device or port; the API keeps 14 days (`GET …/clients/<id>/monitoring/syslog`, by port
+or MAC).
+
+Syslog isn't authenticated, so a message is **never a finding on its own**: findings come only from SNMP. An
+err-disable, a security violation or a configuration change brings the switch's next poll forward, to five minutes
+after the last poll at the earliest, so the SNMP evidence follows; it never polls on demand.
+
+When the switch says one of its RADIUS servers isn't responding, the audit shows it, one notice per server. EasyEAP's
+own RADIUS address (or "no RADIUS server is responding") is a warning: the switch may be admitting devices on its own
+(critical authentication) or turning them away. It clears when the switch says the server is alive again, or when a
+RADIUS request from that switch reaches EasyEAP, since not every switch logs the recovery.
+
+**Turn it on** on the EasyEAP server: set `EASYEAP_SYSLOG_BIND` in `.env` to the address switches reach EasyEAP on
+(normally the RADIUS address), and `EASYEAP_SYSLOG_PORT` if UDP 5514 is taken on the host; then `docker compose up -d`.
+The receiver runs in its own container, `easyeap-syslog`; until the bind is set its port is published on 127.0.0.1
+only. The switch configuration EasyEAP generates then includes:
+
+```
+logging discriminator EASYEAP facility includes SESSION_MGR|AUTHMGR|DOT1X|DOT1X_SWITCH|MAB|PM|RADIUS|SYS rate-limit 100
+logging host <EasyEAP's address> discriminator EASYEAP transport udp port 5514
+```
+
+with, as comments, `logging source-interface` and the `vrf Mgmt-vrf` form of the host line. Nothing global changes (no
+`logging trap` level or timestamps). A switch set to `logging trap warnings` or lower sends only the err-disable and
+RADIUS server messages; the 802.1X ones are at level 5 (notifications). To take it off the switch, the removal lines
+are the same with `no` in front.
+
+**Which messages are kept**: only those sent from the address EasyEAP polls the switch on, once a poll there has
+succeeded (with the tenant's own SNMP credentials, in the last three intervals). An address two switches claim, in any
+tenant, is ignored. Of those messages, only the access-related ones above are kept; the rest are counted and dropped.
+User names and passwords are replaced with `<redacted>` before anything is stored. Repeats of one message (same port,
+device and server) are counted in a single line per minute. Each switch may send 100 new messages a second, and each
+tenant stores at most 50 MB a day (err-disable and RADIUS server messages are kept regardless); past that, messages are
+dropped and counted on the switch's audit. Messages are kept for 14 days.
+
+> **Not yet verified on switch hardware.** The message formats come from Cisco's documentation and published logs
+> (IOS-XE 16 and 17, including `%RADIUS_AUDIT_MESSAGE` and `%PM-SP-…`), and the end-to-end test sends them from a
+> pretend switch.

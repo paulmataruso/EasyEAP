@@ -60,6 +60,20 @@ def health(p: Principal = Depends(platform("platform:read")), s: Session = Depen
               f"Polling {monitored} switch{'es' if monitored != 1 else ''} over SNMP" if calive else
               "No recent collector heartbeat: switches aren't being audited. Check the easyeap-collector container.",
               last_seen_at=clast.isoformat() if clast else None)
+    # Syslog from switches: shown once this server publishes easyeap-syslog (EASYEAP_SYSLOG_BIND).
+    from app.config import get_settings
+    if get_settings().syslog_receiving:
+        sb = s.get(m.PlatformSetting, "syslog_heartbeat")
+        hb = (sb.value or {}) if sb else {}
+        slast = datetime.fromisoformat(hb["at"]) if hb.get("at") else None
+        salive = bool(slast and now - slast < timedelta(minutes=3))
+        unknown = hb.get("unknown_top") or []
+        detail = (f"Receiving from {hb.get('sources', 0)} switch address{'es' if hb.get('sources', 0) != 1 else ''}"
+                  + (f"; {hb.get('unknown_source', 0)} datagrams from other addresses (most from {unknown[0]['address']}: if that's "
+                     "a Docker gateway, the switches' addresses are being rewritten)" if unknown else "")) if salive else \
+            "No recent heartbeat: switch syslog isn't being received. Check the easyeap-syslog container."
+        check("switch_syslog", salive, "valid" if salive else "warn", "Running" if salive else "Not running", detail,
+              last_seen_at=slast.isoformat() if slast else None)
     from app.logs import syslog
     dests = [d for d in syslog.load_destinations(s) if d.enabled]
     if dests:

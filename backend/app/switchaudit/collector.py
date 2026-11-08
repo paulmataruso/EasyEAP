@@ -2,7 +2,8 @@
 
 Runs as its own container (`entrypoint.sh collector`) from the API image, so a slow or failing switch never delays a
 RADIUS answer or a worker job. At most MAX_PARALLEL switches are polled at once, each in its own thread with its own
-time budget; a switch is due when its next_poll_at has passed or an admin pressed "Poll now".
+time budget; a switch is due when its next_poll_at has passed or an admin pressed "Poll now". Syslog from the switches
+is received by its own container (app/switchaudit/syslog.py), which can move a switch's next_poll_at earlier.
 
     python -m app.switchaudit.collector              # the service
     python -m app.switchaudit.collector --once ID    # poll one switch now and print the result (support, tests)

@@ -599,7 +599,7 @@ fi
 
 
 if [ "${E2E_AUDIT:-1}" != 0 ] && [ -n "${SW1_ID:-}" ]; then
-step "11d. Switch audit: SNMP from a pretend Catalyst, findings against EasyEAP's own answers"
+step "11d. Switch audit: SNMP and syslog from a pretend Catalyst, findings against EasyEAP's own answers"
 LABSW="$DC exec -T easyeap-lab-switch"
 LABSW_IP="$(ip_of "$($DC ps -q easyeap-lab-switch)")"
 # dataset <json spec> — what the pretend switch reports (tests/e2e/lab_switch.py)
@@ -697,6 +697,53 @@ must "configure the lab switch (SNMPv2c)" $LABSW /lab/configure.sh "$COMM"
 sleep 2
 drive call POST "/radius/clients/$SW1_ID/monitoring/test" | jok "SNMPv2c test connection" 'd["body"]["ok"] and d["body"]["monitoring"]["enabled"] and d["body"]["monitoring"]["version"] == "v2c"'
 spoll | jok "SNMPv2c poll" 'd["ok"] and d["sessions"] == 7'
+
+# Syslog (docs/plans/switch-audit.md §0a): the pretend switch sends Cisco messages from its own address straight to
+# easyeap-syslog's UDP 5514 on the lab network (EASYEAP_SYSLOG_BIND publishes the same port on the host).
+SYSLOG_IP="$(ip_of "$($DC ps -q easyeap-syslog)")"
+SEND='import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for m in sys.argv[2:]:
+    s.sendto(m.encode(), (sys.argv[1], 5514))'
+say() { $LABSW python3 -c "$SEND" "$SYSLOG_IP" "$@"; }
+syslog_json() { drive call GET "/radius/clients/$SW1_ID/monitoring" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["body"]["syslog"]))'; }
+heard=""
+for _ in $(seq 1 25); do   # easyeap-syslog reloads the switches' verified addresses every 30 s
+  say "<189>21: lab-sw1: *Nov  7 22:39:22: %SYS-5-CONFIG_I: Configured from console by e2e on vty0 (10.9.9.9)"
+  sleep 2
+  heard="$(syslog_json | python3 -c 'import json,sys; print(json.load(sys.stdin)["stats"].get("last_at") or "")')"
+  [ -n "$heard" ] && break
+done
+[ -n "$heard" ] && ok "syslog from the switch's address is received" || bad "no syslog received from the switch"
+say "<189>101: %DOT1X-5-FAIL: Switch 1 R0/0: sessmgrd: Authentication failed for client (0200.0000.1103) on Interface Gi1/0/5 AuditSessionID 0A0A0A0B0000000200ABCDEF" \
+    "<189>102: %DOT1X-5-FAIL: Switch 1 R0/0: sessmgrd: Authentication failed for client (0200.0000.1103) on Interface Gi1/0/5 AuditSessionID 0A0A0A0B0000000200ABCDEF" \
+    "<189>103: %DOT1X-5-FAIL: Switch 1 R0/0: sessmgrd: Authentication failed for client (0200.0000.1103) on Interface Gi1/0/5 AuditSessionID 0A0A0A0B0000000200ABCDEF" \
+    "<188>104: %PM-4-ERR_DISABLE: bpduguard error detected on Gi1/0/10, putting Gi1/0/10 in err-disable state" \
+    "<188>105: %RADIUS-4-RADIUS_DEAD: RADIUS server $RADIUS_IP:1812,1813 is not responding." \
+    "<189>106: %AUTHMGR-5-FAIL: Authorization failed for client (0200.0000.1104) username=bob password hunter2 on Interface Gi1/0/7" \
+    "<189>107: %SESSION_MGR-5-START: Switch 1 R0/0: sessmgrd: Starting 'dot1x' for client (0200.0000.1105) on Interface Gi1/0/7"
+$DC exec -T easyeap-api python -c "$SEND" "$SYSLOG_IP" "<189>%DOT1X-5-FAIL: Authentication failed for client (0200.0000.6666) on Interface Gi1/0/1 from-elsewhere"
+sleep 4
+syslog_json | jok "kept: the 802.1X failures coalesced (3), the err-disable, the RADIUS server down; a session start isn't kept" \
+  '(lambda r: sum(x["count"] for x in r if x["tag"] == "DOT1X-5-FAIL" and x["mac"] == "020000001103" and x["port"] == "GigabitEthernet1/0/5" and x["session_id"] == "0A0A0A0B0000000200ABCDEF") == 3 and any(x["tag"] == "PM-4-ERR_DISABLE" and x["port"] == "GigabitEthernet1/0/10" for x in r) and not any("START" in x["tag"] for x in r))(d["recent"]) and d["stats"]["filtered"] >= 1'
+syslog_json | jok "user names and passwords redacted before they're stored" \
+  '(lambda t: "hunter2" not in t and "bob" not in t and "password <redacted>" in t)(" ".join(x["text"] for x in d["recent"]))'
+syslog_json | jok "a message from an address that isn't the switch is dropped" 'not any(x["mac"] == "020000006666" for x in d["recent"])'
+syslog_json | jok "the switch says a RADIUS server isn't responding (per server)" \
+  "[(x['tag'], x['server']) for x in d['radius_down']] == [('RADIUS-4-RADIUS_DEAD', '$RADIUS_IP')]"
+syslog_json | jok "the syslog receiver's heartbeat is current" "d['listening']"
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "with syslog published, the configuration has the discriminator, then the logging host" \
+  "(lambda b: not b['syslog']['receiving'] or (b['config'].index('logging discriminator EASYEAP facility includes') < b['config'].index('logging host %s discriminator EASYEAP transport udp port %s' % (b['syslog']['address'], b['syslog']['port'])) and 'no logging discriminator EASYEAP' in b['removal']))(d['body'])"
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "findings show what the switch says about their device or port" \
+  '(lambda f: any(x["tag"] == "DOT1X-5-FAIL" for x in f["authorized_despite_reject"]["switch_says"]) and any(x["tag"] == "PM-4-ERR_DISABLE" for x in f["err_disabled"]["switch_says"]))({x["kind"]: x for x in d["body"]["findings"]})'
+drive call GET "/radius/clients/$SW1_ID/monitoring/syslog?mac=02:00:00:00:11:03&hours=48" | jok "the switch's messages filtered by MAC" \
+  'd["status"] == 200 and d["body"]["messages"] and all(x["mac"] == "020000001103" for x in d["body"]["messages"])'
+# An err-disable is a hint, not a command: the next poll moves to five minutes after the last one (the interval is 15).
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "an err-disable message brought the next poll forward to 5 minutes after the last" \
+  '(lambda st: 290 <= (datetime.fromisoformat(st["next_poll_at"]) - datetime.fromisoformat(st["polled_at"])).total_seconds() <= 310)(d["body"]["state"])'
+say "<188>109: %RADIUS-4-RADIUS_ALIVE: RADIUS server $RADIUS_IP:1812,1813 is being marked alive."
+sleep 4
+syslog_json | jok "RADIUS server marked alive: no longer shown as down" 'd["radius_down"] == []'
 drive call DELETE "/radius/clients/$SW1_ID/monitoring" | jok "monitoring removed: the lines to take EasyEAP's access off the switch" \
   'd["status"] == 200 and "no snmp-server view EASYEAP-RO" in d["body"]["removal"]'
 drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "nothing open after removal, credentials gone" 'not d["body"]["findings"] and not d["body"]["monitoring"]["set_up"]'

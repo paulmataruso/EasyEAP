@@ -4,6 +4,94 @@ Status: revised after critique (2026-11-07), then revised again with the user's 
 text (§0). Request: "a way for EasyEAP to see into the switch to see if port security
 is working as it should / audit — maybe SNMP + a syslog from each device."
 
+## 0a. Revision 4 (2026-11-08): syslog (v1.1), as built after critique
+
+Supersedes §9 where they differ. The first design (a thread in the collector, any monitored switch's address, a poll on
+request) was critiqued before release; the table at the end of this section lists what changed and why.
+
+- **Receiver**: its own container, `easyeap-syslog` (the API image, `entrypoint.sh syslog`), UDP only, listening on 5514
+  inside the container and published as `${EASYEAP_SYSLOG_BIND:-127.0.0.1}:${EASYEAP_SYSLOG_PORT:-5514}:5514/udp`. It is
+  off the network until the bind names the address switches reach EasyEAP on, like TACACS+. 5514 rather than 514 by
+  default because the host's own syslog daemon often has 514. A bind failure or a flood can't touch SNMP polling,
+  which stays in `easyeap-collector`. TCP is left out: IOS sends UDP by default, and TCP's one gain (an off-path sender
+  can't spoof a handshake) doesn't make a message trustworthy.
+- **Who may send**: a datagram is attributed to a switch only when its source address is the switch's SNMP management
+  address (an IP address, enforced at setup) and the switch answered a poll there with its tenant's credentials within
+  the last three intervals. A tenant can't claim another tenant's switch by typing its address: an address claimed by
+  more than one switch, in any tenant and whether verified or not, is ignored. The RADIUS client address isn't used
+  (a range, or an address shared by several switches behind NAT). Everything else is dropped and counted per source;
+  the busiest unknown sources are in the receiver's heartbeat, and System health points at a rewritten source address
+  (Docker's userland proxy) when they look like a gateway. The map is reloaded every 30 seconds.
+- **What is kept** (allow-list by facility and mnemonic, whatever the severity): `SESSION_MGR` and `AUTHMGR` `FAIL` and
+  `SECURITY_VIOLATION`; `DOT1X-*-FAIL`, `MAB-*-FAIL`; `DOT1X_SWITCH-*-ERR_*` (a VLAN EasyEAP sent that the switch doesn't
+  have); `PM-*-ERR_DISABLE`, `ERR_RECOVER` (also `%PM-SP-4-…`, with a sub-facility); `RADIUS-*-RADIUS_DEAD`,
+  `RADIUS_ALIVE`, `ALLDEADSERVER`, and IOS-XE 17's `RADIUS_AUDIT_MESSAGE` forms; `SYS-5-CONFIG_I`. Everything else is
+  dropped and counted. Successful authentications aren't kept, nor `AUTHMGR-5-VLANASSIGN` (logged with every success):
+  EasyEAP's own event log has them.
+- **Parsing**: the `%FACILITY-SEVERITY-MNEMONIC:` tag is found wherever the switch's sequence number, timestamp and
+  origin put it; IOS-XE's `Switch 1 R0/0: sessmgrd:` prefix is removed; the text is stored as received (control
+  characters removed, 500 characters), with the port (canonical name), the client's MAC (Cisco's parenthesised dotted
+  form first, then any notation), the AuditSessionID and a **subject**: the RADIUS server, the err-disable cause, or
+  who configured the switch. The time is when EasyEAP received it, not the switch's clock.
+- **Redaction**: `password`, `secret`, `key` and `user`/`username` values, and `[user: …]`, are replaced before
+  anything is stored. The administrator in `SYS-5-CONFIG_I` ("by admin on vty0") is kept: it's the point of the line.
+- **Coalescing**: one row per (switch, mnemonic, port, MAC, subject) per minute with a count, written every two seconds
+  (an insert, then updates of the count), so a flapping port is one line a minute and two RADIUS servers stay two lines.
+- **Quotas**: per source a token bucket of 100 new messages a second (burst 200); repeats of a message already kept that
+  minute only add to its count. At most 2,000 open coalescing entries per switch and 20,000 overall. 50 MB of stored text
+  per tenant per day, counted from the database after a restart; err-disable and RADIUS server messages are kept past
+  it. Whatever is dropped is counted per switch.
+- **Writes**: one tenant at a time in the tenant's own session (row-level security checks every insert), each row in a
+  savepoint; a row that fails is retried with the next flush and dropped after five failures, without holding back the
+  others. While a restore runs nothing is written, and afterwards the receiver starts over (coalescing state, usage).
+- **Use**: shown as **"the switch says"** on the switch's audit and under the findings for the same port or MAC (last
+  24 hours), and at `GET …/monitoring/syslog` (14 days, by port or MAC). A message never opens or resolves a finding.
+  `ERR_DISABLE`, `ERR_RECOVER`, `SECURITY_VIOLATION` and `CONFIG_I` are **hints**: they move the switch's next poll to
+  30 seconds after the message, but never sooner than five minutes after the last poll, and never touch "Poll now";
+  a spoofed message can at most triple the polling of a switch on a 15-minute interval.
+- **RADIUS servers**: per server, the switch's latest `RADIUS_DEAD` without a later `RADIUS_ALIVE` shows on the audit.
+  EasyEAP's own address (or `ALLDEADSERVER`) is a warning; other servers are shown as such. Because a switch doesn't
+  always log `RADIUS_ALIVE`, EasyEAP's server also counts as back when a RADIUS request from that switch has arrived
+  since.
+- **Storage**: `switch_syslog` (tenant_id with RLS, client_id, first and last seen, count, severity, facility,
+  mnemonic, port, MAC, session id, subject, text), 14 days; per-switch counters (received, kept, dropped by filter or
+  quota, last message) in `switch_states.syslog`; a heartbeat (`syslog_heartbeat`) for System health. Migration
+  `0010_switch_syslog`.
+- **Switch configuration** (added to the generated block when the server receives syslog; the destination is
+  `EASYEAP_SYSLOG_BIND`, or the RADIUS address when the bind is `0.0.0.0`/`::`):
+
+  ```
+  logging discriminator EASYEAP facility includes SESSION_MGR|AUTHMGR|DOT1X|DOT1X_SWITCH|MAB|PM|RADIUS|SYS rate-limit 100
+  logging host <address> discriminator EASYEAP transport udp port 5514
+  ```
+
+  plus, as comments, `logging source-interface` (the receiver only keeps messages from the polled address) and the
+  `vrf Mgmt-vrf` form of the host line. Nothing global: not `logging trap` or timestamps (messages at severity 6 or
+  lower are sent by default; a switch at `logging trap warnings` sends only the RADIUS and err-disable lines).
+  Removal: the host line exactly as added, prefixed with `no` (IOS keeps a host on another port as a separate entry),
+  then `no logging discriminator EASYEAP`.
+
+### Revision 4 critique (before release)
+
+| Finding | Severity | Change |
+|---|---|---|
+| Any tenant could type another tenant's switch address and receive (and act on) its syslog; the RADIUS address of a switch registered by host could also be another device's | blocker | Only the SNMP management address, only after the switch answered that tenant's credentials there; an address claimed twice anywhere is ignored. |
+| The receiver was a thread in the collector: a port already in use or a flood would stop SNMP polling | major | Its own container; the collector is untouched. |
+| A spoofed `ERR_DISABLE` asked for a poll every minute, per switch: load on demand | major | Hints only move the next poll, five minutes after the last at the earliest; "Poll now" stays the console's. |
+| One noisy switch could fill the 20,000 coalescing entries for everyone; the tenant quota reset on restart | major | 2,000 entries per switch; usage reloaded from the database; RADIUS and err-disable messages bypass the byte quota. |
+| Coalescing by (mnemonic, port, MAC) merged two RADIUS servers, or two administrators' changes, into one line | major | The subject (server, cause, who) is part of the key and stored. |
+| "RADIUS is down" from one latest line: a second server's `ALIVE` cleared it, and a switch that never logs `ALIVE` showed it forever | major | Per server; EasyEAP's own address is a warning, cleared by `ALIVE` or a RADIUS request from the switch since. |
+| One failing row lost the whole batch for every tenant | major | Per-tenant sessions, a savepoint per row, five retries per entry. |
+| The generated lines: `logging host … transport udp port … discriminator …` has the discriminator after the transport (Cisco's reference puts it before), the removal didn't name the port, and the destination was the SNMP source address | major | `logging host <address> [vrf Mgmt-vrf] discriminator EASYEAP transport udp port <port>`, removed with the same line; `rate-limit 100` on the discriminator; the destination is `EASYEAP_SYSLOG_BIND` (or the RADIUS address when it binds everything). |
+| `AUTHMGR-5-VLANASSIGN` is logged with every successful authentication: volume without information | minor | Not kept. |
+| A burst of one repeated message used up the bucket and dropped distinct messages behind it | minor | Repeats of a kept message only count. |
+| 514 is often the host's own syslog | minor | 5514 by default. |
+| IOS-XE 17 logs `%RADIUS_AUDIT_MESSAGE-…` and some platforms `%PM-SP-…` | minor | Both parsed. |
+| After a restore the receiver kept pre-restore state | minor | Reset when the restore ends. |
+| Nothing said when no switch's messages arrive because Docker rewrote the source address | minor | Unknown sources counted in the heartbeat; System health names the likely cause. |
+
+Known gap: the message formats are taken from Cisco's documentation and published logs, not from a switch on the bench.
+
 ## 0. Revision 3 (2026-11-07): implementation decisions
 
 Supersedes §2 and the library, migration and table names below where they differ.
@@ -172,7 +260,7 @@ subtrees; a switch-side ACL; keys Transit-encrypted at rest, decrypted by the AP
 the collector's memory only; the engine id pinned after the first poll; results size-capped; findings are evidence,
 never used for decisions.
 
-## 9. v1.1: syslog
+## 9. v1.1: syslog (superseded by §0a)
 
 Received by the collector (never RADIUS), UDP and TCP 514 when `EASYEAP_SYSLOG_BIND` is set, from registered switch
 addresses only; an allow-list of mnemonics (`SESSION_MGR-5-FAIL`, `AUTHMGR-5-*`, `DOT1X-5-FAIL`, `MAB-5-FAIL`,

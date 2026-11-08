@@ -51,6 +51,10 @@ Status as of 2026-11-06 (release 1.0.1).
 - [x] Device administration over TACACS+ (Cisco IOS, IOS XE, Catalyst 9800): EasyEAP accounts with optional authenticator
       codes, AD group → role mappings checked in AD at login, per-device keys with rotation grace, break-glass names,
       the Admin log with masked commands
+- [x] Switch audit for Cisco Catalyst: SNMPv2c (default) or SNMPv3 polling of ports, 802.1X/MAB sessions and
+      err-disabled ports by the `easyeap-collector` container, findings against EasyEAP's own answers with hysteresis and
+      acknowledgement; syslog from the switches ("the switch says") by the `easyeap-syslog` container, from verified
+      management addresses only
 
 ### Enrollment
 - [x] One-time, device-bound links (72-hour default)
@@ -75,7 +79,8 @@ Status as of 2026-11-06 (release 1.0.1).
 - [x] Backend unit tests; RLS and policy-draft integration tests; RADIUS renderer tests
 - [x] Shared policy fixtures for the backend and frontend engines
 - [x] End-to-end EAP-TLS through FreeRADIUS against a real domain controller (`tests/e2e/run.sh`), including wired 802.1X,
-      MAC authentication and TACACS+ logins with AD and EasyEAP accounts
+      MAC authentication, TACACS+ logins with AD and EasyEAP accounts, and the switch audit (SNMP and syslog) against a
+      pretend Catalyst
 - [x] RADIUS integration test on real FreeRADIUS without the API (`tests/radius/run.sh`), with 1.0.1 version skew; in CI
 - [x] Upgrade from 1.0.1 to wired 802.1X on the lab stack: migration, existing controllers, VLANs and decisions kept
 - [x] Frontend unit tests (formatting, routes, decision ledger)
@@ -113,7 +118,8 @@ Status as of 2026-11-06 (release 1.0.1).
   fallback and the sign-in-screen connection are unverified ([docs/autoenrollment.md](docs/autoenrollment.md)).
 - **The switch audit is not verified on switch hardware.** It's tested against net-snmp's agent (SNMPv2c and SNMPv3
   SHA-256/AES-128) serving Catalyst-like CISCO-AUTH-FRAMEWORK-MIB and CISCO-ERR-DISABLE-MIB tables. Which IOS-XE
-  releases implement those tables, and the cost of walking the session table on large stacks, are unverified
+  releases implement those tables, and the cost of walking the session table on large stacks, are unverified. The
+  syslog message formats come from Cisco's documentation and published logs; the test sends them from a pretend switch
   ([docs/switch-audit.md](docs/switch-audit.md)).
 - **Wired 802.1X gaps.** No IP-phone voice domain, no
   merge with an existing 802.1X configuration on a switch, no profiling or automatic approval for MAC authentication.
@@ -139,8 +145,7 @@ Status as of 2026-11-06 (release 1.0.1).
 ## Planned
 
 - SCEP for MDM-managed devices
-- Switch audit v1.1: syslog from switches (allow-listed messages, shown as "the switch says"), then UniFi through the
-  UniFi Network application ([docs/plans/switch-audit.md](docs/plans/switch-audit.md) §9, §11)
+- Switch audit: UniFi switches through the UniFi Network application ([docs/plans/switch-audit.md](docs/plans/switch-audit.md) §11)
 - Group Policy autoenrollment: key attestation for TPM keys, and confirming it on real Windows 11 PCs
 - Device administration phase 2: TACACS+ over TLS, command authorization, other vendors
 - RadSec

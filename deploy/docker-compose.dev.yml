@@ -34,3 +34,10 @@ services:
       EASYEAP_ENVIRONMENT: development
     volumes:
       - ../backend:/app
+
+  easyeap-syslog:
+    image: easyeap-api:dev
+    environment:
+      EASYEAP_ENVIRONMENT: development
+    volumes:
+      - ../backend:/app

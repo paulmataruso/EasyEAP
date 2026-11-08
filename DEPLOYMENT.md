@@ -22,11 +22,19 @@ EasyEAP runs as one Docker Compose project (`easyeap`) on a Linux host. One depl
 | 636 | TCP | easyeap-api, easyeap-worker | Customer domain controllers | LDAPS directory sync (outbound) |
 | 49 | TCP | Switches and controllers (management addresses) | easyeap-radius | TACACS+ admin logins ([device administration](docs/device-administration.md)); published only when `EASYEAP_TACACS_BIND` is set to a reachable address |
 | 636 (389 StartTLS) | TCP | easyeap-radius | Customer domain controllers | AD admin logins: the administrator's own bind (outbound; only with device administration and directory access) |
+| 161 | UDP | easyeap-collector | Cisco switches (management addresses) | [Switch audit](docs/switch-audit.md) SNMP polling (outbound; only for switches with monitoring set up) |
+| 5514 | UDP | Monitored switches (management addresses) | easyeap-syslog | Switch audit syslog; published only when `EASYEAP_SYSLOG_BIND` is set to a reachable address |
 
 RADIUS over UDP must not cross the internet unprotected: route it through a VPN. Restrict the published ports to
 internal interfaces with `EASYEAP_HTTPS_BIND`, `EASYEAP_HTTP_BIND` and `EASYEAP_RADIUS_BIND` where possible, and
 firewall 1812/1813 to your controllers' addresses. TACACS+ only obfuscates its packets: keep TCP 49 on the management
 network.
+
+Switch syslog is matched to a switch by its source address, so that address must reach `easyeap-syslog` unchanged.
+Docker's default port publishing (iptables DNAT) keeps it; rootless Docker, the userland proxy (for example IPv6
+traffic to an IPv4-only network, or `"userland-proxy": true` without iptables) and NAT between the switches and the
+server replace it, and every message is then dropped as coming from an unknown address. System health → Switch syslog
+lists the addresses messages came from when that happens.
 
 ## Install
 
@@ -63,6 +71,7 @@ Put your certificate chain and key at `deploy/secrets/tls.crt` and `deploy/secre
 | `EASYEAP_RADIUS_ADDRESS` | The IP controllers use to reach RADIUS, shown in the controller guides and snippets. Loopback and unspecified addresses (`127.0.0.1`, `0.0.0.0`) are not shown to controllers; the console warns instead. |
 | `EASYEAP_*_BIND`, `EASYEAP_HTTP_PORT`, `EASYEAP_HTTPS_PORT` | Published interfaces and ports. Certificates assume CRLs are on port 80. |
 | `EASYEAP_TACACS_BIND`, `EASYEAP_TACACS_PORT` | Where TACACS+ for device administration is published (default `127.0.0.1:49`, which keeps it off the network). Set the bind to the address switches reach EasyEAP on to accept admin logins. |
+| `EASYEAP_SYSLOG_BIND`, `EASYEAP_SYSLOG_PORT` | Where `easyeap-syslog` receives syslog from monitored switches (default `127.0.0.1:5514`, which keeps it off the network). Set the bind to the address switches reach EasyEAP on to receive it; the switch configuration EasyEAP generates then sends there. |
 | `EASYEAP_RADIUS_NODE` | Agent identifier shown in System health. |
 | `EASYEAP_LAB_MODE` | `true` enables insecure test options (keeping a root CA online, plain LDAP). Never in production. |
 
@@ -155,8 +164,8 @@ Backups made by preview builds before 1.0.0 (`.tar.gz.enc` or `.tar.gz.gpg`) can
 ## Operations
 
 - **Health:** System health in the console; `docker compose ps`; `GET /api/health` (liveness).
-- **Logs:** the console's **System log** (System health → System log) holds messages from the API, worker, RADIUS
-  agent and FreeRADIUS warnings and errors for 30 days. `docker compose logs -f` still shows everything, including
+- **Logs:** the console's **System log** (System health → System log) holds messages from the API, worker, switch
+  collector, switch syslog receiver, RADIUS agent and FreeRADIUS warnings and errors for 30 days. `docker compose logs -f` still shows everything, including
   FreeRADIUS's full output. Secrets are redacted from logs.
 - **Remote syslog:** System health → Remote syslog sends the audit trail, every authentication and the system log
   to up to four syslog servers or SIEMs, over TLS (recommended; paste the CA if a private one signed the server),

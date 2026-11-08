@@ -104,9 +104,13 @@ AUTH_PLACEHOLDER = "<authentication key>"
 PRIV_PLACEHOLDER = "<privacy key>"
 
 
-def config_block(mon: dict, source: str) -> str:
+SYSLOG_FACILITIES = "SESSION_MGR|AUTHMGR|DOT1X|DOT1X_SWITCH|MAB|PM|RADIUS|SYS"
+
+
+def config_block(mon: dict, source: str, syslog: tuple[str, int] | None = None) -> str:
     """The lines to paste on the switch: a read-only view of the six subtrees EasyEAP reads, an ACL that only lets
-    EasyEAP in, and the community or SNMPv3 user. Nothing global changes (no logging, timestamps or AAA)."""
+    EasyEAP in, and the community or SNMPv3 user; with `syslog` (the address and port switches send it to), a logging
+    host for the messages EasyEAP keeps. Nothing global changes (no logging levels, timestamps or AAA)."""
     src = source or "<EasyEAP's address>"
     v6 = ":" in src
     acl = "EASYEAP-SNMP6" if v6 else "EASYEAP-SNMP"
@@ -125,12 +129,28 @@ def config_block(mon: dict, source: str) -> str:
             out.append("! sha-2 256 needs IOS-XE 16.10 or later; on older software choose SHA-1 in EasyEAP instead.")
     else:
         out.append(f"snmp-server community {COMMUNITY_PLACEHOLDER} view EASYEAP-RO RO {acl_ref}")
+    if syslog:
+        dest, port = syslog
+        mgmt = mon.get("host") or "the management address"
+        out += ["!", "! Syslog: EasyEAP keeps the 802.1X, MAB, err-disable, RADIUS server and configuration messages.",
+                f"logging discriminator EASYEAP facility includes {SYSLOG_FACILITIES} rate-limit 100",
+                f"logging host {dest} discriminator EASYEAP transport udp port {port}",
+                f"! EasyEAP only keeps messages sent from {mgmt}. If the switch would send them from another address, add:",
+                "!   logging source-interface <the interface with that address>",
+                "! From the management port of a Catalyst 9000 (Mgmt-vrf), use instead:",
+                f"!   logging host {dest} vrf Mgmt-vrf discriminator EASYEAP transport udp port {port}"]
     return "\n".join(out) + "\n"
 
 
-def removal_block(mon: dict, community: str | None = None) -> str:
-    """Undo config_block (also how the old community is retired when credentials are regenerated)."""
+def removal_block(mon: dict, community: str | None = None, syslog: tuple[str, int] | None = None) -> str:
+    """Undo config_block (also how the old community is retired when credentials are regenerated). The logging host is
+    removed with the line exactly as it was added: IOS keeps a host on another port as a separate entry."""
     out = []
+    if syslog:
+        dest, port = syslog
+        out = [f"no logging host {dest} discriminator EASYEAP transport udp port {port}",
+               f"! or, if it was added in Mgmt-vrf: no logging host {dest} vrf Mgmt-vrf discriminator EASYEAP transport udp port {port}",
+               "no logging discriminator EASYEAP"]
     if mon.get("version") == "v3":
         out += [f"no snmp-server user {mon.get('user') or 'easyeap'} EASYEAP v3", "no snmp-server group EASYEAP v3 priv"]
     else:
@@ -424,6 +444,49 @@ def prune(s: Session) -> int:
 
 
 # ── Output ───────────────────────────────────────────────────────────────────
+
+
+def syslog_out(r: m.SwitchSyslog) -> dict:
+    return {"id": str(r.id), "first_at": r.first_at.isoformat(), "last_at": r.last_at.isoformat(), "count": r.count,
+            "tag": f"{r.facility}-{r.severity}-{r.mnemonic}", "severity": r.severity, "port": r.port or None, "mac": r.mac or None,
+            "subject": r.subject or None,
+            "session_id": r.session_id or None, "text": r.text}
+
+
+def recent_syslog(s: Session, client_id: uuid.UUID, hours: int = 24, limit: int = 200, port: str = "", mac: str = "") -> list[m.SwitchSyslog]:
+    q = select(m.SwitchSyslog).where(m.SwitchSyslog.client_id == client_id,
+                                     m.SwitchSyslog.last_at >= datetime.now(UTC) - timedelta(hours=hours))
+    if port:
+        q = q.where(m.SwitchSyslog.port == port)
+    if mac:
+        q = q.where(m.SwitchSyslog.mac == mac)
+    return list(s.scalars(q.order_by(m.SwitchSyslog.last_at.desc()).limit(limit)))
+
+
+def says_about(rows: list[m.SwitchSyslog], port: str | None, mac: str | None, limit: int = 3) -> list[dict]:
+    """What the switch said about a finding's device (by MAC) or, for a port finding, its port."""
+    hits = [r for r in rows if (mac and r.mac == mac) or (not mac and port and r.port == port)]
+    return [syslog_out(r) for r in hits[:limit]]
+
+
+def radius_down(rows: list[m.SwitchSyslog], ours: str, heard_since=lambda at: False) -> list[dict]:
+    """The RADIUS servers the switch last said aren't responding (rows newest first), one per server; `ours` is
+    EasyEAP's RADIUS address. A server comes back when the switch says it's alive, and EasyEAP's own when EasyEAP has
+    since heard from the switch (`heard_since(at)`): the switch may not log that it's alive again."""
+    latest: dict[str, m.SwitchSyslog] = {}
+    for r in rows:
+        if r.facility in ("RADIUS", "RADIUS_AUDIT_MESSAGE"):
+            latest.setdefault(r.subject or "all", r)
+    out = []
+    for server, r in latest.items():
+        if r.mnemonic == "RADIUS_ALIVE":
+            continue
+        is_ours = server == "all" or (bool(ours) and server == ours)
+        if is_ours and heard_since(r.last_at):
+            continue
+        out.append({**syslog_out(r), "server": None if server == "all" else server, "ours": is_ours})
+    return out
+
 
 
 def finding_out(f: m.SwitchFinding) -> dict:

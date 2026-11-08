@@ -3,12 +3,12 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { api, qs } from './client'
 
 export type LogLevel = 'debug' | 'info' | 'warning' | 'error' | 'critical'
-export type LogSource = 'api' | 'worker' | 'collector' | 'radius-agent' | 'freeradius'
+export type LogSource = 'api' | 'worker' | 'collector' | 'switch-syslog' | 'radius-agent' | 'freeradius'
 
 export interface SystemLogEntry { id: number; at: string; level: LogLevel; source: LogSource; logger: string; message: string }
 export interface SystemLogPage { logs: SystemLogEntry[]; next_before: number | null; sources: LogSource[] }
 
-export const sourceLabels: Record<LogSource, string> = { api: 'API', worker: 'Worker', collector: 'Switch collector', 'radius-agent': 'RADIUS agent', freeradius: 'FreeRADIUS' }
+export const sourceLabels: Record<LogSource, string> = { api: 'API', worker: 'Worker', collector: 'Switch collector', 'switch-syslog': 'Switch syslog', 'radius-agent': 'RADIUS agent', freeradius: 'FreeRADIUS' }
 
 export function useSystemLogs(filters: { level: LogLevel; source: string; q: string }) {
   return useInfiniteQuery({
