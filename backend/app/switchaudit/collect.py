@@ -74,7 +74,9 @@ def probe(s: Session) -> dict:
         more = s.get([f"{ENT_SERIAL}.{idx}", f"{ENT_MODEL}.{idx}"])
         facts["serial"] = snmp.text(more.get(oid(f"{ENT_SERIAL}.{idx}")), 64)
         facts["model"] = snmp.text(more.get(oid(f"{ENT_MODEL}.{idx}")), 64)
-    caf = s.first(CAF_REG) is not None
+    # The framework runs where either table answers: a Catalyst 3850 on IOS-XE 16.6.1 has no cafAuthMethodRegTable but
+    # answers cafPortConfigTable (and cafSessionTable once a device authenticates).
+    caf = s.first(CAF_REG) is not None or s.first(CAF_PORT) is not None
     errdis = s.get([ERRDIS_INTERVAL]).get(oid(ERRDIS_INTERVAL))
     return {"facts": facts, "capabilities": {"caf": caf, "errdisable": isinstance(errdis, int)}}
 

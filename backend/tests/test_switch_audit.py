@@ -460,6 +460,15 @@ def test_poll_without_caf_reads_no_sessions():
     assert all(p["auth"] is None for p in data["ports"])
 
 
+def test_caf_without_its_registration_table_still_counts():
+    # A Catalyst 3850 on IOS-XE 16.6.1: no cafAuthMethodRegTable, but cafPortConfigTable answers for every port.
+    t = catalyst()
+    t = {k: v for k, v in t.items() if not k.startswith(collect.CAF_REG + ".")}
+    data = collect.poll(FakeSession(t))
+    assert data["capabilities"]["caf"] is True
+    assert any(p["auth"] for p in data["ports"])
+
+
 def test_canonical_port_names():
     assert canonical_port("Gi1/0/5") == "GigabitEthernet1/0/5"
     assert canonical_port("gigabitethernet1/0/5") == "GigabitEthernet1/0/5"
@@ -652,14 +661,14 @@ def test_switch_changed_is_sticky_and_ack_resets_on_change():
 
 def test_monitoring_settings_validation():
     ok = service.MonitoringIn(host=" 10.0.0.5 ")
-    assert ok.host == "10.0.0.5" and ok.version == "v2c" and ok.interval_minutes == 15
+    assert ok.host == "10.0.0.5" and ok.version == "v2c" and ok.interval_minutes == service.DEFAULT_INTERVAL == 1
     for bad in ("127.0.0.1", "0.0.0.0", "224.0.0.1", "169.254.1.1", "switch.example.com", "10.0.0.0/24"):  # noqa: S104 — refused, never bound
         with pytest.raises(ValueError):
             service.MonitoringIn(host=bad)
     with pytest.raises(service.MonitoringError):
         service.MonitoringIn(host="10.0.0.5", version="v3", auth="sha", priv="aes256").check()
     with pytest.raises(ValueError):
-        service.MonitoringIn(host="10.0.0.5", interval_minutes=1)
+        service.MonitoringIn(host="10.0.0.5", interval_minutes=0)
 
 
 def test_default_host_only_for_a_single_address():

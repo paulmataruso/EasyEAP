@@ -19,7 +19,7 @@ import { Btn, Callout, Chip, CopyButton, EDialog, ESelect, ESwitch, ErrorState, 
 import { Marked } from './Guide'
 
 const macText = (m: string | null) => (m && m.length === 12 ? m.match(/../g)!.join(':') : m ?? '')
-const INTERVALS = [5, 10, 15, 30, 60]
+const INTERVALS = [1, 2, 5, 10, 15, 30, 60]
 
 function detailText(f: Finding): string | null {
   const d = f.detail as Record<string, unknown>
@@ -90,7 +90,7 @@ export function SwitchAuditPanel({ client }: { client: RadiusClient }) {
                 : 'EasyEAP can read this switch’s 802.1X sessions over SNMP (read-only) and compare them with its own answers: unprotected ports, devices it never accepted, VLANs that don’t match.')
               : <>
                 {st ? <>Polled {ago(st.polled_at, now)}{st.ok && st.facts.model ? ` · ${st.facts.model}` : ''}{st.ok && st.facts.version ? ` · ${st.facts.version}` : ''}. </> : 'Not polled yet. '}
-                SNMP{mon.version === 'v3' ? 'v3' : 'v2c'} to <span className="ee-mono">{mon.host}</span> every {mon.interval_minutes} minutes{mon.enabled ? '' : ' (turned off)'}.
+                SNMP{mon.version === 'v3' ? 'v3' : 'v2c'} to <span className="ee-mono">{mon.host}</span> every {mon.interval_minutes === 1 ? 'minute' : `${mon.interval_minutes} minutes`}{mon.enabled ? '' : ' (turned off)'}.
                 {st?.slow && ' Polls take a long time on this switch, so it’s polled half as often.'}
               </>}
           </p>
@@ -378,7 +378,7 @@ function SetupDialog({ client, data, open, onClose }: { client: RadiusClient; da
           )}
           <Field label="Poll every" htmlFor={`${id}-int`}>
             <ESelect id={`${id}-int`} label="Poll every" className="max-w-[180px]" value={String(form.interval_minutes)} onChange={(v) => setForm({ ...form, interval_minutes: Number(v) })}
-              options={INTERVALS.map((n) => ({ value: String(n), label: `${n} minutes` }))} />
+              options={INTERVALS.map((n) => ({ value: String(n), label: n === 1 ? 'minute' : `${n} minutes` }))} />
           </Field>
           {mon.set_up && <Callout tone="warn">New credentials replace the current ones: polling stops until the switch has the new block and the test passes.</Callout>}
         </div>
@@ -496,7 +496,7 @@ function SettingsDialog({ client, data, open, onClose, onReconfigure }: { client
           </Field>
           <Field label="Poll every" htmlFor={`${id}-int`}>
             <ESelect id={`${id}-int`} label="Poll every" className="max-w-[180px]" value={String(interval)} onChange={(v) => setInterval_(Number(v))}
-              options={INTERVALS.map((n) => ({ value: String(n), label: `${n} minutes` }))} />
+              options={INTERVALS.map((n) => ({ value: String(n), label: n === 1 ? 'minute' : `${n} minutes` }))} />
           </Field>
           <p className="ee-small ee-ink-3">
             SNMP{mon.version} {mon.version === 'v3' ? `user ${mon.user} (${mon.auth === 'sha256' ? 'SHA-256' : 'SHA-1'}, ${mon.priv === 'aes256' ? 'AES-256' : 'AES-128'})` : 'community'}

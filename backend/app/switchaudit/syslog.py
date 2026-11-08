@@ -43,7 +43,7 @@ PRUNE_SECONDS = 24 * 3600
 KEEP_DAYS = 14
 MAX_WRITE_FAILURES = 5
 # A message moves the next poll earlier, never sooner than this after the last poll (a spoofed message can't add load).
-HINT_MIN_GAP, HINT_DELAY = timedelta(minutes=5), timedelta(seconds=30)
+HINT_MIN_GAP, HINT_DELAY = timedelta(seconds=30), timedelta(seconds=10)
 
 # What is kept: facility → mnemonics (a trailing "_" keeps every mnemonic with that prefix). Severity doesn't matter.
 # The SESSION_MGR form of SECURITY_VIOLATION is kept in case IOS-XE logs it under that facility (unverified).
@@ -62,7 +62,7 @@ KEEP: dict[str, set[str]] = {
     "STP": {"BLOCK_BPDUGUARD"},
     "VSHD": {"VSHD_SYSLOG_CONFIG_I"},
 }
-HINT_ON = {"ERR_DISABLE", "ERR_RECOVER", "SECURITY_VIOLATION", "CONFIG_I",   # the SNMP evidence should follow soon
+HINT_ON = {"ERR_DISABLE", "ERR_RECOVER", "SECURITY_VIOLATION", "CONFIG_I", "FAIL",   # the SNMP evidence should follow soon
            "IF_DOWN_ERROR_DISABLED", "IF_ERRDIS_RECOVERY", "VSHD_SYSLOG_CONFIG_I"}
 PRIORITY = {"RADIUS_DEAD", "RADIUS_ALIVE", "ALLDEADSERVER", "ERR_DISABLE",     # kept even past the tenant's byte quota
             "IF_DOWN_ERROR_DISABLED"}

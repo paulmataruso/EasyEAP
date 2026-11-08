@@ -7,6 +7,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The switch audit polls every minute by default** (1 to 60 minutes; a poll takes about 0.1 s), and a failed
+  authentication in the switch's syslog brings the next poll forward to within seconds (30 s after the last poll at
+  the earliest).
 - **A switch's or controller's whole configuration, any time, with its secrets**: **Fill in the shared secret** (and
   **Fill in the TACACS+ key**, **Fill in the credentials** for the switch audit) puts the secret EasyEAP already keeps
   into the configuration on screen, so pasting it again no longer means generating a new secret. It needs the
@@ -187,6 +190,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **"Sessions aren't readable over SNMP" on a Catalyst 3850 with IOS-XE 16.6**: the switch has no
+  cafAuthMethodRegTable, which was all EasyEAP checked; it answers the port and session tables, which are now enough.
 - **IOS-XE 16.6.1 and other releases rejected parts of the classic and IOS-XE configuration**: commands now follow
   the switch's release (see above). `DEFAULT_CRITICAL_DATA_TEMPLATE` is replaced by EasyEAP's own critical template,
   except on switches already enforcing with it, whose policy name stays the same.

@@ -36,7 +36,7 @@ SNMP block with a note: the audit works without syslog.
 
 ## How it works
 
-A separate container, `easyeap-collector`, polls each monitored switch every 15 minutes by default (5 to 60). It reads:
+A separate container, `easyeap-collector`, polls each monitored switch every minute by default (1 to 60; a poll is one short SNMP walk, about 0.1 s on a 24-port switch). It reads:
 
 - **Ports** (IF-MIB): name, description, up/down.
 - **802.1X on each port** (CISCO-AUTH-FRAMEWORK-MIB, `cafPortConfigTable`): whether the port authenticates (`auto`) or
@@ -162,7 +162,7 @@ of asking you to paste `show access-session`. You can still paste it.
 - The audit's findings never feed a RADIUS decision.
 - Syslog (below) is received by its own container, `easyeap-syslog`, which holds the same database password and nothing
   else. Messages are kept only from addresses EasyEAP has polled successfully, never open or resolve a finding, and
-  can at most bring a switch's next poll forward to five minutes after the last.
+  can at most bring a switch's next poll forward to 30 seconds after the last.
 
 ## Troubleshooting
 
@@ -186,8 +186,9 @@ under the findings for the same device or port; the API keeps 14 days (`GET …/
 or MAC).
 
 Syslog isn't authenticated, so a message is **never a finding on its own**: findings come only from SNMP. An
-err-disable, a security violation or a configuration change brings the switch's next poll forward, to five minutes
-after the last poll at the earliest, so the SNMP evidence follows; it never polls on demand.
+err-disable, a failed authentication, a security violation or a configuration change brings the switch's next poll
+forward, to 10 seconds after the message and 30 seconds after the last poll at the earliest, so the SNMP evidence
+follows; it never polls on demand.
 
 When the switch says one of its RADIUS servers isn't responding, the audit shows it, one notice per server. EasyEAP's
 own RADIUS address (or "no RADIUS server is responding") is a warning: the switch may be admitting devices on its own

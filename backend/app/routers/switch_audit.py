@@ -204,7 +204,7 @@ def setup_monitoring(client_id: uuid.UUID, body: dict, ctx: TenantCtx = Depends(
 class MonitoringUpdate(BaseModel):
     host: str | None = None
     port: int | None = Field(default=None, ge=1, le=65535)
-    interval_minutes: int | None = Field(default=None, ge=5, le=60)
+    interval_minutes: int | None = Field(default=None, ge=1, le=60)
     enabled: bool | None = None
 
 

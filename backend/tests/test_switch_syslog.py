@@ -152,10 +152,12 @@ def test_failed_writes_are_retried_then_dropped_and_a_restore_starts_over():
 
 def test_some_messages_hint_at_an_earlier_poll():
     co = Coalescer()
+    # A failed authentication or an err-disabled port: the SNMP view should catch up within seconds, not an interval.
     co.add("192.0.2.10", SW, parse(DOT1X_FAIL), NOW, mono=0.0)
-    assert co.take_hints() == {}
+    assert co.take_hints() == {SW: NOW} and co.take_hints() == {}
     co.add("192.0.2.10", SW, parse(ERR_DISABLE), NOW, mono=0.0)
     assert co.take_hints() == {SW: NOW} and co.take_hints() == {}
+    assert syslog.HINT_MIN_GAP.total_seconds() == 30 and syslog.HINT_DELAY.total_seconds() == 10
 
 
 def test_source_map_only_verified_and_unshared_addresses():

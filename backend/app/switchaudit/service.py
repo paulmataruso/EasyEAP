@@ -30,7 +30,7 @@ from app.switchaudit.findings import KINDS, TEXT, Context, Found, Key, Seen, det
 
 log = logging.getLogger("easyeap.switchaudit")
 
-DEFAULT_INTERVAL = 15
+DEFAULT_INTERVAL = 1   # minutes: a poll is one short walk (about 0.1 s on a 24-port switch)
 POLL_BUDGET_SECONDS = 120      # a whole poll, every walk included
 TEST_BUDGET_SECONDS = 10       # "Test connection" in the API
 POLL_NOW_EVERY = timedelta(minutes=1)
@@ -59,7 +59,7 @@ class MonitoringIn(BaseModel):
     # 17.10.1a, and not for every Catalyst.
     auth: Literal["sha256", "sha"] = "sha"
     priv: Literal["aes128", "aes256"] = "aes128"
-    interval_minutes: int = Field(default=DEFAULT_INTERVAL, ge=5, le=60)
+    interval_minutes: int = Field(default=DEFAULT_INTERVAL, ge=1, le=60)
 
     @field_validator("host")
     @classmethod
