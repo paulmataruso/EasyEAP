@@ -192,6 +192,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 - **"Sessions aren't readable over SNMP" on a Catalyst 3850 with IOS-XE 16.6**: the switch has no
   cafAuthMethodRegTable, which was all EasyEAP checked; it answers the port and session tables, which are now enough.
+- **A switch audit poll took 13 seconds on a Catalyst 3850** with no 802.1X sessions: stepping past the end of an
+  empty session table costs the switch about 2 s a column. EasyEAP reads the client MAC column first and stops there
+  when it's empty (about 3 s in all).
 - **IOS-XE 16.6.1 and other releases rejected parts of the classic and IOS-XE configuration**: commands now follow
   the switch's release (see above). `DEFAULT_CRITICAL_DATA_TEMPLATE` is replaced by EasyEAP's own critical template,
   except on switches already enforcing with it, whose policy name stays the same.

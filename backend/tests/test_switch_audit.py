@@ -794,6 +794,20 @@ def test_findings_past_a_cut_list_are_left_alone():
     assert service._past_the_cut({"partial": {"ports": False, "sessions": False}}) is None
 
 
+def test_no_sessions_reads_only_the_mac_column():
+    # Stepping past an empty session table costs seconds a column on some switches: one column tells it's empty.
+    walked = []
+
+    class Counting(FakeSession):
+        def walk(self, base, max_rows=20_000, truncate=False):
+            walked.append(str(base))
+            return super().walk(base, max_rows, truncate)
+    data = collect.poll(Counting(catalyst()))
+    assert data["sessions"] == [] and not data["truncated"]
+    session_walks = [w for w in walked if w.startswith(collect.CAF_SESSION) or w.startswith(collect.CAF_METHOD_STATE)]
+    assert session_walks == [f"{collect.CAF_SESSION}.{collect.S_MAC}"]
+
+
 def test_poll_ignores_odd_indexes_and_cuts_sessions_short(monkeypatch):
     t = catalyst(sessions=[(8, "S1", "001122334455", 6, {}), (9, "S2", "0011223344AA", 6, {})])
     t[f"{collect.IF_NAME}.300.1"] = b"odd"  # an ifName row with a two-arc index

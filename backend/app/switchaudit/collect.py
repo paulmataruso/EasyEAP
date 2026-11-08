@@ -131,8 +131,14 @@ def poll(s: Session) -> dict:
 
 
 def _sessions(s: Session, names: dict[OID, object]) -> tuple[list[dict], bool]:
+    # The client MAC first: every 802.1X/MAB session has one, so no MAC rows means no sessions and the other columns
+    # aren't read. Stepping past the end of an empty session table is what's slow: about 2.5 s a column on a 3850 with
+    # IOS-XE 16.6, against milliseconds for rows that exist.
     cols: dict[int, dict[OID, object]] = {}
-    for col in (S_MAC, S_STATUS, S_DOMAIN, S_USER, S_AUTHZ_BY, S_CRITICAL, S_VLAN):
+    cols[S_MAC] = _column(s.walk(f"{CAF_SESSION}.{S_MAC}", max_rows=MAX_SESSIONS, truncate=True), f"{CAF_SESSION}.{S_MAC}")
+    if not cols[S_MAC]:
+        return [], False
+    for col in (S_STATUS, S_DOMAIN, S_USER, S_AUTHZ_BY, S_CRITICAL, S_VLAN):
         cols[col] = _column(s.walk(f"{CAF_SESSION}.{col}", max_rows=MAX_SESSIONS, truncate=True), f"{CAF_SESSION}.{col}")
     methods: dict[OID, dict[str, str]] = {}
     for idx, v in _column(s.walk(CAF_METHOD_STATE, max_rows=MAX_SESSIONS * 4, truncate=True), CAF_METHOD_STATE).items():
