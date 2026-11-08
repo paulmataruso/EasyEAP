@@ -11,10 +11,37 @@ Every device gets its own certificate. EasyEAP never shares one certificate betw
    shows it again (**Enrollment links → Show link**) until it's used, cancelled or expires: EasyEAP keeps it encrypted
    with the tenant's key until then, and each showing is in the audit log. No new link or certificate is made.
 
-**Users** shows what's still waiting for each person: **Link waiting** shows the link, **Setup file waiting**
-downloads the Windows setup file again, and **Package waiting** opens the user's page. **Enrollment → Waiting for
-device** lists only the people with something waiting. A server-generated package is the exception: its password is
-shown once and never stored, so a lost one means cancelling the package and making a new one.
+**Users** shows what's still waiting for each person, by platform: **iPhone/iPad link waiting**, **Mac link
+waiting**, **Linux link waiting** and so on show the link, **Windows setup file waiting** downloads the Windows setup
+file again, and **Package waiting** opens the user's page. **Enrollment → Waiting for device** lists only the people
+with something waiting. Showing a link also gives what its platform needs:
+
+- **iPhone, iPad and Android**: a QR code. The person scans it with the device's camera and the link opens in Safari
+  or Chrome on the device itself, so nobody has to email it.
+- **Linux**: **Download setup script**, the same `EasyEAP-WiFi-Setup.sh` the link's page gives, with the same
+  one-time code. Hand it over, or copy it to a computer that has no browser.
+- **Windows**: the link installs the user's certificate only; **Windows setup** (below) does more.
+
+A server-generated package is the exception: its password is shown once and never stored, so a lost one means
+cancelling the package and making a new one.
+
+### User and computer certificates
+
+A computer certificate is what lets a PC join the network before anyone signs in: at the Windows sign-in screen, so
+people who never used that PC can sign in with their directory password, and for startup scripts and Group Policy.
+
+- **Windows**: the **Windows setup** file installs both, the user's certificate and the computer's, by default, and
+  **Issue certificate** points to it when you choose Windows. A link (the browser route) can only install the user's
+  certificate: the computer's store needs administrator rights, which a web page doesn't get. Reasons to use a link
+  anyway: a personal PC you don't manage (no administrator approval, and no credential on it that works without the
+  person), or when Group Policy autoenrollment already gives the domain PC its own computer certificate.
+- **Linux**: there's nothing extra to install. The setup script keeps the key for the whole computer (root only, in
+  `/etc/easyeap`), makes a system-wide connection that comes up at boot before anyone signs in, and renews it as
+  root, which is what a computer certificate does on Windows. A Linux computer shared by several people uses the
+  access of the person it was set up for.
+- **Mac**: the profile from the link is a user profile (Apple's default for a profile someone installs), so the Mac
+  joins after that person signs in, not at the login window.
+- **iPhone and iPad**: the profile is for the whole device; there's no sign-in screen to cover.
 
 The user opens the link **on the device being enrolled**. By default the device generates its own private key and
 sends only a certificate signing request. The key never leaves the device.

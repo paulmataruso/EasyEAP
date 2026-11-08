@@ -40,8 +40,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 - **Download a Windows setup file again**: **Download setup file** on the user's page makes the same file with the
   same one-time codes (only those not used yet), its original choices and today's RADIUS settings; no new
   certificate. The codes are kept encrypted like links (migration 0013) and each download is audited.
-- **What's waiting, in Users**: each person's waiting links and setup files, with **Link waiting** (show it) and
-  **Setup file waiting** (download it again) right in the list, and an **Enrollment → Waiting for device** filter.
+- **What's waiting, in Users**: each person's waiting links and setup files by platform (**iPhone/iPad link
+  waiting**, **Linux link waiting**, **Windows setup file waiting** and so on: show it, or download it again) right
+  in the list, and an **Enrollment → Waiting for device** filter.
+- **Hand a link over on its platform**: a new or shown-again link comes with a QR code for an iPhone, iPad or Android
+  phone to scan, **Download setup script** for a Linux link (the script its page gives, same one-time code, audited)
+  and that platform's next steps. **Issue certificate** on Windows points to **Windows setup**, which installs the
+  computer's certificate too ([User and computer certificates](docs/enrollment.md#user-and-computer-certificates)).
 - **Every Cisco switch family** for wired 802.1X, with the configuration for the switch's own release
   ([plan and critique](docs/plans/cisco-platforms.md)). Not verified on Cisco hardware; every guide says so.
   - **Paste `show version`** in Add switch: EasyEAP reads the family, model, release and LAN Lite images, and the port

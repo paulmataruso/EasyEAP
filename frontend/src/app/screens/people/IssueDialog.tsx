@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
 import { RadioGroup } from 'radix-ui'
 import { Link } from 'react-router'
-import { Download, KeyRound, Laptop, Link2, Monitor, ServerCog, Smartphone, Tablet } from 'lucide-react'
+import { Download, KeyRound, Laptop, Link2, Monitor, MonitorCog, ServerCog, Smartphone, Tablet } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/ui/lib'
 import { filenameFrom, saveBlob } from '../../api/client'
@@ -19,6 +19,7 @@ import { paths } from '../../routes'
 import { Btn, Callout, Chip, CopyButton, EDialog, ESelect, errorMessage, Field, OneTimeSecret, platformLabels, Skeleton, toast } from '../../ui'
 import { reasonText } from '../../ui/ledger'
 import { fmtDateTime, relative } from '../../lib/format'
+import { LinkHandover, platformShort } from './GiveAgain'
 import { keyAlgorithm } from './shared'
 
 export interface IssueSubject {
@@ -51,34 +52,18 @@ const TTL = [
 
 const first = (name: string) => name.split(' ')[0] || name
 
-function nextSteps(platform: Platform, who: string, ssid: string, server: string): string[] {
-  const net = ssid ? `“${ssid}”` : 'the Wi-Fi network'
-  switch (platform) {
-    case 'windows':
-      return [`${who} opens the link on the Windows device itself, in Edge or Chrome.`,
-        'The page creates the key on the device, then offers an enrollment helper to run in PowerShell. It installs the certificate, trusts your Root CA and adds the Wi-Fi profile.',
-        `${who} connects to ${net}. No password is needed.`]
-    case 'macos':
-    case 'ios':
-      return [`${who} opens the link on the ${platform === 'ios' ? 'iPhone or iPad' : 'Mac'} itself, in Safari.`,
-        platform === 'ios' ? 'They download the profile, then open Settings → Profile Downloaded → Install.' : 'They download the profile, then open System Settings → Privacy & Security → Profiles to install it.',
-        `When asked for the certificate password, they enter the one shown on the enrollment page, then join ${net}.`]
-    case 'android':
-      return [`${who} opens the link on the Android device itself, in Chrome.`,
-        'They download the certificate file and install it from Settings → Security → More security settings → Install from device storage → Wi-Fi certificate.',
-        `They join ${net} with EAP method TLS, the installed CA certificate${server ? ` and domain ${server}` : ''}.`]
-    default:
-      return [`${who} opens the link on the Linux machine itself.`,
-        'They save the certificate, key and CA chain under /etc/easyeap/ (key readable by root only).',
-        `They install the NetworkManager profile or the wpa_supplicant block the page provides, then connect to ${net}.`]
-  }
-}
-
 type Done =
-  | { kind: 'link'; link: string; expiresAt: string; device: string; platform: Platform }
+  | { kind: 'link'; link: string; enrollmentId: string; expiresAt: string; device: string; platform: Platform }
   | { kind: 'server'; downloadUrl: string; password: string; enrollmentId: string; expiresAt: string; device: string; platform: Platform; note: string }
 
-export function IssueDialog({ identity, open, onOpenChange, returnFocus }: { identity: IssueSubject; open: boolean; onOpenChange: (o: boolean) => void; returnFocus?: RefObject<HTMLElement | null> }) {
+export function IssueDialog({ identity, open, onOpenChange, returnFocus, onWindowsSetup }: {
+  identity: IssueSubject
+  open: boolean
+  onOpenChange: (o: boolean) => void
+  returnFocus?: RefObject<HTMLElement | null>
+  /** Offered for Windows: the setup file installs the computer's certificate too. */
+  onWindowsSetup?: () => void
+}) {
   const { tid, can } = useTenant()
   const qc = useQueryClient()
   const pki = usePki(tid, open)
@@ -145,7 +130,7 @@ export function IssueDialog({ identity, open, onOpenChange, returnFocus }: { ide
         ttl_hours: Number(ttl), ...(method === 'server' ? { legacy_p12: legacy } : {}),
         ...(method === 'link' && liveCert ? { renewal_of: liveCert.id } : {}),
       })
-      if ('link' in res) setDone({ kind: 'link', link: res.link, expiresAt: res.enrollment.expires_at, device: name, platform })
+      if ('link' in res) setDone({ kind: 'link', link: res.link, enrollmentId: res.enrollment.id, expiresAt: res.enrollment.expires_at, device: name, platform })
       else setDone({ kind: 'server', downloadUrl: res.download_url, password: res.pkcs12_password, enrollmentId: res.enrollment.id, expiresAt: res.enrollment.expires_at, device: name, platform, note: res.note })
       setAck(false)
       void invalidatePeople(qc, tid)
@@ -200,7 +185,7 @@ export function IssueDialog({ identity, open, onOpenChange, returnFocus }: { ide
         <div className="space-y-5">
           {done.kind === 'link' ? (
             <OneTimeSecret value={done.link} what="enrollment link" acknowledged={ack} onAcknowledge={setAck}
-              note={<>If it’s lost, copy it again from the user’s page (Enrollment links → Show link) until it’s used or expires.</>} />
+              note={<>If it’s lost, get it again until it’s used or expires: <b>Users → {platformShort[done.platform] ?? ''} link waiting</b>, or <b>Show link</b> on the user’s page.</>} />
           ) : (
             <>
               <div className="space-y-2">
@@ -224,17 +209,19 @@ export function IssueDialog({ identity, open, onOpenChange, returnFocus }: { ide
 
           <p className="text-[13px] ee-ink-2">Expires {expires}. After that, create a new {done.kind === 'link' ? 'link' : 'package'}.</p>
 
-          <div>
-            <p className="text-[13px] font-semibold">Next steps on {platformLabels[done.platform]}</p>
-            <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-[13px] ee-ink-2 marker:text-[var(--ee-ink-3)]">
-              {(done.kind === 'link'
-                ? nextSteps(done.platform, first(identity.display_name), ssid, server)
-                : [`${first(identity.display_name)} opens the download link on the device and saves the package, or you hand over the file.`,
+          {done.kind === 'link' ? (
+            <LinkHandover tid={tid} e={{ id: done.enrollmentId, device_name: done.device, expires_at: done.expiresAt, platform: done.platform }} link={done.link} identityName={identity.display_name} />
+          ) : (
+            <div>
+              <p className="text-[13px] font-semibold">Next steps on {platformLabels[done.platform]}</p>
+              <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-[13px] ee-ink-2 marker:text-[var(--ee-ink-3)]">
+                {[`${first(identity.display_name)} opens the download link on the device and saves the package, or you hand over the file.`,
                   'Installing it asks for the PKCS#12 password above.',
-                  ssid ? `Then they join “${ssid}”${server ? `, checking the server name ${server}` : ''}.` : 'Then they join the Wi-Fi network.']
-              ).map((s) => <li key={s}>{s}</li>)}
-            </ol>
-          </div>
+                  ssid ? `Then they join “${ssid}”${server ? `, checking the server name ${server}` : ''}.` : 'Then they join the Wi-Fi network.',
+                ].map((s) => <li key={s}>{s}</li>)}
+              </ol>
+            </div>
+          )}
           <p className="ee-small ee-ink-3">One certificate per device. The new certificate appears on {first(identity.display_name)}’s page once the device completes enrollment.</p>
         </div>
       </EDialog>
@@ -308,6 +295,16 @@ export function IssueDialog({ identity, open, onOpenChange, returnFocus }: { ide
                 </RadioGroup.Item>
               ))}
             </RadioGroup.Root>
+            {platform === 'windows' && onWindowsSetup && !accountBlocked && (
+              <Callout tone="neutral" className="mt-3" title="A PC you manage: use Windows setup">
+                <p>
+                  One file installs the user’s certificate <b>and the computer’s</b>, so the PC has network at the sign-in screen, plus the network profiles
+                  and renewal. It needs administrator approval once. A link installs only the user’s certificate, without administrator rights:
+                  for a personal PC.
+                </p>
+                <Btn size="sm" className="mt-2" onClick={onWindowsSetup}><MonitorCog aria-hidden />Windows setup instead</Btn>
+              </Callout>
+            )}
           </fieldset>
 
           <fieldset>

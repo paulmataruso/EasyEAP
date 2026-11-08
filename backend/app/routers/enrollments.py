@@ -242,6 +242,35 @@ def show_link(enrollment_id: uuid.UUID, ctx: TenantCtx = Depends(require("enroll
     return {"link": link_for(token), "expires_at": e.expires_at.isoformat()}
 
 
+@router.post("/{enrollment_id}/linux-script")
+def linux_script_again(enrollment_id: uuid.UUID, ctx: TenantCtx = Depends(require("enrollment:manage"))) -> dict:
+    """A waiting Linux link's setup script (EasyEAP-WiFi-Setup.sh), the same one the link's page gives, for the admin
+    to hand over: it carries the link's one-time code, which the script uses when it runs. Each download is audited."""
+    from app.enrollment import linux_setup
+    from app.routers.enroll_public import linux_script_for
+    s = ctx.session
+    e = s.get(m.Enrollment, enrollment_id)
+    if e is None or e.tenant_id != ctx.id or e.method != "link":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Enrollment link not found.")
+    if e.platform != "linux":
+        raise HTTPException(status.HTTP_409_CONFLICT, "This link is for another platform: the setup script is for Linux.")
+    ident = s.get(m.Identity, e.identity_id)
+    if ident is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+    token = enr.link_token(e)
+    if token is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This link was created before EasyEAP kept links. Cancel it and create a new one."
+                            if e.status == "pending" and e.expires_at > datetime.now(UTC) and e.token_ct is None
+                            else "Only a pending link can be given again: this one was used, cancelled or has expired.")
+    if ident.account_state != "enabled":
+        raise HTTPException(status.HTTP_409_CONFLICT, f"This account is {ident.account_state} in the directory, so the link can't be used until it's enabled again.")
+    script = linux_script_for(s, e, ctx.tenant, ident, token)
+    if script is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Set the Wi-Fi network name in RADIUS settings first: the script sets up that network.")
+    audit.record(s, ctx.actor, "enrollment.linux_script_downloaded", tenant_id=ctx.id, target_type="enrollment", target_id=e.id, target_label=e.device_name)
+    return {"filename": linux_setup.FILENAME, "content": script, "expires_at": e.expires_at.isoformat()}
+
+
 @router.post("/{enrollment_id}/download")
 def admin_download(enrollment_id: uuid.UUID, ctx: TenantCtx = Depends(require("enrollment:server_keygen"))) -> Response:
     """The administrator can take the one-time PKCS#12 directly (for hand-delivery). This consumes the download."""

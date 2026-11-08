@@ -37,7 +37,7 @@ describe('WaitingList', () => {
 
   it('opens a waiting link without making a new one', () => {
     const { calls, onShow } = show([w({})])
-    fireEvent.click(screen.getByRole('button', { name: /^Link waiting for Nina’s laptop until .*: show it$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Windows link waiting for Nina’s laptop until .*: show it$/ }))
     expect(onShow).toHaveBeenCalledWith(expect.objectContaining({ id: 'e1' }))
     expect(calls).toEqual([])
   })
@@ -47,7 +47,7 @@ describe('WaitingList', () => {
     vi.spyOn(URL, 'createObjectURL').mockImplementation(() => { saved.push('blob'); return 'blob:x' })
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     const { calls } = show([w({ id: 'e2', method: 'windows-setup', device_name: 'Windows PC', device_id: 'd1' })])
-    fireEvent.click(screen.getByRole('button', { name: /^Setup file waiting for Nina Patel until .*: download it again$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Windows setup file waiting for Nina Patel until .*: download it again$/ }))
     await waitFor(() => expect(saved).toHaveLength(1))
     expect(calls).toEqual(['POST /api/tenants/t1/enrollments/e2/windows-setup'])
   })
@@ -55,14 +55,21 @@ describe('WaitingList', () => {
   it('points to the user’s page when it can’t be given again here', () => {
     show([w({ available: false }), w({ id: 'e3', method: 'server', available: false })])
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /^Link waiting for Nina’s laptop until .*: open Nina Patel’s page$/ })).toHaveAttribute('href', '/t/t1/users/i1')
+    expect(screen.getByRole('link', { name: /^Windows link waiting for Nina’s laptop until .*: open Nina Patel’s page$/ })).toHaveAttribute('href', '/t/t1/users/i1')
     expect(screen.getByRole('link', { name: /^Package waiting/ })).toBeInTheDocument()
+  })
+
+  it('names each platform’s link', () => {
+    show([w({ id: 'a', platform: 'ios' }), w({ id: 'b', platform: 'linux' }), w({ id: 'c', platform: 'macos' })])
+    expect(screen.getByRole('button', { name: /^iPhone\/iPad link waiting/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Linux link waiting/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Mac link waiting/ })).toBeInTheDocument()
   })
 
   it('only points to the user’s page for a disabled account', () => {
     show([w({})], ['enrollment:manage'], 'disabled')
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /^Link waiting/ })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /^Windows link waiting/ })).toBeInTheDocument()
   })
 
   it('only points to the user’s page without enrollment:manage', () => {

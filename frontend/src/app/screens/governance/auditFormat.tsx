@@ -26,6 +26,7 @@ export const actionLabels: Record<string, string> = {
   'enrollment.completed': 'Enrollment completed',
   'enrollment.link_created': 'Enrollment link created',
   'enrollment.link_shown': 'Enrollment link shown again',
+  'enrollment.linux_script_downloaded': 'Linux setup script downloaded',
   'enrollment.package_downloaded': 'Certificate package downloaded',
   'enrollment.server_package_created': 'Server-generated certificate package created',
   'enrollment.windows_setup_created': 'Windows setup file made',

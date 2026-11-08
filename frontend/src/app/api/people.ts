@@ -241,6 +241,8 @@ export const cancelEnrollment = (tid: string, id: string) => api.post<{ ok: bool
 export const showEnrollmentLink = (tid: string, id: string) => api.post<{ link: string; expires_at: string }>(`/api/tenants/${tid}/enrollments/${id}/link`)
 /** A waiting Windows setup file again, with the same one-time codes (recorded in the audit log). Not cached. */
 export const downloadSetupAgain = (tid: string, id: string) => api.post<WindowsSetupResult>(`/api/tenants/${tid}/enrollments/${id}/windows-setup`)
+/** A waiting Linux link's setup script, the one its page gives (recorded in the audit log). Not cached. */
+export const downloadLinuxScript = (tid: string, id: string) => api.post<{ filename: string; content: string; expires_at: string }>(`/api/tenants/${tid}/enrollments/${id}/linux-script`)
 /** Takes the one-time PKCS#12 package (consumes it). */
 export const downloadPackage = (tid: string, id: string) => api.postRaw(`/api/tenants/${tid}/enrollments/${id}/download`)
 

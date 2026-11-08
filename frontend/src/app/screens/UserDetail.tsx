@@ -219,7 +219,7 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
           emptyText={`${first(u.display_name)} hasn’t tried to join Wi-Fi with an EasyEAP certificate yet.`} />
       </Panel>
 
-      {canIssue && <IssueDialog identity={u} open={issueOpen} onOpenChange={setIssueOpen} returnFocus={issueBtn} />}
+      {canIssue && <IssueDialog identity={u} open={issueOpen} onOpenChange={setIssueOpen} returnFocus={issueBtn} onWindowsSetup={() => { setIssueOpen(false); setSetupOpen(true) }} />}
       {canIssue && <WindowsSetupDialog identity={u} open={setupOpen} onOpenChange={setSetupOpen} returnFocus={setupBtn} />}
       <RevokeDialog cert={revoking ? { ...revoking, identity: { id: u.id, display_name: u.display_name } } : null} open={!!revoking} onOpenChange={(o) => { if (!o) setRevoking(null) }}
         returnFocus={focusAfterRevoke} />

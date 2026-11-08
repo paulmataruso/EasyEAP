@@ -182,6 +182,20 @@ def windows_script(token: str, request: Request, s: Session = Depends(db)) -> Re
                     headers={"Content-Disposition": 'attachment; filename="EasyEAP-WiFi-Setup.ps1"', "Cache-Control": "no-store"})
 
 
+def linux_script_for(s: Session, e: m.Enrollment, tenant: m.Tenant, ident: m.Identity, token: str) -> str | None:
+    """The Linux setup script for a link (enrollment/linux_setup.py), or None when the Wi-Fi network name isn't set.
+    The portal serves it to the user; the console gives it to the admin (routers/enrollments.py linux_script_again)."""
+    ssid, server, wpa3 = _net(s, tenant.id)
+    if not ssid:
+        return None
+    issuing, root = pki.chain_pem(s, tenant.id)
+    tpl = s.get(m.CertificateTemplate, e.template_id) if e.template_id else None
+    return linux_setup.setup_script(
+        api_base=get_settings().public_url, token=token, org=tenant.name, slug=tenant.slug, ssid=ssid, server_name=server,
+        identity=ident.upn or ident.username, wpa3=wpa3, wired=_wired(s, tenant.id), ca_chain_pem=issuing + (root or ""),
+        renew_days=tpl.renew_before_days if tpl else 30, pin=linux_setup.tls_pin(PROXY_CERT))
+
+
 @router.get("/{token}/linux.sh", response_class=PlainTextResponse)
 def linux_script(token: str, request: Request, s: Session = Depends(db)) -> Response:
     """The Linux setup script (enrollment/linux_setup.py): key on the computer, CSR with this link, then the network
@@ -189,15 +203,9 @@ def linux_script(token: str, request: Request, s: Session = Depends(db)) -> Resp
     e, tenant, ident = _load(token, request, s, pending=True)
     if e.method != "link":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This link is for a prepared package. Download it instead.")
-    ssid, server, wpa3 = _net(s, tenant.id)
-    if not ssid:
+    script = linux_script_for(s, e, tenant, ident, token)
+    if script is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Your IT team hasn't set up the Wi-Fi network name yet.")
-    issuing, root = pki.chain_pem(s, tenant.id)
-    tpl = s.get(m.CertificateTemplate, e.template_id) if e.template_id else None
-    script = linux_setup.setup_script(
-        api_base=get_settings().public_url, token=token, org=tenant.name, slug=tenant.slug, ssid=ssid, server_name=server,
-        identity=ident.upn or ident.username, wpa3=wpa3, wired=_wired(s, tenant.id), ca_chain_pem=issuing + (root or ""),
-        renew_days=tpl.renew_before_days if tpl else 30, pin=linux_setup.tls_pin(PROXY_CERT))
     return Response(script, media_type="text/x-shellscript; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{linux_setup.FILENAME}"', "Cache-Control": "no-store"})
 

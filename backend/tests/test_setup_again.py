@@ -53,7 +53,7 @@ class FakeSession:
 def world(monkeypatch):
     tid, iid, did = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     s = FakeSession([])
-    tenant = SimpleNamespace(id=tid, name="Acme")
+    tenant = SimpleNamespace(id=tid, name="Acme", slug="acme")
     ident = s.put(m.Identity, SimpleNamespace(id=iid, tenant_id=tid, username="nina", upn="nina@acme.example", display_name="Nina Patel", account_state="enabled"))
     rs = s.put(m.RadiusSettings, SimpleNamespace(server_hostname="radius.acme.example", ssid="Acme-Secure", wpa3=False, wired_enabled=True), tid)
     tpl = {p: s.put(m.CertificateTemplate, SimpleNamespace(id=uuid.uuid4(), purpose=p, renew_before_days=d)) for p, d in (("user", 30), ("device", 45))}
@@ -167,6 +167,40 @@ def test_show_link_waits_for_a_disabled_account(world):
     with pytest.raises(HTTPException) as exc:
         router.show_link(link.id, world.ctx)
     assert exc.value.status_code == 409 and "until it's enabled again" in exc.value.detail
+
+
+def test_linux_link_script_for_the_admin(world):
+    link = world.part("user", method="link", platform="linux", device_id=None, device_name="Nina’s Ubuntu")
+    out = router.linux_script_again(link.id, world.ctx)
+    assert out["filename"] == "EasyEAP-WiFi-Setup.sh" and out["content"].startswith("#!")
+    assert "TOKEN='CODE-ct-user'" in out["content"] and "SSID='Acme-Secure'" in out["content"]
+    assert world.audits[-1][0] == "enrollment.linux_script_downloaded"
+    assert "CODE-ct-user" not in repr(world.audits), "the code isn't in the audit log"
+
+
+@pytest.mark.parametrize("change, code, message", [
+    ({"platform": "windows"}, 409, "for another platform"),
+    ({"status": "completed", "token_ct": None}, 409, "used, cancelled or has expired"),
+    ({"token_ct": None}, 409, "before EasyEAP kept links"),
+    ({"method": enr.WINDOWS_SETUP}, 404, "not found"),
+])
+def test_linux_script_refusals(world, change, code, message):
+    link = world.part("user", **{"method": "link", "platform": "linux", "device_id": None, **change})
+    with pytest.raises(HTTPException) as exc:
+        router.linux_script_again(link.id, world.ctx)
+    assert exc.value.status_code == code and message in exc.value.detail
+
+
+def test_linux_script_needs_the_wifi_name_and_an_enabled_account(world):
+    link = world.part("user", method="link", platform="linux", device_id=None)
+    world.rs.ssid = ""
+    with pytest.raises(HTTPException) as exc:
+        router.linux_script_again(link.id, world.ctx)
+    assert exc.value.status_code == 409 and "Wi-Fi network name" in exc.value.detail
+    world.rs.ssid, world.ident.account_state = "Acme-Secure", "locked"
+    with pytest.raises(HTTPException) as exc:
+        router.linux_script_again(link.id, world.ctx)
+    assert exc.value.status_code == 409 and "locked" in exc.value.detail
 
 
 def test_kept_codes():
