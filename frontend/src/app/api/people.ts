@@ -49,6 +49,8 @@ export interface IdentityEnrollment {
   created_at: string | null
   expires_at: string
   completed_at: string | null
+  /** A pending link EasyEAP can show again (Show link); false for links created before it kept them. */
+  link_available?: boolean
 }
 
 export interface EventExplanation { title: string; explanation: string; fix: string }
@@ -221,6 +223,8 @@ export interface WindowsSetupResult {
 }
 export const createWindowsSetup = (tid: string, body: WindowsSetupIn) => api.post<WindowsSetupResult>(`/api/tenants/${tid}/enrollments/windows-setup`, body)
 export const cancelEnrollment = (tid: string, id: string) => api.post<{ ok: boolean }>(`/api/tenants/${tid}/enrollments/${id}/cancel`)
+/** A pending enrollment's link, again (recorded in the audit log). */
+export const showEnrollmentLink = (tid: string, id: string) => api.post<{ link: string; expires_at: string }>(`/api/tenants/${tid}/enrollments/${id}/link`)
 /** Takes the one-time PKCS#12 package (consumes it). */
 export const downloadPackage = (tid: string, id: string) => api.postRaw(`/api/tenants/${tid}/enrollments/${id}/download`)
 

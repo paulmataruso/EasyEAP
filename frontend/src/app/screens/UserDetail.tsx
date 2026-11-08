@@ -3,17 +3,17 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Ban, Building, CircleCheck, Download, FilePlus, FlaskConical, Hourglass, MonitorCog, Pencil, PlugZap, ShieldX, UserRoundCheck, X } from 'lucide-react'
+import { ArrowLeft, Ban, Building, CircleCheck, Download, FilePlus, FlaskConical, Hourglass, Link2, MonitorCog, Pencil, PlugZap, ShieldX, UserRoundCheck, X } from 'lucide-react'
 import { ApiError, filenameFrom, saveBlob } from '../api/client'
 import { useTenant } from '../api/tenant'
 import {
-  cancelEnrollment, disconnectIdentity, downloadPackage, invalidatePeople, updateIdentity, useDirectory, useDirectoryGroups, useIdentities, useIdentity, usePolicy, useRadius,
+  cancelEnrollment, disconnectIdentity, downloadPackage, invalidatePeople, showEnrollmentLink, updateIdentity, useDirectory, useDirectoryGroups, useIdentities, useIdentity, usePolicy, useRadius,
   type AuthEvent, type Certificate, type IdentityDetail, type IdentityEnrollment,
 } from '../api/people'
 import type { EnforcementStatus, Outcome } from '../api/types'
 import { paths, targetPath } from '../routes'
 import {
-  AccessStateChip, Btn, Callout, CertChip, Chip, EDialog, Empty, ErrorState, errorMessage, Field, LoadingBlock, PageHeader, Panel, PlatformIcon, platformLabels,
+  AccessStateChip, Btn, Callout, CertChip, Chip, CopyButton, EDialog, Empty, ErrorState, errorMessage, Field, LoadingBlock, PageHeader, Panel, PlatformIcon, platformLabels,
   SectionHeader, SourceTag, toast, VlanTag, type Tone,
 } from '../ui'
 import { DecisionLedger, reasonText } from '../ui/ledger'
@@ -355,6 +355,7 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
   const [showPast, setShowPast] = useState(false)
   const [cancelling, setCancelling] = useState<IdentityEnrollment | null>(null)
   const [taking, setTaking] = useState<IdentityEnrollment | null>(null)
+  const [showing, setShowing] = useState<IdentityEnrollment | null>(null)
   const statusChip = (e: IdentityEnrollment) => {
     if (e.status === 'pending' && new Date(e.expires_at) <= now) return <Chip tone="neutral" icon={<Hourglass aria-hidden />}>Expired</Chip>
     if (e.status === 'pending') return <Chip tone="gold" icon={<Hourglass aria-hidden />}>Waiting for device</Chip>
@@ -379,6 +380,9 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
       </div>
       {actions && (
         <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-start">
+          {e.method === 'link' && e.link_available && can('enrollment:manage') && new Date(e.expires_at) > now && (
+            <Btn size="sm" onClick={() => setShowing(e)}><Link2 aria-hidden />Show link</Btn>
+          )}
           {e.method === 'server' && can('enrollment:server_keygen') && new Date(e.expires_at) > now && (
             <Btn size="sm" onClick={() => setTaking(e)}><Download aria-hidden />Download package</Btn>
           )}
@@ -408,6 +412,7 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
       )}
       <CancelEnrollmentDialog tid={tid} identityName={u.display_name} e={cancelling} onClose={() => setCancelling(null)} />
       <TakePackageDialog tid={tid} e={taking} onClose={() => setTaking(null)} />
+      <ShowLinkDialog tid={tid} identityName={u.display_name} e={showing} onClose={() => setShowing(null)} />
     </Panel>
   )
 }
@@ -440,6 +445,32 @@ function CancelEnrollmentDialog({ tid, identityName, e, onClose }: { tid: string
           ? <p>This is a server-generated package. Cancelling deletes the stored package and revokes the certificate created for it (reason: cessation of operation), because its key was never delivered.</p>
           : <p>No certificate exists yet for this link, so nothing is revoked.</p>}
       </div>
+    </EDialog>
+  )
+}
+
+/** A pending link, shown again: fetched when the dialog opens (each showing is audited) and dropped when it closes. */
+export function ShowLinkDialog({ tid, identityName, e, onClose }: { tid: string; identityName: string; e: IdentityEnrollment | null; onClose: () => void }) {
+  const [link, setLink] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    setLink(null); setError(null)
+    if (!e) return
+    let live = true
+    showEnrollmentLink(tid, e.id).then((r) => { if (live) setLink(r.link) }, (err) => { if (live) setError(errorMessage(err)) })
+    return () => { live = false }
+  }, [tid, e])
+  return (
+    <EDialog open={!!e} onOpenChange={(o) => { if (!o) onClose() }} title={`Enrollment link for ${e?.device_name ?? ''}`}
+      description={<>Send it to {identityName} again. It still works once, on the device itself, until {e ? fmtDateTime(e.expires_at) : ''}.</>}
+      footer={<Btn onClick={onClose}>Done</Btn>}>
+      {error ? <Callout tone="crit" title="The link can’t be shown">{error}</Callout>
+        : link ? (
+          <div className="flex items-center gap-2">
+            <code className="ee-secret min-w-0 flex-1 break-all text-[13px]" aria-label="Enrollment link">{link}</code>
+            <CopyButton text={link} what="enrollment link" />
+          </div>
+        ) : <LoadingBlock label="Getting the link" />}
     </EDialog>
   )
 }

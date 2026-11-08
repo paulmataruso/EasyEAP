@@ -139,7 +139,8 @@ def get_identity(identity_id: uuid.UUID, ctx: TenantCtx = Depends(require("ident
         "enrollments": [{"id": str(e.id), "device_name": e.device_name, "platform": e.platform, "method": e.method, "status": e.status,
                          "purpose": purpose_of.get(e.template_id), "created_by": e.created_by, "created_at": e.created_at.isoformat() if e.created_at else None,
                          "expires_at": e.expires_at.isoformat(), "completed_at": e.completed_at.isoformat() if e.completed_at else None,
-                         "certificate_id": str(e.certificate_id) if e.certificate_id else None} for e in enrollments],
+                         "certificate_id": str(e.certificate_id) if e.certificate_id else None,
+                         "link_available": e.method == "link" and e.status == "pending" and e.token_ct is not None} for e in enrollments],
         # A computer has one kind of certificate: both answers are its computer-certificate decision.
         "access": ({"user": (c := _outcome_json(evaluate_identity(s, i, purpose="computer"))), "device": c} if i.kind == "computer" else
                    {"user": _outcome_json(evaluate_identity(s, i, purpose="user")), "device": _outcome_json(evaluate_identity(s, i, purpose="device"))}),

@@ -200,7 +200,7 @@ export function IssueDialog({ identity, open, onOpenChange, returnFocus }: { ide
         <div className="space-y-5">
           {done.kind === 'link' ? (
             <OneTimeSecret value={done.link} what="enrollment link" acknowledged={ack} onAcknowledge={setAck}
-              note={<>EasyEAP shows this link once and stores only a hash of it. If it’s lost, cancel it on the user’s page and create a new one.</>} />
+              note={<>If it’s lost, copy it again from the user’s page (Enrollment links → Show link) until it’s used or expires.</>} />
           ) : (
             <>
               <div className="space-y-2">

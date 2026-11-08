@@ -7,6 +7,10 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Show an enrollment link again**: a pending link's **Show link** on the user's page, until the device enrolls, the
+  link is cancelled or it expires, so a lost link no longer means cancelling it and sending a new one. The link is
+  kept encrypted with the tenant's key and cleared once it can't be used; each showing is audited. Links created
+  before this version can't be shown again.
 - **Every Cisco switch family** for wired 802.1X, with the configuration for the switch's own release
   ([plan and critique](docs/plans/cisco-platforms.md)). Not verified on Cisco hardware; every guide says so.
   - **Paste `show version`** in Add switch: EasyEAP reads the family, model, release and LAN Lite images, and the port

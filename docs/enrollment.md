@@ -7,8 +7,9 @@ Every device gets its own certificate. EasyEAP never shares one certificate betw
 1. Open the user (search with `/`, or press ⌘K / Ctrl+K and type their name).
 2. Choose **Issue Wi-Fi certificate**, pick the device platform and name the device ("Jordan's laptop").
 3. EasyEAP creates a **one-time enrollment link**. It's bound to that user and device, works once, and expires after
-   72 hours (configurable per tenant). Send it to the user through a channel you trust. EasyEAP shows the link only
-   once.
+   72 hours (configurable per tenant). Send it to the user through a channel you trust. If it's lost, the user's page
+   shows it again (**Enrollment links → Show link**) until it's used, cancelled or expires: EasyEAP keeps it encrypted
+   with the tenant's key until then, and each showing is in the audit log.
 
 The user opens the link **on the device being enrolled**. By default the device generates its own private key and
 sends only a certificate signing request. The key never leaves the device.

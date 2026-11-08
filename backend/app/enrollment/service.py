@@ -53,8 +53,8 @@ def create_link(session: Session, tenant: m.Tenant, identity: m.Identity, tpl: m
     pki.issuing_ca(session, tenant.id)  # PKI must be initialised
     token = new_token(32)
     e = m.Enrollment(tenant_id=tenant.id, identity_id=identity.id, device_name=device_name.strip()[:120] or "Device", platform=platform,
-                     method="link", template_id=tpl.id, token_hash=token_hash(token), status="pending", created_by=created_by,
-                     expires_at=_expires(ttl_hours), renewal_of=renewal_of)
+                     method="link", template_id=tpl.id, token_hash=token_hash(token), token_ct=crypto.encrypt(tenant.id, token),
+                     status="pending", created_by=created_by, expires_at=_expires(ttl_hours), renewal_of=renewal_of)
     session.add(e)
     session.flush()
     return e, token
@@ -68,8 +68,16 @@ def find_by_token(session: Session, token: str) -> m.Enrollment | None:
     if e is None:
         return None
     if e.status == "pending" and e.expires_at <= datetime.now(UTC):
-        e.status = "expired"
+        e.status, e.token_ct = "expired", None
     return e
+
+
+def link_token(e: m.Enrollment, bao: OpenBao | None = None) -> str | None:
+    """The token of a pending, unexpired link enrollment, for the admin to copy again; None when there's none to show
+    (used, cancelled, expired, or created before EasyEAP kept links)."""
+    if e.method != "link" or e.status != "pending" or e.token_ct is None or e.expires_at <= datetime.now(UTC):
+        return None
+    return crypto.decrypt_str(e.tenant_id, e.token_ct, bao)
 
 
 def _pc_name(hint: str | None) -> str | None:
@@ -126,7 +134,7 @@ def complete_with_csr(session: Session, bao: OpenBao, e: m.Enrollment, csr_pem: 
 
 
 def _finish(session: Session, e: m.Enrollment, cert: m.Certificate, identity: m.Identity) -> None:
-    e.status, e.completed_at, e.certificate_id = "completed", datetime.now(UTC), cert.id
+    e.status, e.completed_at, e.certificate_id, e.token_ct = "completed", datetime.now(UTC), cert.id, None
     identity.enrolled = True
     if e.renewal_of:
         old = session.get(m.Certificate, e.renewal_of)
@@ -350,7 +358,7 @@ def purge_expired(session: Session) -> int:
         session.delete(esc)
         n += 1
     for e in session.scalars(select(m.Enrollment).where(m.Enrollment.status == "pending", m.Enrollment.expires_at <= now)):
-        e.status = "expired"
+        e.status, e.token_ct = "expired", None
     return n
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
@@ -22,7 +23,9 @@ def enrollment_out(e: m.Enrollment, identity: m.Identity | None = None) -> dict:
     return {"id": str(e.id), "identity_id": str(e.identity_id), "identity": {"display_name": identity.display_name, "username": identity.username} if identity else None,
             "device_name": e.device_name, "platform": e.platform, "method": e.method, "status": e.status, "created_by": e.created_by,
             "created_at": e.created_at.isoformat() if e.created_at else None, "expires_at": e.expires_at.isoformat(),
-            "completed_at": e.completed_at.isoformat() if e.completed_at else None, "certificate_id": str(e.certificate_id) if e.certificate_id else None}
+            "completed_at": e.completed_at.isoformat() if e.completed_at else None, "certificate_id": str(e.certificate_id) if e.certificate_id else None,
+            # Whether "Copy link" can show this link again (a pending link created since EasyEAP keeps them).
+            "link_available": e.method == "link" and e.status == "pending" and e.token_ct is not None}
 
 
 def link_for(token: str) -> str:
@@ -148,7 +151,7 @@ def cancel(enrollment_id: uuid.UUID, ctx: TenantCtx = Depends(require("enrollmen
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Enrollment not found.")
     if e.status != "pending":
         raise HTTPException(status.HTTP_409_CONFLICT, "Only pending enrollments can be cancelled.")
-    e.status = "cancelled"
+    e.status, e.token_ct = "cancelled", None
     esc = s.scalars(select(m.KeyEscrow).where(m.KeyEscrow.enrollment_id == e.id)).first()
     if esc:
         s.delete(esc)
@@ -161,6 +164,23 @@ def cancel(enrollment_id: uuid.UUID, ctx: TenantCtx = Depends(require("enrollmen
             recompute_tenant(s, ctx.id)
     audit.record(s, ctx.actor, "enrollment.cancelled", tenant_id=ctx.id, target_type="enrollment", target_id=e.id, target_label=e.device_name)
     return {"ok": True}
+
+
+@router.post("/{enrollment_id}/link")
+def show_link(enrollment_id: uuid.UUID, ctx: TenantCtx = Depends(require("enrollment:manage"))) -> dict:
+    """The link of a pending enrollment, again: the admin lost it, or the user did. Anyone who may create a link for the
+    user may see this one; each showing is in the audit log."""
+    s = ctx.session
+    e = s.get(m.Enrollment, enrollment_id)
+    if e is None or e.tenant_id != ctx.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Enrollment not found.")
+    token = enr.link_token(e)
+    if token is None:
+        why = ("This link was created before EasyEAP kept links. Cancel it and create a new one." if e.method == "link" and e.status == "pending"
+               and e.expires_at > datetime.now(UTC) else "Only a pending link can be shown again: this one was used, cancelled or has expired.")
+        raise HTTPException(status.HTTP_409_CONFLICT, why)
+    audit.record(s, ctx.actor, "enrollment.link_shown", tenant_id=ctx.id, target_type="enrollment", target_id=e.id, target_label=e.device_name)
+    return {"link": link_for(token), "expires_at": e.expires_at.isoformat()}
 
 
 @router.post("/{enrollment_id}/download")
