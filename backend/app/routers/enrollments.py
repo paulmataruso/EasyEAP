@@ -24,8 +24,8 @@ def enrollment_out(e: m.Enrollment, identity: m.Identity | None = None) -> dict:
             "device_name": e.device_name, "platform": e.platform, "method": e.method, "status": e.status, "created_by": e.created_by,
             "created_at": e.created_at.isoformat() if e.created_at else None, "expires_at": e.expires_at.isoformat(),
             "completed_at": e.completed_at.isoformat() if e.completed_at else None, "certificate_id": str(e.certificate_id) if e.certificate_id else None,
-            # Whether "Copy link" can show this link again (a pending link created since EasyEAP keeps them).
-            "link_available": e.method == "link" and e.status == "pending" and e.token_ct is not None}
+            # Whether EasyEAP can give it again: Show link (a link) or Download setup file (a Windows setup code).
+            "link_available": enr.kept(e), "device_id": str(e.device_id) if e.device_id else None}
 
 
 def link_for(token: str) -> str:
@@ -90,6 +90,33 @@ class WindowsSetupIn(BaseModel):
     ttl_hours: int = Field(default=72, ge=1, le=24 * 14)
 
 
+def _setup_file(ctx: TenantCtx, ident: m.Identity, rs: m.RadiusSettings, codes: dict[str, tuple[m.Enrollment, str]],
+                templates: dict[str, m.CertificateTemplate], *, wifi: bool, wired: bool, shared_pc: bool, mode: str) -> dict:
+    """The setup file for these one-time codes ({"user"|"device": (enrollment, code)}) and today's network settings."""
+    from app.enrollment import windows_setup as ws
+    from app.pki import service as pki
+    issuing, root = pki.chain_pem(ctx.session, ctx.id)
+    user, comp = codes.get("user"), codes.get("device")
+    expires = min(e.expires_at for e, _ in codes.values())
+    label = f"{ident.display_name} ({ident.upn or ident.username})" if ident.display_name else (ident.upn or ident.username)
+    renew = {p: t.renew_before_days for p, t in templates.items()}
+    content = ws.build(ws.SetupOptions(
+        api=get_settings().public_url, org=ctx.tenant.name, user_label=label, user_code=user[1] if user else None,
+        computer_code=comp[1] if comp else None, server_name=rs.server_hostname, root_pem=root or issuing, issuing_pem=issuing,
+        ssid=rs.ssid if wifi else None, wpa3=rs.wpa3, wired=wired, shared_pc=shared_pc,
+        user_renew_days=renew.get("user", 30), computer_renew_days=renew.get("device", 30),
+        expires=expires.strftime("%Y-%m-%d %H:%M UTC"), mode=mode))
+    return {"filename": ws.filename(ident.username), "content": content, "expires_at": expires.isoformat(), "sign_in_mode": mode,
+            "enrollments": [enrollment_out(e, ident) for e, _ in codes.values()]}
+
+
+def _radius_for_setup(ctx: TenantCtx) -> m.RadiusSettings:
+    rs = ctx.session.get(m.RadiusSettings, ctx.id)
+    if rs is None or not rs.server_hostname:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Save the RADIUS settings first: the profiles need the server name.")
+    return rs
+
+
 @router.post("/windows-setup", status_code=201)
 def windows_setup(body: WindowsSetupIn, ctx: TenantCtx = Depends(require("enrollment:manage"))) -> dict:
     """One file that sets up a Windows 11 PC for a user (docs/plans/windows-setup.md): CA trust, the wired and Wi-Fi
@@ -102,9 +129,7 @@ def windows_setup(body: WindowsSetupIn, ctx: TenantCtx = Depends(require("enroll
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
     if not body.user_certificate and not body.computer_certificate:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose the user's certificate, the computer's, or both.")
-    rs = s.get(m.RadiusSettings, ctx.id)
-    if rs is None or not rs.server_hostname:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Save the RADIUS settings first: the profiles need the server name.")
+    rs = _radius_for_setup(ctx)
     wired = rs.wired_enabled if body.wired is None else body.wired
     if body.wifi and not rs.ssid:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "The Wi-Fi network name isn't set in RADIUS settings. Turn Wi-Fi off or set it first.")
@@ -112,26 +137,55 @@ def windows_setup(body: WindowsSetupIn, ctx: TenantCtx = Depends(require("enroll
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose Wi-Fi, wired, or both.")
     try:
         device, made = enr.create_windows_setup(s, ctx.tenant, ident, user=body.user_certificate, computer=body.computer_certificate,
-                                                created_by=ctx.principal.admin.email, ttl_hours=body.ttl_hours)
+                                                created_by=ctx.principal.admin.email, ttl_hours=body.ttl_hours,
+                                                options={"wifi": body.wifi, "wired": wired, "shared_pc": body.shared_pc})
     except (enr.EnrollmentError, pki.PkiError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    issuing, root = pki.chain_pem(s, ctx.id)
-    user, comp = made.get("user"), made.get("device")
-    expires = max(e.expires_at for e, _, _ in made.values())
-    label = f"{ident.display_name} ({ident.upn or ident.username})" if ident.display_name else (ident.upn or ident.username)
-    content = ws.build(ws.SetupOptions(
-        api=get_settings().public_url, org=ctx.tenant.name, user_label=label, user_code=user[1] if user else None,
-        computer_code=comp[1] if comp else None, server_name=rs.server_hostname, root_pem=root or issuing, issuing_pem=issuing,
-        ssid=rs.ssid if body.wifi else None, wpa3=rs.wpa3, wired=wired, shared_pc=body.shared_pc,
-        user_renew_days=user[2].renew_before_days if user else 30, computer_renew_days=comp[2].renew_before_days if comp else 30,
-        expires=expires.strftime("%Y-%m-%d %H:%M UTC")))
+    out = _setup_file(ctx, ident, rs, {p: (e, code) for p, (e, code, _) in made.items()}, {p: t for p, (_, _, t) in made.items()},
+                      wifi=body.wifi, wired=wired, shared_pc=body.shared_pc, mode=ws.mode_for("user" in made, "device" in made, body.shared_pc))
     audit.record(s, ctx.actor, "enrollment.windows_setup_created", tenant_id=ctx.id, target_type="identity", target_id=ident.id, target_label=ident.username,
-                 detail={"device_id": str(device.id), "user_certificate": bool(user), "computer_certificate": bool(comp), "wifi": body.wifi,
-                         "wired": wired, "shared_pc": body.shared_pc, "expires_at": expires.isoformat(),
+                 detail={"device_id": str(device.id), "user_certificate": "user" in made, "computer_certificate": "device" in made, "wifi": body.wifi,
+                         "wired": wired, "shared_pc": body.shared_pc, "expires_at": out["expires_at"],
                          "enrollments": [str(e.id) for e, _, _ in made.values()]})
-    return {"filename": ws.filename(ident.username), "content": content, "expires_at": expires.isoformat(),
-            "sign_in_mode": ws.mode_for(bool(user), bool(comp), body.shared_pc),
-            "enrollments": [enrollment_out(e, ident) for e, _, _ in made.values()]}
+    return out
+
+
+@router.post("/{enrollment_id}/windows-setup")
+def windows_setup_again(enrollment_id: uuid.UUID, ctx: TenantCtx = Depends(require("enrollment:manage"))) -> dict:
+    """A waiting Windows setup file, again, with the same one-time codes: the admin lost the file, or the user did. Only
+    the codes not used yet are in it (a PC that finished half the setup finishes the rest); the sign-in mode is the one
+    the file was made with and the network settings are today's. Each download is in the audit log."""
+    from app.enrollment import windows_setup as ws
+    s = ctx.session
+    e = s.get(m.Enrollment, enrollment_id)
+    if e is None or e.tenant_id != ctx.id or e.method != enr.WINDOWS_SETUP:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Setup file not found.")
+    ident = s.get(m.Identity, e.identity_id)
+    if ident is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+    parts = enr.setup_parts(s, e)
+    tpl_of = {p.id: s.get(m.CertificateTemplate, p.template_id) for p in parts}
+    templates = {t.purpose: t for t in tpl_of.values() if t is not None}
+    codes = {t.purpose: (p, code) for p in parts if (t := tpl_of[p.id]) is not None and (code := enr.kept_token(p))}
+    if not codes:
+        now = datetime.now(UTC)
+        old = any(p.status == "pending" and p.expires_at > now and p.token_ct is None for p in parts)
+        raise HTTPException(status.HTTP_409_CONFLICT, "This setup file was made before EasyEAP kept its codes. Cancel it and make a new one." if old
+                            else "Only a waiting setup file can be downloaded again: its codes were used, cancelled or have expired.")
+    if ident.account_state != "enabled":
+        raise HTTPException(status.HTTP_409_CONFLICT, f"This account is {ident.account_state} in the directory, so the file can't be used until it's enabled again.")
+    opts = e.setup_options or {}
+    rs = _radius_for_setup(ctx)
+    wifi, wired, shared_pc = bool(opts.get("wifi")), bool(opts.get("wired")), bool(opts.get("shared_pc"))
+    if wifi and not rs.ssid:
+        raise HTTPException(status.HTTP_409_CONFLICT, "The Wi-Fi network name was removed from RADIUS settings after this file was made. "
+                            "Set it again, or cancel this file and make one without Wi-Fi.")
+    mode = ws.mode_for(bool(opts.get("user", "user" in templates)), bool(opts.get("computer", "device" in templates)), shared_pc)
+    out = _setup_file(ctx, ident, rs, codes, templates, wifi=wifi, wired=wired, shared_pc=shared_pc, mode=mode)
+    audit.record(s, ctx.actor, "enrollment.windows_setup_downloaded_again", tenant_id=ctx.id, target_type="identity", target_id=ident.id,
+                 target_label=ident.username, detail={"device_id": str(e.device_id) if e.device_id else None, "enrollments": [str(p.id) for p, _ in codes.values()],
+                                                      "user_certificate": "user" in codes, "computer_certificate": "device" in codes})
+    return out
 
 
 @router.get("")
@@ -174,6 +228,11 @@ def show_link(enrollment_id: uuid.UUID, ctx: TenantCtx = Depends(require("enroll
     e = s.get(m.Enrollment, enrollment_id)
     if e is None or e.tenant_id != ctx.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Enrollment not found.")
+    if e.method == enr.WINDOWS_SETUP:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This is a code in a Windows setup file: download the file again instead.")
+    ident = s.get(m.Identity, e.identity_id)
+    if ident is not None and ident.account_state != "enabled" and e.status == "pending":
+        raise HTTPException(status.HTTP_409_CONFLICT, f"This account is {ident.account_state} in the directory, so the link can't be used until it's enabled again.")
     token = enr.link_token(e)
     if token is None:
         why = ("This link was created before EasyEAP kept links. Cancel it and create a new one." if e.method == "link" and e.status == "pending"

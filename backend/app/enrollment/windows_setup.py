@@ -38,6 +38,7 @@ class SetupOptions:
     user_renew_days: int      # renewal windows of the templates (the server decides; this avoids signing daily)
     computer_renew_days: int
     expires: str              # when the codes stop working (for the message), ISO 8601
+    mode: str | None = None   # the profiles' sign-in mode when the file is made again with only the codes not used yet
 
 
 def mode_for(user: bool, computer: bool, shared_pc: bool) -> str:
@@ -49,7 +50,7 @@ def mode_for(user: bool, computer: bool, shared_pc: bool) -> str:
 
 
 def auth_mode(o: SetupOptions) -> str:
-    return mode_for(bool(o.user_code), bool(o.computer_code), o.shared_pc)
+    return o.mode or mode_for(bool(o.user_code), bool(o.computer_code), o.shared_pc)
 
 
 def _ps(value: str) -> str:
@@ -455,7 +456,9 @@ try {
 $userHere = $UserCode -and -not $isSystem -and (-not $console -or $console -eq $me.User.Value)
 
 $computer = $null
-$needComputer = [bool]$ComputerCode -or $Wired
+# A file made again with only the user's code still runs the computer part when the first file had one (sign-in mode
+# machine or machineOrUser): it puts back the shared Wi-Fi profile, trust and renewal, and every step is safe to repeat.
+$needComputer = [bool]$ComputerCode -or $Wired -or $Mode -ne 'user'
 if ($needComputer) {
   if (Test-Admin) {
     $computer = Invoke-ComputerPart

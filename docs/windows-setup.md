@@ -26,6 +26,13 @@ The file contains one-time codes, never a private key. Each code works once, for
 console lists them under the user's **Enrollment links** ("Windows setup file") until they're used, and you can cancel
 them there. A file that was used or has expired does nothing; make a new one.
 
+Lost the file? **Download setup file** on the user's page (or **Setup file waiting** in **Users**) makes the same
+file again with the same codes, without a new certificate: EasyEAP keeps each code encrypted with the tenant's key
+until it's used, cancelled or expires, and each download is in the audit log. Only the codes not used yet are in it,
+so a PC that finished half the setup (the user's certificate, say, but not the computer's) finishes the rest. The
+file keeps the choices it was made with (Wi-Fi, wired, shared PC, sign-in mode) and takes today's RADIUS settings
+(server name, network name). Files made before EasyEAP kept the codes can't be downloaded again.
+
 ## Run it on the PC
 
 1. Copy the file to the PC, or send it to the user.

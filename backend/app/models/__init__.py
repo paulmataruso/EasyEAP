@@ -768,9 +768,11 @@ class Enrollment(Base):
     method: Mapped[str] = mapped_column(String(16))  # browser | windows | csr | server
     template_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("certificate_templates.id"))
     token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
-    # A link enrollment's token, encrypted with the tenant's key, so an admin can copy the link again while it's pending.
-    # Cleared when the link is used, cancelled or expires.
+    # The one-time code of a link or a Windows setup enrollment, encrypted with the tenant's key, so an admin can copy the
+    # link or download the setup file again while it's pending. Cleared when the code is used, cancelled or expires.
     token_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A Windows setup file's choices, to make the same file again: {"wifi", "wired", "shared_pc", "user", "computer"}.
+    setup_options: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|completed|expired|cancelled
     created_by: Mapped[str] = mapped_column(String(254))
     created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())

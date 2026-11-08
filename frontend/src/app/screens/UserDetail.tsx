@@ -7,19 +7,20 @@ import { ArrowLeft, Ban, Building, CircleCheck, Download, FilePlus, FlaskConical
 import { ApiError, filenameFrom, saveBlob } from '../api/client'
 import { useTenant } from '../api/tenant'
 import {
-  cancelEnrollment, disconnectIdentity, downloadPackage, invalidatePeople, showEnrollmentLink, updateIdentity, useDirectory, useDirectoryGroups, useIdentities, useIdentity, usePolicy, useRadius,
+  cancelEnrollment, disconnectIdentity, downloadPackage, invalidatePeople, updateIdentity, useDirectory, useDirectoryGroups, useIdentities, useIdentity, usePolicy, useRadius,
   type AuthEvent, type Certificate, type IdentityDetail, type IdentityEnrollment,
 } from '../api/people'
 import type { EnforcementStatus, Outcome } from '../api/types'
 import { paths, targetPath } from '../routes'
 import {
-  AccessStateChip, Btn, Callout, CertChip, Chip, CopyButton, EDialog, Empty, ErrorState, errorMessage, Field, LoadingBlock, PageHeader, Panel, PlatformIcon, platformLabels,
+  AccessStateChip, Btn, Callout, CertChip, Chip, EDialog, Empty, ErrorState, errorMessage, Field, LoadingBlock, PageHeader, Panel, PlatformIcon, platformLabels,
   SectionHeader, SourceTag, toast, VlanTag, type Tone,
 } from '../ui'
 import { DecisionLedger, reasonText } from '../ui/ledger'
 import { ago, duration, fmtDate, fmtDateTime, fmtSerial, plural, relative, remaining } from '../lib/format'
 import { pushRecent } from '../lib/recent'
 import { useNow } from '../lib/useNow'
+import { saveSetupAgain, ShowLinkDialog } from './people/GiveAgain'
 import { IssueDialog } from './people/IssueDialog'
 import { RevokeDialog } from './people/RevokeDialog'
 import { WindowsSetupDialog } from './people/WindowsSetupDialog'
@@ -356,6 +357,19 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
   const [cancelling, setCancelling] = useState<IdentityEnrollment | null>(null)
   const [taking, setTaking] = useState<IdentityEnrollment | null>(null)
   const [showing, setShowing] = useState<IdentityEnrollment | null>(null)
+  const [saving, setSaving] = useState<string | null>(null)
+  // A Windows setup file holds both its codes: one Download button, on its first waiting row.
+  const fileRow = new Map<string, string>()
+  for (const e of pending) if (e.method === 'windows-setup' && e.device_id && !fileRow.has(e.device_id)) fileRow.set(e.device_id, e.id)
+  const fileAvailable = (e: IdentityEnrollment) => pending.some((p) => p.method === 'windows-setup' && (p.id === e.id || (!!e.device_id && p.device_id === e.device_id)) && p.link_available)
+  const live = (e: IdentityEnrollment) => new Date(e.expires_at) > now
+  const usable = u.account_state === 'enabled'   // a disabled account's codes wait until it's enabled again
+  const kept = (e: IdentityEnrollment) => (e.method === 'windows-setup' ? fileAvailable(e) : !!e.link_available)
+  const saveAgain = async (e: IdentityEnrollment) => {
+    setSaving(e.id)
+    await saveSetupAgain(tid, e, u.display_name)
+    setSaving(null)
+  }
   const statusChip = (e: IdentityEnrollment) => {
     if (e.status === 'pending' && new Date(e.expires_at) <= now) return <Chip tone="neutral" icon={<Hourglass aria-hidden />}>Expired</Chip>
     if (e.status === 'pending') return <Chip tone="gold" icon={<Hourglass aria-hidden />}>Waiting for device</Chip>
@@ -373,6 +387,8 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
           {statusChip(e)}
         </div>
         <p className="ee-small ee-ink-3 mt-1">
+          {actions && live(e) && e.method !== 'server' && !kept(e) && <span className="block">Made before EasyEAP kept {e.method === 'link' ? 'links' : 'setup files'}: it can’t be given again. If it was lost, cancel it and issue a new one.</span>}
+          {actions && live(e) && kept(e) && !usable && <span className="block">The account is {u.account_state} in the directory, so this can’t be used until it’s enabled again.</span>}
           Created {fmtDateTime(e.created_at)} by {e.created_by}
           {e.status === 'pending' && <> · {new Date(e.expires_at) > now ? 'expires' : 'expired'} <time dateTime={e.expires_at} className="ee-ink-2">{fmtDateTime(e.expires_at)}</time> ({relative(e.expires_at, now)})</>}
           {e.status === 'completed' && e.completed_at && <> · completed {fmtDateTime(e.completed_at)}</>}
@@ -380,8 +396,11 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
       </div>
       {actions && (
         <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-start">
-          {e.method === 'link' && e.link_available && can('enrollment:manage') && new Date(e.expires_at) > now && (
+          {e.method === 'link' && e.link_available && usable && can('enrollment:manage') && live(e) && (
             <Btn size="sm" onClick={() => setShowing(e)}><Link2 aria-hidden />Show link</Btn>
+          )}
+          {e.method === 'windows-setup' && (!e.device_id || fileRow.get(e.device_id) === e.id) && fileAvailable(e) && usable && can('enrollment:manage') && live(e) && (
+            <Btn size="sm" onClick={() => saveAgain(e)} busy={saving === e.id}><Download aria-hidden />Download setup file</Btn>
           )}
           {e.method === 'server' && can('enrollment:server_keygen') && new Date(e.expires_at) > now && (
             <Btn size="sm" onClick={() => setTaking(e)}><Download aria-hidden />Download package</Btn>
@@ -399,7 +418,11 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
       ) : (
         <>
           <ul className="ee-divide">{pending.map((e) => row(e, true))}</ul>
-          <p className="ee-small ee-ink-3 mt-3">EasyEAP keeps only a hash of each link, so it can’t show a link again. If one was lost, cancel it and issue a new one.</p>
+          <p className="ee-small ee-ink-3 mt-3">
+            Lost one? <b>Show link</b> gives the same link again and <b>Download setup file</b> the same Windows setup file, with the same one-time codes:
+            no new certificate is made. EasyEAP keeps each code encrypted until it’s used, cancelled or expires, and records every time it’s given again in the audit log.
+            A server-generated package can be downloaded once.
+          </p>
         </>
       )}
       {past.length > 0 && (
@@ -445,32 +468,6 @@ function CancelEnrollmentDialog({ tid, identityName, e, onClose }: { tid: string
           ? <p>This is a server-generated package. Cancelling deletes the stored package and revokes the certificate created for it (reason: cessation of operation), because its key was never delivered.</p>
           : <p>No certificate exists yet for this link, so nothing is revoked.</p>}
       </div>
-    </EDialog>
-  )
-}
-
-/** A pending link, shown again: fetched when the dialog opens (each showing is audited) and dropped when it closes. */
-export function ShowLinkDialog({ tid, identityName, e, onClose }: { tid: string; identityName: string; e: IdentityEnrollment | null; onClose: () => void }) {
-  const [link, setLink] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  useEffect(() => {
-    setLink(null); setError(null)
-    if (!e) return
-    let live = true
-    showEnrollmentLink(tid, e.id).then((r) => { if (live) setLink(r.link) }, (err) => { if (live) setError(errorMessage(err)) })
-    return () => { live = false }
-  }, [tid, e])
-  return (
-    <EDialog open={!!e} onOpenChange={(o) => { if (!o) onClose() }} title={`Enrollment link for ${e?.device_name ?? ''}`}
-      description={<>Send it to {identityName} again. It still works once, on the device itself, until {e ? fmtDateTime(e.expires_at) : ''}.</>}
-      footer={<Btn onClick={onClose}>Done</Btn>}>
-      {error ? <Callout tone="crit" title="The link can’t be shown">{error}</Callout>
-        : link ? (
-          <div className="flex items-center gap-2">
-            <code className="ee-secret min-w-0 flex-1 break-all text-[13px]" aria-label="Enrollment link">{link}</code>
-            <CopyButton text={link} what="enrollment link" />
-          </div>
-        ) : <LoadingBlock label="Getting the link" />}
     </EDialog>
   )
 }

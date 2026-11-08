@@ -9,7 +9,12 @@ Every device gets its own certificate. EasyEAP never shares one certificate betw
 3. EasyEAP creates a **one-time enrollment link**. It's bound to that user and device, works once, and expires after
    72 hours (configurable per tenant). Send it to the user through a channel you trust. If it's lost, the user's page
    shows it again (**Enrollment links → Show link**) until it's used, cancelled or expires: EasyEAP keeps it encrypted
-   with the tenant's key until then, and each showing is in the audit log.
+   with the tenant's key until then, and each showing is in the audit log. No new link or certificate is made.
+
+**Users** shows what's still waiting for each person: **Link waiting** shows the link, **Setup file waiting**
+downloads the Windows setup file again, and **Package waiting** opens the user's page. **Enrollment → Waiting for
+device** lists only the people with something waiting. A server-generated package is the exception: its password is
+shown once and never stored, so a lost one means cancelling the package and making a new one.
 
 The user opens the link **on the device being enrolled**. By default the device generates its own private key and
 sends only a certificate signing request. The key never leaves the device.

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { IdentityEnrollment } from '../api/people'
-import { ShowLinkDialog } from './UserDetail'
+import { ShowLinkDialog } from './people/GiveAgain'
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const pending: IdentityEnrollment = {

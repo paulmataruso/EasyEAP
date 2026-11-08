@@ -30,7 +30,7 @@ export interface Identity {
 }
 
 export interface IdentityAccess { status: AccessStatus; vlan_id: number | null; reason_code: string | null }
-export interface IdentityListItem extends Identity { certificates: number; active_certificates: number; access: IdentityAccess }
+export interface IdentityListItem extends Identity { certificates: number; active_certificates: number; access: IdentityAccess; waiting: WaitingEnrollment[] }
 export interface IdentityPage extends Page<IdentityListItem> { enforceable: boolean; enforcement_missing: EnforcementGap[]; enforcement_status?: EnforcementStatus }
 
 export interface Device { id: string; name: string; platform: string; last_seen_mac: string | null; created_at: string | null }
@@ -49,8 +49,22 @@ export interface IdentityEnrollment {
   created_at: string | null
   expires_at: string
   completed_at: string | null
-  /** A pending link EasyEAP can show again (Show link); false for links created before it kept them. */
+  /** EasyEAP kept its one-time code, so it can be given again: Show link (a link) or Download setup file (Windows
+   *  setup). False for links and setup files made before EasyEAP kept them, and once used, cancelled or expired. */
   link_available?: boolean
+  /** A Windows setup file's two codes share it. Identity detail only. */
+  device_id?: string | null
+}
+/** A link, Windows setup file or package still waiting for a device (Users list). A setup file is one entry. */
+export interface WaitingEnrollment {
+  id: string
+  method: IdentityEnrollment['method']
+  device_name: string
+  platform: string
+  expires_at: string
+  /** Show link or Download setup file works (see IdentityEnrollment.link_available). */
+  available: boolean
+  device_id: string | null
 }
 
 export interface EventExplanation { title: string; explanation: string; fix: string }
@@ -84,7 +98,7 @@ export interface IdentityDetail extends Identity {
   events: AuthEvent[]
 }
 
-export interface IdentityListParams { q?: string; state?: string; group_id?: string; enrolled?: boolean; page?: number; page_size?: number; kind?: 'user' | 'computer' }
+export interface IdentityListParams { q?: string; state?: string; group_id?: string; enrolled?: boolean; waiting?: boolean; page?: number; page_size?: number; kind?: 'user' | 'computer' }
 
 export function useIdentities(tid: string, params: IdentityListParams, enabled = true) {
   return useQuery({
@@ -225,6 +239,8 @@ export const createWindowsSetup = (tid: string, body: WindowsSetupIn) => api.pos
 export const cancelEnrollment = (tid: string, id: string) => api.post<{ ok: boolean }>(`/api/tenants/${tid}/enrollments/${id}/cancel`)
 /** A pending enrollment's link, again (recorded in the audit log). */
 export const showEnrollmentLink = (tid: string, id: string) => api.post<{ link: string; expires_at: string }>(`/api/tenants/${tid}/enrollments/${id}/link`)
+/** A waiting Windows setup file again, with the same one-time codes (recorded in the audit log). Not cached. */
+export const downloadSetupAgain = (tid: string, id: string) => api.post<WindowsSetupResult>(`/api/tenants/${tid}/enrollments/${id}/windows-setup`)
 /** Takes the one-time PKCS#12 package (consumes it). */
 export const downloadPackage = (tid: string, id: string) => api.postRaw(`/api/tenants/${tid}/enrollments/${id}/download`)
 

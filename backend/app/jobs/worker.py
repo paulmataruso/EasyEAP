@@ -104,10 +104,10 @@ def _purge_escrow(s) -> None:
                 revoke(s, OpenBao(), cert, "cessationOfOperation", "EasyEAP (undelivered package expired)")
                 touched.add(cert.tenant_id)
         if e:
-            e.status, e.token_hash = "expired", None
+            e.status, e.token_hash, e.token_ct = "expired", None, None
         s.delete(esc)
     for e in s.scalars(select(m.Enrollment).where(m.Enrollment.status == "pending", m.Enrollment.expires_at <= now)):
-        e.status, e.token_hash = "expired", None
+        e.status, e.token_hash, e.token_ct = "expired", None, None
     for tid in touched:
         recompute_tenant(s, tid)
 

@@ -72,12 +72,30 @@ def find_by_token(session: Session, token: str) -> m.Enrollment | None:
     return e
 
 
+def kept(e: m.Enrollment, now: datetime | None = None) -> bool:
+    """A pending, unexpired link or Windows setup code whose token EasyEAP kept: the admin can give it again."""
+    return (e.method in ("link", WINDOWS_SETUP) and e.status == "pending" and e.token_ct is not None
+            and e.expires_at > (now or datetime.now(UTC)))
+
+
+def kept_token(e: m.Enrollment, bao: OpenBao | None = None) -> str | None:
+    """The one-time code of a kept enrollment (see kept); None when there's none to give (used, cancelled, expired, or
+    made before EasyEAP kept codes: links before 0011, Windows setup files before 0013)."""
+    return crypto.decrypt_str(e.tenant_id, e.token_ct, bao) if kept(e) else None
+
+
 def link_token(e: m.Enrollment, bao: OpenBao | None = None) -> str | None:
-    """The token of a pending, unexpired link enrollment, for the admin to copy again; None when there's none to show
-    (used, cancelled, expired, or created before EasyEAP kept links)."""
-    if e.method != "link" or e.status != "pending" or e.token_ct is None or e.expires_at <= datetime.now(UTC):
-        return None
-    return crypto.decrypt_str(e.tenant_id, e.token_ct, bao)
+    """The token of a pending, unexpired link enrollment, for the admin to copy again."""
+    return kept_token(e, bao) if e.method == "link" else None
+
+
+def setup_parts(session: Session, e: m.Enrollment) -> list[m.Enrollment]:
+    """The enrollments of one Windows setup file: the user's code and the computer's share the file's device."""
+    if e.method != WINDOWS_SETUP or e.device_id is None:
+        return [e]
+    return list(session.scalars(select(m.Enrollment).where(m.Enrollment.tenant_id == e.tenant_id, m.Enrollment.identity_id == e.identity_id,
+                                                           m.Enrollment.device_id == e.device_id, m.Enrollment.method == WINDOWS_SETUP)
+                                .order_by(m.Enrollment.created_at, m.Enrollment.id)))
 
 
 def _pc_name(hint: str | None) -> str | None:
@@ -144,10 +162,12 @@ def _finish(session: Session, e: m.Enrollment, cert: m.Certificate, identity: m.
 
 
 def create_windows_setup(session: Session, tenant: m.Tenant, identity: m.Identity, *, user: bool, computer: bool, created_by: str,
-                         ttl_hours: int | None = None) -> tuple[m.Device, dict[str, tuple[m.Enrollment, str, m.CertificateTemplate]]]:
+                         ttl_hours: int | None = None, options: dict | None = None,
+                         ) -> tuple[m.Device, dict[str, tuple[m.Enrollment, str, m.CertificateTemplate]]]:
     """The enrollments behind one Windows setup download (docs/plans/windows-setup.md §4): the user's certificate
     and the PC's own (a device certificate of the same user, in the computer's store). Both belong to one Device,
-    named by the PC when it first asks. Returns the device and {"user"|"device": (enrollment, one-time code, template)}."""
+    named by the PC when it first asks. Returns the device and {"user"|"device": (enrollment, one-time code, template)}.
+    Each code is kept encrypted, and `options` (the file's choices) stored, so the same file can be made again."""
     if identity.account_state != "enabled":
         raise EnrollmentError(f"This account is {identity.account_state} in the directory, so it cannot be enrolled.")
     if not user and not computer:
@@ -169,7 +189,8 @@ def create_windows_setup(session: Session, tenant: m.Tenant, identity: m.Identit
     for purpose, tpl in templates.items():
         token = new_token(32)
         e = m.Enrollment(tenant_id=tenant.id, identity_id=identity.id, device_id=device.id, device_name=PC_PLACEHOLDER, platform="windows",
-                         method=WINDOWS_SETUP, template_id=tpl.id, token_hash=token_hash(token), status="pending", created_by=created_by,
+                         method=WINDOWS_SETUP, template_id=tpl.id, token_hash=token_hash(token), token_ct=crypto.encrypt(tenant.id, token),
+                         setup_options={**(options or {}), "user": user, "computer": computer}, status="pending", created_by=created_by,
                          expires_at=_expires(ttl_hours))
         session.add(e)
         out[purpose] = (e, token, tpl)

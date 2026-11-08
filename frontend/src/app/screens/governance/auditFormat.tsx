@@ -28,6 +28,8 @@ export const actionLabels: Record<string, string> = {
   'enrollment.link_shown': 'Enrollment link shown again',
   'enrollment.package_downloaded': 'Certificate package downloaded',
   'enrollment.server_package_created': 'Server-generated certificate package created',
+  'enrollment.windows_setup_created': 'Windows setup file made',
+  'enrollment.windows_setup_downloaded_again': 'Windows setup file downloaded again',
   'group.created': 'Local group created',
   'identity.created': 'Local user created',
   'identity.disconnected': 'User’s sessions disconnected',

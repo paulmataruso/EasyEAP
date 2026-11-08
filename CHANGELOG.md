@@ -37,6 +37,11 @@ versions follow [Semantic Versioning](https://semver.org/).
   link is cancelled or it expires, so a lost link no longer means cancelling it and sending a new one. The link is
   kept encrypted with the tenant's key and cleared once it can't be used; each showing is audited. Links created
   before this version can't be shown again.
+- **Download a Windows setup file again**: **Download setup file** on the user's page makes the same file with the
+  same one-time codes (only those not used yet), its original choices and today's RADIUS settings; no new
+  certificate. The codes are kept encrypted like links (migration 0013) and each download is audited.
+- **What's waiting, in Users**: each person's waiting links and setup files, with **Link waiting** (show it) and
+  **Setup file waiting** (download it again) right in the list, and an **Enrollment → Waiting for device** filter.
 - **Every Cisco switch family** for wired 802.1X, with the configuration for the switch's own release
   ([plan and critique](docs/plans/cisco-platforms.md)). Not verified on Cisco hardware; every guide says so.
   - **Paste `show version`** in Add switch: EasyEAP reads the family, model, release and LAN Lite images, and the port
@@ -208,6 +213,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **An expired enrollment link stayed stored, encrypted**: the expiry job (every 10 minutes) didn't clear it, though
+  it could never be shown (the expiry is checked first). It's cleared now, and migration 0013 clears those left over.
+- **The user's page said a lost link can't be shown again**, though **Show link** could since the previous change.
 - **A switch port that's a SPAN destination never authenticates** (the switch runs no 802.1X on it), and nothing said
   so: the preflight now asks for `show monitor session all`, and the troubleshooting table explains it.
 - **"Sessions aren't readable over SNMP" on a Catalyst 3850 with IOS-XE 16.6**: the switch has no

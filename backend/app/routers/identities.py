@@ -11,6 +11,7 @@ from sqlalchemy import func, or_, select
 from app import audit
 from app import models as m
 from app.deps import TenantCtx, require
+from app.enrollment import service as enr
 from app.policy.engine import CertInput, evaluate
 from app.policy.service import _default_vlan, evaluate_identity, load_rules, policy_settings, recompute_tenant
 from app.radius import coa
@@ -31,7 +32,7 @@ def identity_out(i: m.Identity, certs: int | None = None, active_certs: int | No
 
 @router.get("")
 def list_identities(ctx: TenantCtx = Depends(require("identities:read")), q: str = "", state: str = "", group_id: uuid.UUID | None = None,
-                    enrolled: bool | None = None, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200),
+                    enrolled: bool | None = None, waiting: bool = False, page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200),
                     kind: str = Query("user", pattern="^(user|computer|all)$")) -> dict:
     s = ctx.session
     now = datetime.now(UTC)
@@ -50,6 +51,9 @@ def list_identities(ctx: TenantCtx = Depends(require("identities:read")), q: str
         valid = select(m.Certificate.id).where(m.Certificate.identity_id == m.Identity.id, m.Certificate.status != "revoked",
                                                m.Certificate.not_after > now, m.Certificate.purpose.in_(m.CLIENT_PURPOSES)).exists()
         stmt = stmt.where(valid if enrolled else ~valid)
+    if waiting:  # a link, setup file or package waiting for a device
+        stmt = stmt.where(select(m.Enrollment.id).where(m.Enrollment.identity_id == m.Identity.id, m.Enrollment.status == "pending",
+                                                        m.Enrollment.expires_at > now).exists())
     if group_id:
         stmt = stmt.where(m.Identity.id.in_(select(m.IdentityGroup.identity_id).where(m.IdentityGroup.group_id == group_id)))
     total = s.scalar(select(func.count()).select_from(stmt.subquery())) or 0
@@ -61,12 +65,35 @@ def list_identities(ctx: TenantCtx = Depends(require("identities:read")), q: str
     valid_holders = set(s.scalars(select(m.Certificate.identity_id).where(
         m.Certificate.identity_id.in_(ids), m.Certificate.status != "revoked", m.Certificate.not_after > now,
         m.Certificate.purpose.in_(m.CLIENT_PURPOSES)))) if ids else set()
+    waits = _waiting(s, ids, now)
     access = _access(ctx, rows, now)
     from app.posture import enforcement
     from app.routers.radius import agent_out
     enf = enforcement(s, ctx.tenant, agent_out(s), now)
     return {"total": total, "page": page, "page_size": page_size, "enforceable": enf["enforceable"], "enforcement_missing": enf["missing"], "enforcement_status": enf["status"],
-            "items": [{**identity_out(i, counts.get(i.id, 0), active.get(i.id, 0)), "enrolled": i.id in valid_holders, "access": access[i.id]} for i in rows]}
+            "items": [{**identity_out(i, counts.get(i.id, 0), active.get(i.id, 0)), "enrolled": i.id in valid_holders, "access": access[i.id],
+                       "waiting": waits.get(i.id, [])} for i in rows]}
+
+
+def _waiting(s, ids: list[uuid.UUID], now: datetime) -> dict[uuid.UUID, list[dict]]:
+    """Each user's links, Windows setup files and packages still waiting for a device, newest first. A setup file is one
+    entry, though it may hold two codes. `available`: EasyEAP can give it again (Show link, Download setup file)."""
+    if not ids:
+        return {}
+    out: dict[uuid.UUID, list[dict]] = {}
+    files: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    for e in s.scalars(select(m.Enrollment).where(m.Enrollment.identity_id.in_(ids), m.Enrollment.status == "pending", m.Enrollment.expires_at > now)
+                       .order_by(m.Enrollment.created_at.desc(), m.Enrollment.id)):
+        if e.method == enr.WINDOWS_SETUP and e.device_id:
+            if (e.identity_id, e.device_id) in files:
+                if enr.kept(e, now):
+                    next(w for w in out[e.identity_id] if w["device_id"] == str(e.device_id))["available"] = True
+                continue
+            files.add((e.identity_id, e.device_id))
+        out.setdefault(e.identity_id, []).append({"id": str(e.id), "method": e.method, "device_name": e.device_name, "platform": e.platform,
+                                                  "expires_at": e.expires_at.isoformat(), "available": enr.kept(e, now),
+                                                  "device_id": str(e.device_id) if e.device_id else None})
+    return out
 
 
 def _access(ctx: TenantCtx, rows: list[m.Identity], now: datetime) -> dict[uuid.UUID, dict]:
@@ -121,7 +148,11 @@ def get_identity(identity_id: uuid.UUID, ctx: TenantCtx = Depends(require("ident
     devices = s.scalars(select(m.Device).where(m.Device.identity_id == i.id).order_by(m.Device.created_at)).all()
     dev_by_id = {d.id: d for d in devices}
     certs = s.scalars(select(m.Certificate).where(m.Certificate.identity_id == i.id).order_by(m.Certificate.not_after.desc())).all()
-    enrollments = s.scalars(select(m.Enrollment).where(m.Enrollment.identity_id == i.id).order_by(m.Enrollment.created_at.desc()).limit(20)).all()
+    # Every pending one (a setup file's two codes stay together), and the newest 20 of the rest.
+    newest = m.Enrollment.created_at.desc()
+    enrollments = sorted({*s.scalars(select(m.Enrollment).where(m.Enrollment.identity_id == i.id, m.Enrollment.status == "pending")).all(),
+                          *s.scalars(select(m.Enrollment).where(m.Enrollment.identity_id == i.id).order_by(newest).limit(20)).all()},
+                         key=lambda e: e.created_at, reverse=True)
     purpose_of = dict(s.execute(select(m.CertificateTemplate.id, m.CertificateTemplate.purpose)
                                 .where(m.CertificateTemplate.id.in_({e.template_id for e in enrollments}))).tuples().all()) if enrollments else {}
     events = s.scalars(select(m.AuthEvent).where(m.AuthEvent.identity_id == i.id).order_by(m.AuthEvent.at.desc()).limit(20)).all()
@@ -140,7 +171,7 @@ def get_identity(identity_id: uuid.UUID, ctx: TenantCtx = Depends(require("ident
                          "purpose": purpose_of.get(e.template_id), "created_by": e.created_by, "created_at": e.created_at.isoformat() if e.created_at else None,
                          "expires_at": e.expires_at.isoformat(), "completed_at": e.completed_at.isoformat() if e.completed_at else None,
                          "certificate_id": str(e.certificate_id) if e.certificate_id else None,
-                         "link_available": e.method == "link" and e.status == "pending" and e.token_ct is not None} for e in enrollments],
+                         "link_available": enr.kept(e), "device_id": str(e.device_id) if e.device_id else None} for e in enrollments],
         # A computer has one kind of certificate: both answers are its computer-certificate decision.
         "access": ({"user": (c := _outcome_json(evaluate_identity(s, i, purpose="computer"))), "device": c} if i.kind == "computer" else
                    {"user": _outcome_json(evaluate_identity(s, i, purpose="user")), "device": _outcome_json(evaluate_identity(s, i, purpose="device"))}),
