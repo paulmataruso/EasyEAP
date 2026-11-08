@@ -39,6 +39,7 @@ from app.routers import (
     pki_public,
     policy,
     radius,
+    renewal,
     setup,
     switch_audit,
     system,
@@ -57,7 +58,7 @@ app = FastAPI(
 
 for r in (setup, auth, tenants, admins, dashboard, identities, directory, pki, certificates, enrollments, enroll_public, policy, radius,
           events, system, backup, logs, agent, pki_public, mac, device_admin, autoenroll, switch_audit,
-          device_syslog):
+          device_syslog, renewal):
     app.include_router(r.router)
 app.include_router(backup.setup_router)
 app.include_router(autoenroll.public)  # /cep and /ces: Windows, Kerberos

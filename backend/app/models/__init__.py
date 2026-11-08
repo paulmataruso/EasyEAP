@@ -344,6 +344,18 @@ class AccessRuleGroup(Base):
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
 
 
+class RenewalSettings(Base):
+    """Certificate renewal for one tenant (docs/plans/cert-renewal.md §3, §15a)."""
+    __tablename__ = "renewal_settings"
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    user_certs: Mapped[bool] = mapped_column(Boolean, default=True)
+    machine_certs: Mapped[bool] = mapped_column(Boolean, default=True)
+    server_cert: Mapped[bool] = mapped_column(Boolean, default=True)
+    renew_at_percent: Mapped[int] = mapped_column(Integer, default=80)
+    updated_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
+
+
 class PolicySettings(Base):
     __tablename__ = "policy_settings"
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
@@ -387,6 +399,10 @@ class RadiusSettings(Base):
     wired_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  # include wired settings in enrollment packages
     server_certificate_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("certificates.id", ondelete="SET NULL"), nullable=True)
     server_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The certificate and key before the last rotation, kept 14 days so it can be put back (app/pki/renewal.py).
+    previous_server_certificate_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    previous_server_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    server_cert_rotated_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     snapshot_version: Mapped[int] = mapped_column(BigInteger, default=0)
     snapshot_built_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     config_version: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -843,5 +859,5 @@ TENANT_TABLES = [
     "identities", "identity_groups", "devices", "vlans", "access_rules", "access_rule_groups", "policy_settings",
     "decisions", "radius_settings", "radius_clients", "auth_events", "accounting_sessions", "coa_requests",
     "enrollments", "key_escrow", "device_groups", "mac_devices", "mac_sightings",
-    "admin_roles", "admin_users", "admin_group_maps", "admin_settings", "admin_events",
+    "admin_roles", "admin_users", "admin_group_maps", "admin_settings", "admin_events", "renewal_settings",
 ]

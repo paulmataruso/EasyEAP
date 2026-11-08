@@ -381,7 +381,8 @@ def test_the_certificate_as_pem(link, monkeypatch):
 
 def test_renewal_as_pem(monkeypatch):
     audits = []
-    old = SimpleNamespace(id="c0", common_name="nina", serial="00", renewed_at=None, template_id=None, not_after=datetime.now(UTC))
+    old = SimpleNamespace(id="c0", tenant_id="t1", common_name="nina", serial="00", renewed_at=None, template_id=None,
+                          not_before=datetime.now(UTC) - timedelta(days=100), not_after=datetime.now(UTC))
     new = SimpleNamespace(id="c1", tenant_id="t1", certificate_pem=_pem(CA), common_name="nina", serial="01", key_storage="software",
                           purpose="user", not_after=datetime.now(UTC))
     result = {"v": (old, None)}
@@ -398,6 +399,7 @@ def test_renewal_as_pem(monkeypatch):
     monkeypatch.setattr(ep, "OpenBao", lambda: None)
     monkeypatch.setattr(ep.enr, "renew", renew)
     monkeypatch.setattr(ep.pki, "chain_pem", lambda s, t: ("", None))
+    monkeypatch.setattr(ep.renewal, "settings", lambda s, t: SimpleNamespace(renew_at_percent=80))
     monkeypatch.setattr(ep.audit, "record", lambda *a, **kw: audits.append(a[2]))
     body = ep.RenewIn(certificate=base64.b64encode(b"c" * 100).decode(), csr="x" * 100, signed_at=0, signature=base64.b64encode(b"s" * 40).decode())
     s = SimpleNamespace(get=lambda *a: None)

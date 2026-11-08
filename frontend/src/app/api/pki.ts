@@ -34,6 +34,8 @@ export interface CertificateTemplate {
   san_patterns: string[]
   allow_client_keygen: boolean
   allow_server_keygen: boolean
+  /** Group Policy autoenrollment's templates (computer | user): their renewal period is set on the Autoenroll page. */
+  autoenroll_kind?: string | null
 }
 
 export interface PkiUrls { ca: string; crl: string; ocsp: string; root_ca: string; root_crl: string }
@@ -65,7 +67,6 @@ export interface TemplateIn {
   purpose: 'user' | 'device'
   key_algorithm: string
   validity_days: number
-  renew_before_days: number
   subject_pattern: string
   san_patterns: string[]
   allow_client_keygen: boolean

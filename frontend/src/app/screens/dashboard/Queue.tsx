@@ -41,9 +41,9 @@ export function sourceText(item: QueueItem, now: Date): string | null {
   if (!at) return null
   if (c === 'snapshot_overdue' || c === 'snapshot_expired') return `Snapshot built ${ago(at, now)}`
   if (c === 'directory_stale') return `Last successful sync ${ago(at, now)}`
-  if (c.startsWith('rejects:')) return `Last attempt ${ago(at, now)}`
+  if (c.startsWith('rejects:') || c === 'server_cert_rejected') return `Last attempt ${ago(at, now)}`
   if (c === 'directory_failed') return `Last sync attempt ${ago(at, now)}`
-  if (c === 'server_cert_expiring' || c === 'issuing_ca_expiring' || c === 'issuing_ca_expired') return `Certificate issued ${fmtDate(at)}`
+  if (c === 'server_cert_expiring' || c === 'issuing_ca_expiring' || c === 'issuing_ca_expired' || c === 'issuing_ca_cap') return `Certificate issued ${fmtDate(at)}`
   return `Checked ${ago(at, now)}`
 }
 

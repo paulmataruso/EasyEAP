@@ -125,7 +125,10 @@ a domain controller.
   certificate: set the quota to 0, or use a group. Readiness warns while neither is done.
 - Each kind has its template, created the first time you turn autoenrollment on: **Domain computer** (Windows shows
   it as `EasyEAP-Computer`) and **Domain user** (`EasyEAP-User`). Validity and renewal are set per template (365 and
-  42 days by default; the renewal period can be at most three quarters of the validity).
+  42 days by default). Windows renews once 80 % of the validity has passed and the certificate is inside its renewal
+  period, which must be under a fifth of the validity: at a fifth or more, Windows enrolls afresh instead of renewing.
+  The console refuses such a period, and the policy EasyEAP serves caps an older one at 19 %. The Renewal settings on
+  the PKI page don't apply to these templates.
 
 **Add an access rule for computers.** A computer's certificate is decided as the computer: its AD groups, with
 certificate type **Domain computers**. In **Access policy**, add for example "Domain Computers → your PC VLAN",

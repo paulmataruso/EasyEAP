@@ -7,6 +7,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Certificate renewal settings** (Certificate authority → Renewal; [plan](docs/plans/cert-renewal.md) §15a): turn
+  automatic renewal on or off for user certificates, device certificates and the RADIUS server certificate, and choose
+  when it starts: 50 to 90 % of each certificate's own life (80 % by default). Templates' renewal periods follow the
+  percentage (shown read-only in the template dialog); Group Policy templates keep their own. The panel also shows
+  when to prepare and switch to the next issuing CA.
+- **The RADIUS server certificate rotates by itself** once due (checked every 6 hours, only when the issuing CA can
+  give the new one 30 days or more). The previous certificate and key are kept 14 days: **Put the previous
+  certificate back** on the RADIUS page undoes a rotation (manual or automatic) and pauses automatic rotation. The
+  dashboard watches for devices that connected the week before a rotation and have failed the handshake since.
+- **Refused renewals are audited** (Certificate renewal refused, with the reason), once a day per certificate and
+  reason.
 - **Device syslog, live** (Investigate → Device syslog; [plan and critique](docs/plans/syslog-full.md)): everything
   this tenant's switches and controllers send, as it arrives (checked every second while the page is open). A message
   repeated within the minute moves to the top with its count. Filter by device, access messages, warnings and errors,
@@ -243,6 +254,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Renewal by the Windows setup file and the Linux script starts at the tenant's percentage of the certificate's own
+  life instead of the template's fixed days, so a certificate shortened by an expiring CA renews in proportion.
+  Existing templates' renewal periods are recalculated for 80 % (User Wi-Fi 30 → 73 days, Device Wi-Fi 45 → 146).
+- No certificate is issued past the issuing CA's expiry: its lifetime is cut to end an hour before the CA's, and
+  issuance is refused with a clear reason when less than a day is left (before, OpenBao's refusal surfaced as a server
+  error).
+- The dashboard's "certificates expire soon" item counts only certificates that don't renew by themselves (Apple and
+  Android profiles, certificates installed by hand, or renewal turned off); those that should have renewed by
+  themselves and haven't, two weeks into their window, get their own item.
+- Group Policy autoenrollment: a template's renewal period must be under a fifth of its validity (it was three
+  quarters): at a fifth or more, Windows enrolls afresh instead of renewing. The policy caps an older value at 19 %.
 - Nexus switches send syslog at severity 6 (informational) so the session and address-learning messages arrive.
 - A live page that refreshes itself (Device syslog) no longer keeps an idle console session signed in.
 - System health's "Switch syslog" check is now "Device syslog" and counts every device address it receives from.

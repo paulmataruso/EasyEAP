@@ -330,6 +330,10 @@ function SettingsTab({ data, write }: { data: AutoenrollStatus; write: boolean }
     const n = (s: string) => Number(s)
     const days = [n(v.cDays), n(v.cRenew), n(v.uDays), n(v.uRenew)]
     if (days.some((d) => !Number.isInteger(d))) return setError('Use whole numbers of days.')
+    // Only a changed pair is checked (as the server does): an older, longer period is capped at 19 % in the policy.
+    const was = init()
+    const changed = (d: string, r: string, i: number) => (v[d as 'cDays'] !== was[d as 'cDays'] || v[r as 'cRenew'] !== was[r as 'cRenew']) && days[i + 1] * 5 >= days[i]
+    if (changed('cDays', 'cRenew', 0) || changed('uDays', 'uRenew', 2)) return setError('Keep each renewal period under a fifth of the certificate’s validity: at a fifth or more, Windows enrolls afresh instead of renewing.')
     const hasTemplates = data.templates.length > 0
     save.mutate({
       enabled: v.enabled, computers: v.computers, users: v.users, computer_group_id: v.group || null, require_channel_binding: v.binding,
@@ -393,7 +397,8 @@ function SettingsTab({ data, write }: { data: AutoenrollStatus; write: boolean }
             </table>
           </div>
         )}
-        <p className="ee-small ee-ink-3 mt-2">Keys are RSA 2048, made by Windows in the TPM where the PC has one, or in software (PCs without a TPM, or installed with the TPM check bypassed). The private key never leaves the PC.</p>
+        <p className="ee-small ee-ink-3 mt-2">Windows renews these by itself once 80 % of a certificate’s validity has passed and it’s inside the renewal period, which must be under a fifth of the validity. The Renewal settings on the PKI page don’t change them.</p>
+        <p className="ee-small ee-ink-3 mt-1">Keys are RSA 2048, made by Windows in the TPM where the PC has one, or in software (PCs without a TPM, or installed with the TPM check bypassed). The private key never leaves the PC.</p>
       </Panel>
 
       <Panel className="p-5" aria-labelledby="ae-sec-h">

@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import audit
@@ -18,6 +19,7 @@ from app.db import set_platform, set_tenant
 from app.deps import client_ip, db
 from app.enrollment import linux_setup, profiles
 from app.enrollment import service as enr
+from app.pki import renewal
 from app.pki import service as pki
 from app.pki.openbao import OpenBao
 from app.security.ratelimit import limiter
@@ -131,6 +133,23 @@ class RenewIn(BaseModel):
     key_storage: str | None = Field(default=None, max_length=16)
 
 
+def _refused(s: Session, exc: enr.RenewalRefused, request: Request) -> None:
+    """Audit a turned-down renewal of a certificate EasyEAP issued, once a day per certificate and reason (a device's
+    renewal task asks daily, and some ask hourly), and commit it: the request still fails."""
+    c = exc.cert
+    cert_id, tenant_id, label, cn, purpose = str(c.id), c.tenant_id, f"{c.common_name} ({c.serial})", c.common_name, c.purpose
+    s.rollback()  # whatever the refused renewal changed goes; the audit row stays
+    set_platform(s)
+    seen = s.scalar(select(func.count()).select_from(m.AuditEvent).where(
+        m.AuditEvent.action == "certificate.renewal_refused", m.AuditEvent.target_id == cert_id,
+        m.AuditEvent.at >= datetime.now(UTC) - timedelta(days=1), m.AuditEvent.detail["reason"].astext == exc.code))
+    if seen:
+        return
+    audit.record(s, audit.Actor("certificate", cn, cert_id, client_ip(request)), "certificate.renewal_refused", tenant_id=tenant_id,
+                 target_type="certificate", target_id=cert_id, target_label=label, detail={"reason": exc.code, "message": str(exc), "purpose": purpose})
+    s.commit()
+
+
 @router.post("/renew")
 def renew(body: RenewIn, request: Request, s: Session = Depends(db), format: str = "json") -> dict:
     """Renew a certificate with its own key (docs/plans/windows-setup.md §4): the Windows setup's renewal task calls
@@ -150,14 +169,16 @@ def renew(body: RenewIn, request: Request, s: Session = Depends(db), format: str
     try:
         old, new = enr.renew(s, OpenBao(), certificate_der=der, csr_pem=body.csr.strip() + "\n", signed_at=body.signed_at,
                              signature=signature, key_storage=body.key_storage)
+    except enr.RenewalRefused as exc:
+        _refused(s, exc, request)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except (enr.EnrollmentError, pki.PkiError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     if new is None:
         if format == "pem":
             return Response(status_code=status.HTTP_204_NO_CONTENT)
-        tpl = s.get(m.CertificateTemplate, old.template_id) if old.template_id else None
         return {"renewed": False, "not_after": old.not_after.isoformat(),
-                "renew_from": (old.not_after - timedelta(days=tpl.renew_before_days)).isoformat() if tpl else None}
+                "renew_from": renewal.renew_from(old, renewal.settings(s, old.tenant_id).renew_at_percent).isoformat()}
     set_tenant(s, new.tenant_id)
     issuing, root = pki.chain_pem(s, new.tenant_id)
     if old.renewed_at is None or old.renewed_at >= started:  # not a resend of an earlier renewal's lost answer

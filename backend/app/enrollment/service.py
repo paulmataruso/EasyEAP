@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 
 from app import models as m
 from app.config import get_settings
-from app.pki import crypto
+from app.db import set_tenant
+from app.pki import crypto, renewal
 from app.pki import service as pki
 from app.pki.openbao import OpenBao
 from app.policy.service import policy_settings, recompute_tenant
@@ -36,6 +37,14 @@ P12_ITERATIONS = 600_000
 
 class EnrollmentError(ValueError):
     pass
+
+
+class RenewalRefused(EnrollmentError):
+    """A renewal EasyEAP turned down, for a certificate it issued: `code` says why (the audit records it once a day)."""
+
+    def __init__(self, message: str, cert: m.Certificate, code: str) -> None:
+        super().__init__(message)
+        self.cert, self.code = cert, code
 
 
 def _expires(hours: int | None = None) -> datetime:
@@ -233,49 +242,65 @@ def _spki(key) -> bytes:
 
 def renew(session: Session, bao: OpenBao, *, certificate_der: bytes, csr_pem: str, signed_at: int, signature: bytes,
           key_storage: str | None, now: datetime | None = None) -> tuple[m.Certificate, m.Certificate | None]:
-    """Renew a certificate on behalf of its key holder (docs/plans/windows-setup.md §4). Returns (current, new); new is
-    None when the certificate isn't inside its renewal window yet. The session must be platform-scoped."""
+    """Renew a certificate on behalf of its key holder (docs/plans/windows-setup.md §4, cert-renewal.md §3). Returns
+    (current, new); new is None when the certificate isn't inside its renewal window yet: from the tenant's percentage
+    of its own lifetime on. The session starts platform-scoped (the certificate tells which tenant) and is scoped to
+    that tenant once the request is proven to come from the certificate's key."""
     now = now or datetime.now(UTC)
     fingerprint = hashlib.sha256(certificate_der).hexdigest().upper()  # as crypto.cert_info stores it
     old = session.scalars(select(m.Certificate).where(m.Certificate.fingerprint_sha256 == fingerprint)).first()
     if old is None:
         raise EnrollmentError("EasyEAP didn't issue this certificate.")
-    if abs(now.timestamp() - signed_at) > RENEW_SKEW.total_seconds():
-        raise EnrollmentError("The request's time is more than 10 minutes off. Check the computer's clock.")
+
+    def refuse(code: str, message: str) -> RenewalRefused:
+        return RenewalRefused(message, old, code)
+
+    # The signature first: anyone may hold a copy of the certificate, so nothing before it is audited (a refusal is
+    # recorded against the certificate). It covers signed_at, so a wrong clock is the key holder's own.
     if not verify_signature(x509.load_der_x509_certificate(certificate_der), renewal_message(certificate_der, signed_at, _csr_der(csr_pem)), signature):
         raise EnrollmentError("The request isn't signed by this certificate's key.")
+    if abs(now.timestamp() - signed_at) > RENEW_SKEW.total_seconds():
+        raise refuse("clock", "The request's time is more than 10 minutes off. Check the computer's clock.")
+    set_tenant(session, old.tenant_id)
     if old.status == "revoked":
-        raise EnrollmentError("This certificate was revoked, so it can't be renewed. Enroll again.")
+        raise refuse("revoked", "This certificate was revoked, so it can't be renewed. Enroll again.")
     if old.status == "superseded" or old.renewed_at is not None:
         again = _earlier_renewal(session, old, csr_pem, now)
         if again is not None:  # the answer to the same request got lost on the way: send it again
             return old, again
-        raise EnrollmentError("This certificate was already renewed. Use the newer one.")
+        raise refuse("renewed", "This certificate was already renewed. Use the newer one.")
     if old.not_after <= now:
-        raise EnrollmentError("This certificate has expired, so it can't be renewed. Enroll again.")
+        raise refuse("expired", "This certificate has expired, so it can't be renewed. Enroll again.")
     if old.purpose not in ("user", "device") or old.identity_id is None:
-        raise EnrollmentError("This kind of certificate isn't renewed this way.")
+        raise refuse("kind", "This kind of certificate isn't renewed this way.")
     identity = session.get(m.Identity, old.identity_id)
     tpl = session.get(m.CertificateTemplate, old.template_id) if old.template_id else None
     tenant = session.get(m.Tenant, old.tenant_id)
     if identity is None or tpl is None or tenant is None or tenant.status != "active":
-        raise EnrollmentError("This certificate's user or template no longer exists. Enroll again.")
+        raise refuse("missing", "This certificate's user or template no longer exists. Enroll again.")
     if tpl.autoenroll_kind:
-        raise EnrollmentError("Windows renews this certificate itself, through Group Policy autoenrollment.")
-    if identity.account_state != "enabled":
-        raise EnrollmentError(f"The account is {identity.account_state} in the directory, so its certificate isn't renewed.")
-    if now < old.not_after - timedelta(days=tpl.renew_before_days):
+        raise refuse("gpo", "Windows renews this certificate itself, through Group Policy autoenrollment.")
+    st = renewal.settings(session, tenant.id)
+    if now < renewal.renew_from(old, st.renew_at_percent):
         return old, None
+    if not renewal.enabled_for(st, old.purpose):
+        what = "user" if old.purpose == "user" else "device"
+        raise refuse("off", f"Automatic renewal of {what} certificates is turned off in EasyEAP. Ask your IT team for a new enrollment link.")
+    if identity.account_state != "enabled":
+        raise refuse("account", f"The account is {identity.account_state} in the directory, so its certificate isn't renewed.")
     try:
         csr, _ = crypto.csr_info(csr_pem)
     except ValueError as exc:
-        raise EnrollmentError(str(exc)) from exc
+        raise refuse("request", str(exc)) from exc
     if _spki(csr.public_key()) == _spki(x509.load_der_x509_certificate(certificate_der).public_key()):
-        raise EnrollmentError("The renewal request must use a new key.")
+        raise refuse("same_key", "The renewal request must use a new key.")
     device = session.get(m.Device, old.device_id) if old.device_id else None
     names = pki.names_for_identity(identity, device.name if device else "device", tenant)
-    new = pki.sign_csr(session, bao, tenant, tpl, csr_pem, names, key_origin=old.key_origin, identity_id=identity.id,
-                       device_id=old.device_id, enrollment_id=old.enrollment_id)
+    try:
+        new = pki.sign_csr(session, bao, tenant, tpl, csr_pem, names, key_origin=old.key_origin, identity_id=identity.id,
+                           device_id=old.device_id, enrollment_id=old.enrollment_id)
+    except pki.PkiError as exc:
+        raise refuse("ca", str(exc)) from exc
     new.key_storage = key_storage if key_storage in KEY_STORAGE else None
     new.renewal_of = old.id
     old.status, old.renewed_at = "superseded", now  # still accepted until it expires, as after any renewal

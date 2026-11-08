@@ -130,6 +130,31 @@ The certificate a device enrolls with works on switch ports too. What sets the E
 The setting is off by default, so adding a test switch doesn't change what new devices get. Devices enrolled before
 it was turned on don't have the wired settings until they enroll again (or IT installs them).
 
+## Renewal
+
+**Certificate authority → Renewal** sets what renews by itself (docs/plans/cert-renewal.md §15a):
+
+- **User certificates** and **Device certificates**: renewed by the Windows setup file's daily tasks and the Linux
+  script's timer, each signing the request with the certificate's current key, so nobody signs in and nothing is
+  downloaded again. Group Policy certificates renew on Windows' own schedule (see
+  [autoenrollment.md](autoenrollment.md)). Apple and Android profiles can't renew themselves: the dashboard lists
+  those certificates as they near expiry, and the user needs a new link.
+- **RADIUS server certificate**: EasyEAP issues a new one by itself (checked every 6 hours). Devices accept it because
+  they trust the CA and the server's name, not the certificate. The previous one is kept for 14 days: if devices
+  stop connecting after the change (the dashboard watches for devices that connected the week before and have failed
+  the handshake since), **Put the previous certificate back** on the RADIUS page. That pauses automatic rotation until
+  you turn it on again. A new certificate is only issued when the issuing CA can give it at least 30 days.
+- **Renew once this much of a certificate's life has passed**: 50 to 90 %, 80 % by default (where Windows'
+  autoenrollment starts too). A 365-day certificate renews from day 292, so a device that's off or away has 73 days
+  to come back. A certificate that's shorter than its template (because the issuing CA expires first) renews at the
+  same share of its own life. Templates show their renewal period in days from this setting; setup files and scripts
+  made afterwards carry it.
+
+Certificates can't outlive the issuing CA: one issued when the CA has less time left than the template's lifetime
+ends with the CA, and the panel shows when to prepare and switch to the next issuing CA. Refused renewals are in the
+audit log (**Certificate renewal refused**, with the reason, once a day per certificate and reason). A certificate
+that should renew by itself and hasn't, two weeks into its window, shows on the dashboard.
+
 ## Revoking
 
 Revoke from the certificate or the user page. Revocation is permanent. New connections with that certificate are

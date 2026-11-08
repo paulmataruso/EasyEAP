@@ -18,6 +18,8 @@ export const actionLabels: Record<string, string> = {
   'auth.mfa_reset_cli': 'Two-factor reset from the server command line',
   'auth.password_changed': 'Password changed',
   'auth.profile_updated': 'Own profile updated',
+  'certificate.renewal_refused': 'Certificate renewal refused',
+  'certificate.renewed': 'Certificate renewed by its device',
   'certificate.revoked': 'Certificate revoked',
   'directory.saved': 'Directory connection saved',
   'directory.sync_failed': 'Scheduled directory sync failed',
@@ -46,6 +48,7 @@ export const actionLabels: Record<string, string> = {
   'radius.monitoring_credentials_shown': 'Switch audit SNMP credentials shown',
   'device_admin.key_shown': 'Device TACACS+ key shown',
   'radius.client_updated': 'Controller updated',
+  'radius.server_certificate_rolled_back': 'Previous RADIUS server certificate put back',
   'radius.server_certificate_rotated': 'RADIUS server certificate rotated',
   'radius.settings_saved': 'RADIUS settings saved',
   'rule.created': 'Access rule created',
@@ -62,6 +65,7 @@ export const actionLabels: Record<string, string> = {
   'system.syslog_added': 'Syslog destination added',
   'system.syslog_removed': 'Syslog destination removed',
   'system.syslog_updated': 'Syslog destination changed',
+  'renewal.settings_updated': 'Renewal settings changed',
   'template.created': 'Certificate template created',
   'template.updated': 'Certificate template changed',
   'tenant.created': 'Tenant created',
@@ -85,11 +89,12 @@ export function actionLabel(action: string, detail?: Record<string, unknown>): s
 export function actionTone(action: string, detail?: Record<string, unknown>): Tone | null {
   if (action === 'directory.synced' && detail?.ok === false) return 'crit'
   if (/(revoked|deleted|failed|disabled|mfa_reset)/.test(action)) return 'crit'
-  if (action === 'policy.published' || action === 'system.backup_restored' || action === 'system.restore_started' || /rotated|settings/.test(action)) return 'gold'
+  if (action.endsWith('_refused')) return 'warn'
+  if (action === 'policy.published' || action === 'system.backup_restored' || action === 'system.restore_started' || /rotated|rolled_back|settings/.test(action)) return 'gold'
   return null
 }
 
-export const actorTypeLabel: Record<string, string> = { admin: 'Administrator', system: 'EasyEAP', enrollee: 'Enrollee', agent: 'RADIUS agent' }
+export const actorTypeLabel: Record<string, string> = { admin: 'Administrator', system: 'EasyEAP', enrollee: 'Enrollee', agent: 'RADIUS agent', certificate: 'Device (its certificate)' }
 
 // ── Detail rendering ─────────────────────────────────────────────────────
 

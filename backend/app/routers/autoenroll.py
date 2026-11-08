@@ -512,9 +512,11 @@ def update_settings(body: SettingsIn, ctx: TenantCtx = Depends(require("director
         for kind, (days, renew) in validity.items():
             tpl = tpls[kind]
             days, renew = days or tpl.validity_days, renew or tpl.renew_before_days
-            if renew * 4 > days * 3:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"The {kind} certificate's renewal period ({renew} days) can be at most "
-                                                                 f"three quarters of its validity ({days} days).")
+            # Only a changed value is checked: an older one (¾ was allowed) is capped at 19 % in the policy instead.
+            if (days, renew) != (tpl.validity_days, tpl.renew_before_days) and renew * 5 >= days:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"The {kind} certificate's renewal period ({renew} days) must be under a fifth "
+                                                                 f"of its validity ({days} days): at a fifth or more, Windows enrolls afresh "
+                                                                 "instead of renewing.")
             if (days, renew) != (tpl.validity_days, tpl.renew_before_days):
                 changes[f"{kind}_validity"] = f"{tpl.validity_days}/{tpl.renew_before_days} → {days}/{renew} days"
                 tpl.validity_days, tpl.renew_before_days = days, renew

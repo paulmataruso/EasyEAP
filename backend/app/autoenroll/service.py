@@ -112,7 +112,9 @@ def template_policy(tpl: m.CertificateTemplate) -> soap.TemplatePolicy:
     return soap.TemplatePolicy(
         common_name=COMMON_NAMES[kind], display_name=f"EasyEAP {TEMPLATE_NAMES[kind].lower()}", oid=tpl.template_oid or "",
         major=tpl.revision_major, minor=tpl.revision_minor, validity_seconds=tpl.validity_days * 86400,
-        renewal_seconds=tpl.renew_before_days * 86400, machine=kind == "computer",
+        # At 20 % of the validity or more, Windows enrolls afresh instead of renewing: keep an older, longer setting
+        # under it (docs/plans/cert-renewal.md §2.1, §15a item 2).
+        renewal_seconds=min(tpl.renew_before_days * 86400, tpl.validity_days * 86400 * 19 // 100), machine=kind == "computer",
         extensions=((soap.OID_TEMPLATE_EXT, False, cms.template_extension(tpl.template_oid or "", tpl.revision_major, tpl.revision_minor)),
                     (soap.OID_EKU, False, eku),
                     (soap.OID_KEY_USAGE, True, bytes.fromhex("03020780")),  # digitalSignature
@@ -484,7 +486,7 @@ def signer(session: Session, bao: OpenBao, tenant: m.Tenant, cfg: m.AutoenrollCo
         "csr": csr.public_bytes(serialization.Encoding.PEM).decode(), "cn": name,
         "san": base64.b64encode(cms.san_extension(dns=[f"enrollment-service.{tenant.slug}.invalid"])).decode(),
         "template_ext": base64.b64encode(cms.template_extension(tpl.template_oid or "", 1, 0)).decode(),
-        "ttl": f"{min(365, tpl.validity_days) * 86400}s"})["data"]
+        "ttl": f"{min(365 * 24, pki.capped_ttl_hours(pki.issuing_ca(session, tenant.id), tpl.validity_days))}h"})["data"]
     cfg.signer_cert_pem = data["certificate"]
     cfg.signer_key_ct = crypto.encrypt(tenant.id, key.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,
                                                                     serialization.NoEncryption()), bao)

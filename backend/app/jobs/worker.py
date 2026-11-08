@@ -5,6 +5,7 @@ Schedule (per tenant unless noted):
 * decision refresh hourly while the directory is healthy (so RADIUS data stays inside its staleness limit; if the
   directory has been failing longer than the limit, the refresh stops and RADIUS fails closed);
 * CRL rotation daily (OpenBao CRLs are issued with a 72h lifetime);
+* the RADIUS server certificate's rotation, checked every 6 hours (app/pki/renewal.py);
 * expiry of enrollment links, purge of undelivered server-generated keys (and revocation of their certificates);
 * OpenBao token renewal, job pruning, event and system log retention (platform);
 * MAC allow list: devices whose entry expired are disconnected (CoA) every 10 minutes; sightings kept 90 days.
@@ -77,6 +78,8 @@ def _handle(job: m.Job) -> None:
             sweep_expired(s, since, now)
             mark.value = {"at": now.isoformat()}
             s.add(mark)
+        elif job.kind == "renewal.server_cert":
+            _rotate_server_cert(s, tid)
         elif job.kind == "openbao.renew":
             from app.pki.openbao import renew_token
             renew_token()
@@ -88,6 +91,25 @@ def _handle(job: m.Job) -> None:
         raise
     finally:
         s.close()
+
+
+def _rotate_server_cert(s, tid: uuid.UUID) -> None:
+    """The RADIUS server certificate rotates by itself once due (docs/plans/cert-renewal.md §5); the previous one is kept
+    14 days so it can be put back."""
+    from app.pki.openbao import OpenBao
+    from app.pki.renewal import rotate_server_cert_if_due
+    tenant = s.get(m.Tenant, tid)
+    if tenant is None:
+        return
+    cert = rotate_server_cert_if_due(s, OpenBao(), tenant)
+    if cert is None:
+        return
+    rs = s.get(m.RadiusSettings, tid)
+    prev = s.get(m.Certificate, rs.previous_server_certificate_id) if rs and rs.previous_server_certificate_id else None
+    audit.record(s, audit.Actor.system("Certificate renewal"), "radius.server_certificate_rotated", tenant_id=tid, target_type="certificate",
+                 target_id=cert.id, target_label=cert.common_name,
+                 detail={"serial": cert.serial, "automatic": True, "previous_serial": prev.serial if prev else None,
+                         "not_after": cert.not_after.isoformat()})
 
 
 def _purge_escrow(s) -> None:
@@ -151,6 +173,8 @@ def schedule() -> None:
             unrecorded = issuing is not None and issuing.crl_next_update is None
             if due(f"crl:{t.id}", timedelta(hours=24)) or (unrecorded and due(f"crl-record:{t.id}", timedelta(hours=1))):
                 queue.enqueue(s, "crl.rotate", tenant_id=t.id, dedupe_key=f"crl.rotate:{t.id}")
+            if issuing is not None and due(f"server-cert:{t.id}", timedelta(hours=6)):
+                queue.enqueue(s, "renewal.server_cert", tenant_id=t.id, dedupe_key=f"renewal.server_cert:{t.id}")
 
 
 def run_once() -> bool:

@@ -188,9 +188,13 @@ def world(monkeypatch):
     device = SimpleNamespace(id=uuid.uuid4(), name="PC-NINA01")
     stored = crypto.cert_info(leaf.public_bytes(serialization.Encoding.PEM).decode()).fingerprint_sha256  # as sign_csr records it
     cert = SimpleNamespace(id=uuid.uuid4(), fingerprint_sha256=stored, status="active", renewed_at=None,
-                           not_after=leaf.not_valid_after_utc, purpose="device", identity_id=identity.id, template_id=tpl.id,
-                           tenant_id=tenant.id, device_id=device.id, key_origin="device", enrollment_id=None)
+                           not_before=leaf.not_valid_before_utc, not_after=leaf.not_valid_after_utc, purpose="device",
+                           identity_id=identity.id, template_id=tpl.id, tenant_id=tenant.id, device_id=device.id, key_origin="device",
+                           enrollment_id=None)
     issued = {}
+    rset = SimpleNamespace(user_certs=True, machine_certs=True, server_cert=True, renew_at_percent=80)
+    monkeypatch.setattr(enr.renewal, "settings", lambda s_, tid: rset)
+    monkeypatch.setattr(enr, "set_tenant", lambda s_, tid: setattr(s_, "scoped", tid))
 
     def sign_csr(session, bao, tenant_, tpl_, csr_pem, names, **kw):
         issued.update(names=names, **kw)
@@ -208,11 +212,12 @@ def world(monkeypatch):
         sig = _p1363(signer or key, enr.renewal_message(cert_der, at, csr_der))
         return enr.renew(s, None, certificate_der=cert_der, csr_pem=csr_pem, signed_at=at, signature=sig, key_storage="tpm", now=now)
 
-    return SimpleNamespace(call=call, cert=cert, identity=identity, tpl=tpl, tenant=tenant, key=key, issued=issued, session=s)
+    return SimpleNamespace(call=call, cert=cert, identity=identity, tpl=tpl, tenant=tenant, key=key, issued=issued, session=s, renewal=rset)
 
 
 def test_renews_inside_the_window(world):
     old, new = world.call()
+    assert world.session.scoped == world.tenant.id  # the rest runs scoped to the certificate's tenant
     assert new is not None and new.key_storage == "tpm" and new.renewal_of == world.cert.id
     assert old.status == "superseded" and old.renewed_at == NOW and world.issued["recomputed"] == world.tenant.id
     assert world.issued["device_id"] == world.cert.device_id and world.issued["identity_id"] == world.identity.id
@@ -220,9 +225,58 @@ def test_renews_inside_the_window(world):
 
 
 def test_nothing_before_the_window(world):
-    world.tpl.renew_before_days = 10
+    world.renewal.renew_at_percent = 90
+    world.cert.not_before = NOW - timedelta(days=200)  # 200 of 225 days: 88.9 %
     old, new = world.call()
     assert new is None and old.status == "active" and "names" not in world.issued
+    world.renewal.renew_at_percent = 88
+    assert world.call()[1] is not None
+
+
+def test_the_window_follows_the_percentage_not_the_template(world):
+    """The template's days no longer decide: a certificate cut short by the CA renews at the same share of its life."""
+    world.tpl.renew_before_days = 1
+    world.cert.not_before, world.cert.not_after = NOW - timedelta(days=81), NOW + timedelta(days=19)  # 81 % of 100 days
+    assert world.call()[1] is not None
+
+
+@pytest.mark.parametrize(("purpose", "switch"), [("user", "user_certs"), ("device", "machine_certs")])
+def test_renewal_turned_off(world, purpose, switch):
+    world.cert.purpose = purpose
+    setattr(world.renewal, switch, False)
+    with pytest.raises(enr.RenewalRefused, match="turned off") as exc:
+        world.call()
+    assert exc.value.code == "off" and exc.value.cert is world.cert and "names" not in world.issued
+    world.cert.not_before = NOW - timedelta(days=50)  # 50 of 75 days: before the window, just "not yet", nothing to audit
+    assert world.call()[1] is None
+
+
+def test_refusals_say_why(world):
+    world.cert.status = "revoked"
+    with pytest.raises(enr.RenewalRefused) as exc:
+        world.call()
+    assert exc.value.code == "revoked" and world.session.scoped == world.tenant.id
+    world.session.scoped = None
+    with pytest.raises(enr.EnrollmentError, match="isn't signed") as exc:
+        world.call(signer=ec.generate_private_key(ec.SECP256R1()))
+    # Not scoped, and not a refusal to audit: anyone can hold a copy of the certificate
+    assert not isinstance(exc.value, enr.RenewalRefused) and world.session.scoped is None
+    with pytest.raises(enr.RenewalRefused) as exc:
+        world.call(signed_at=int((NOW - timedelta(minutes=11)).timestamp()))
+    assert exc.value.code == "clock"  # signed by the key, so the wrong clock is the device's own
+    world.session.cert = None
+    with pytest.raises(enr.EnrollmentError) as exc:
+        world.call()
+    assert not isinstance(exc.value, enr.RenewalRefused)  # a certificate EasyEAP didn't issue isn't audited
+
+
+def test_a_ca_too_close_to_expiry_is_a_refusal(world, monkeypatch):
+    def fail(*a, **kw):
+        raise enr.pki.PkiError("The issuing CA expires on 2026-11-09 00:00 UTC, too soon")
+    monkeypatch.setattr(enr.pki, "sign_csr", fail)
+    with pytest.raises(enr.RenewalRefused, match="too soon") as exc:
+        world.call()
+    assert exc.value.code == "ca"
 
 
 @pytest.mark.parametrize(("setup", "message"), [

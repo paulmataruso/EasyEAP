@@ -35,6 +35,19 @@ export const networkLabels: Record<Network, string> = { wireless: 'Wi-Fi', wired
 
 export interface ServerCertificate { id: string; serial: string; common_name: string; not_after: string; fingerprint_sha256: string }
 
+/** When the server certificate rotates by itself, and the previous one while it can be put back (app/pki/renewal.py). */
+export interface ServerCertificateRenewal {
+  serial: string
+  not_before: string
+  not_after: string
+  /** null: automatic rotation is off */
+  rotates_at: string | null
+  /** The issuing CA expires too soon to give a new one 30 days: a due rotation waits for a new issuing CA. */
+  ca_too_short: boolean
+  rotated_at: string | null
+  previous: { serial: string; not_after: string; until: string } | null
+}
+
 export interface RadiusSettings {
   server_hostname: string
   ssid: string
@@ -46,6 +59,7 @@ export interface RadiusSettings {
   tls_session_cache: boolean
   session_timeout_seconds: number
   server_certificate: ServerCertificate | null
+  server_certificate_renewal?: ServerCertificateRenewal | null
   snapshot_version: number | null
   snapshot_built_at: string | null
   /** Address controllers use to reach RADIUS (EASYEAP_RADIUS_ADDRESS in the deploy .env); empty when unset or unusable. */
@@ -307,7 +321,17 @@ export function useRotateServerCert(tid: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: () => api.post<{ settings: RadiusSettings }>(`${base(tid)}/server-certificate/rotate`),
-    onSuccess: () => Promise.all([inv(), qc.invalidateQueries({ queryKey: ['t', tid, 'certificates'] })]),
+    onSuccess: () => Promise.all([inv(), qc.invalidateQueries({ queryKey: ['t', tid, 'certificates'] }), qc.invalidateQueries({ queryKey: qk.renewal(tid) })]),
+  })
+}
+
+/** Put the previous server certificate back (within 14 days of a rotation). Pauses automatic rotation. */
+export function useRollbackServerCert(tid: string) {
+  const inv = useInvalidateRadius(tid)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.post<{ settings: RadiusSettings }>(`${base(tid)}/server-certificate/rollback`),
+    onSuccess: () => Promise.all([inv(), qc.invalidateQueries({ queryKey: ['t', tid, 'certificates'] }), qc.invalidateQueries({ queryKey: qk.renewal(tid) })]),
   })
 }
 

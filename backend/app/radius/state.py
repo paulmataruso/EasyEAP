@@ -58,7 +58,9 @@ def check_address_unique(session: Session, tenant_id: uuid.UUID, address: str, e
                                     "Give this tenant dedicated RADIUS ports (RADIUS settings → Advanced) or use a unique source address.")
 
 
-def ensure_server_certificate(session: Session, bao: OpenBao, tenant: m.Tenant, hostname: str) -> m.Certificate:
+def ensure_server_certificate(session: Session, bao: OpenBao, tenant: m.Tenant, hostname: str, now: datetime | None = None) -> m.Certificate:
+    """A new server certificate and key for the RADIUS server. The one it replaces is kept (with its key, encrypted) for
+    14 days so it can be put back if devices refuse the new one (app/pki/renewal.py)."""
     rs = session.get(m.RadiusSettings, tenant.id)
     if rs is None:
         raise RadiusConfigError("Save the RADIUS settings before issuing a server certificate.")
@@ -66,9 +68,15 @@ def ensure_server_certificate(session: Session, bao: OpenBao, tenant: m.Tenant, 
     if tpl is None:
         raise RadiusConfigError("The RADIUS server certificate template is missing. Initialize the tenant PKI first.")
     cert, key_pem = pki.issue_with_server_key(session, bao, tenant, tpl, {"server": hostname}, identity_id=None, device_id=None)
+    old = session.get(m.Certificate, rs.server_certificate_id) if rs.server_certificate_id else None
+    if old is not None and old.id != cert.id and rs.server_key_ct:
+        # Kept for a rollback only when it names the same server: one for an old host name would fail every device
+        # enrolled since the change. The watch (renewal.devices_refusing) starts from this change either way.
+        same = (old.common_name or "").lower() == hostname.lower()
+        rs.previous_server_certificate_id, rs.previous_server_key_ct = (old.id, rs.server_key_ct) if same else (None, None)
+        rs.server_cert_rotated_at = now or datetime.now(UTC)
     rs.server_key_ct = crypto.encrypt(tenant.id, key_pem, bao)
     del key_pem
-    old = session.get(m.Certificate, rs.server_certificate_id) if rs.server_certificate_id else None
     rs.server_certificate_id = cert.id
     rs.server_hostname = hostname
     rs.config_version += 1

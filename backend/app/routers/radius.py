@@ -16,7 +16,8 @@ from app.admin import service as admin_service
 from app.config import get_settings
 from app.db import set_platform, set_tenant
 from app.deps import TenantCtx, require
-from app.pki import crypto
+from app.pki import crypto, renewal
+from app.pki import service as pki
 from app.pki.openbao import OpenBao
 from app.radius import cisco_platforms as cp
 from app.radius import guides, wired
@@ -40,6 +41,7 @@ def settings_out(rs: m.RadiusSettings | None, s) -> dict | None:
             "session_timeout_seconds": rs.session_timeout_seconds, "wired_enabled": rs.wired_enabled,
             "server_certificate": {"id": str(cert.id), "serial": cert.serial, "common_name": cert.common_name, "not_after": cert.not_after.isoformat(),
                                    "fingerprint_sha256": cert.fingerprint_sha256} if cert else None,
+            "server_certificate_renewal": renewal.server_status(s, rs.tenant_id) if cert else None,
             "snapshot_version": rs.snapshot_version, "snapshot_built_at": rs.snapshot_built_at.isoformat() if rs.snapshot_built_at else None,
             **controller_address()}
 
@@ -227,8 +229,28 @@ def rotate_server_cert(ctx: TenantCtx = Depends(require("radius:write"))) -> dic
     rs = ctx.session.get(m.RadiusSettings, ctx.id)
     if rs is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Save RADIUS settings first.")
-    cert = ensure_server_certificate(ctx.session, OpenBao(), ctx.tenant, rs.server_hostname)
-    audit.record(ctx.session, ctx.actor, "radius.server_certificate_rotated", tenant_id=ctx.id, target_type="certificate", target_id=cert.id, target_label=cert.common_name)
+    previous = rs.server_certificate_id
+    try:
+        cert = ensure_server_certificate(ctx.session, OpenBao(), ctx.tenant, rs.server_hostname)
+    except (pki.PkiError, RadiusConfigError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    audit.record(ctx.session, ctx.actor, "radius.server_certificate_rotated", tenant_id=ctx.id, target_type="certificate", target_id=cert.id,
+                 target_label=cert.common_name, detail={"serial": cert.serial, "previous_certificate_id": str(previous) if previous else None})
+    return {"settings": settings_out(rs, ctx.session)}
+
+
+@router.post("/server-certificate/rollback")
+def rollback_server_cert(ctx: TenantCtx = Depends(require("radius:write"))) -> dict:
+    """Put the previous server certificate back, for devices that refuse the new one (docs/plans/cert-renewal.md §5).
+    Automatic rotation is paused, or it would rotate again at once; turning it back on is the admin's call."""
+    try:
+        restored, set_aside = renewal.rollback_server_cert(ctx.session, ctx.id, ctx.actor.label)
+    except renewal.RenewalError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    rs = ctx.session.get(m.RadiusSettings, ctx.id)
+    audit.record(ctx.session, ctx.actor, "radius.server_certificate_rolled_back", tenant_id=ctx.id, target_type="certificate",
+                 target_id=restored.id, target_label=restored.common_name,
+                 detail={"serial": restored.serial, "set_aside_serial": set_aside.serial if set_aside else None, "automatic_rotation": "paused"})
     return {"settings": settings_out(rs, ctx.session)}
 
 
@@ -774,7 +796,6 @@ def wired_kit(ctx: TenantCtx = Depends(require("radius:read"))) -> dict:
     if rs is None or not rs.server_hostname:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Save RADIUS settings first.")
     from app.enrollment import profiles
-    from app.pki import service as pki
     issuing, root = pki.chain_pem(ctx.session, ctx.id)
     anchor = root or issuing
     slug = ctx.tenant.slug
@@ -798,7 +819,6 @@ def group_policy(ctx: TenantCtx = Depends(require("radius:read"))) -> dict:
     if rs is None or not rs.server_hostname:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Save RADIUS settings first.")
     from app.enrollment import profiles
-    from app.pki import service as pki
     issuing, root = pki.chain_pem(ctx.session, ctx.id)
     return profiles.group_policy_guide(server_name=rs.server_hostname, ssid=rs.ssid or "EasyEAP", wpa3=bool(rs.wpa3),
                                        root_pem=root or issuing, issuing_pem=issuing, slug=ctx.tenant.slug)

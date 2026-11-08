@@ -88,14 +88,18 @@ page and on the certificate.
 
 ## Renewal
 
-The renewal tasks run `renew.ps1`. When a certificate is inside its template's renewal window, the script makes a new
+The renewal tasks run `renew.ps1` daily. When a certificate is inside its renewal window (from 80 % of its life by
+default: Certificate authority → Renewal), the script makes a new
 key (the same order as above), and the current certificate's key signs the request; EasyEAP checks that signature,
 issues the new certificate and marks the old one superseded (it stays valid until it expires, so nothing drops). The
 script installs the new certificate and deletes the old one with its key. The console shows "Renewed automatically"
 on the new certificate.
 
 Renewal needs nobody to sign in to the console and no new file. It stops working for a certificate that was revoked,
-has expired, or whose user was disabled: run a new setup file then.
+has expired, or whose user was disabled, and while renewal of user or device certificates is turned off (Certificate
+authority → Renewal): run a new setup file then. Each refusal is in the audit log (**Certificate renewal refused**, once
+a day per certificate and reason), and a certificate that hasn't renewed two weeks into its window shows on the
+dashboard.
 
 Logs: `C:\Program Files\EasyEAP\renew.log` (computer), `%LOCALAPPDATA%\EasyEAP\renew.log` (user), and the Application
 event log, source **EasyEAP**.

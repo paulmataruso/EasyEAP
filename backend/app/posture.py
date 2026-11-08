@@ -12,6 +12,7 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session
 
 from app import models as m
+from app.pki import renewal
 from app.policy.service import policy_settings
 from app.radius.explain import explain
 
@@ -232,23 +233,47 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
         add("directory_failed", "critical", "Directory sync is failing", detail, "Fix directory connection", "directory",
             affected=holders, impact_at=deadline if not enf["directory_fresh"] else None, source_at=dc.last_sync_at)
 
+    rst = renewal.settings(s, t.id)
     rs = s.get(m.RadiusSettings, t.id)
     if rs is not None and rs.server_certificate_id:
         sc = s.get(m.Certificate, rs.server_certificate_id)
         if sc is not None and sc.not_after <= now + timedelta(days=30):
+            why = (f"It should have rotated by itself on {renewal.renew_from(sc, rst.renew_at_percent):%Y-%m-%d}, which needs the issuing CA "
+                   f"to give the new one at least {renewal.MIN_SERVER_DAYS} days. " if rst.server_cert else
+                   "Automatic rotation is off (PKI → Renewal). ")
             add("server_cert_expiring", "critical", "RADIUS server certificate expires soon" if sc.not_after > now else "RADIUS server certificate has expired",
-                "Devices refuse to connect to a server whose certificate has expired. Rotating it is seamless: devices trust the CA, not the certificate.",
+                "Devices refuse to connect to a server whose certificate has expired. " + why
+                + "Rotating it is seamless for devices that trust the CA rather than the certificate.",
                 "Rotate server certificate", "radius", affected=holders, impact_at=sc.not_after, source_at=sc.not_before)
+        refusing, last = renewal.devices_refusing(s, t.id, now)
+        if refusing:
+            prev = renewal.rollback_candidate(s, rs, now)
+            add("server_cert_rejected", "critical",
+                f"{refusing} device{'s' if refusing != 1 else ''} stopped connecting after the server certificate changed",
+                f"{'They' if refusing != 1 else 'It'} connected in the week before the change on {rs.server_cert_rotated_at:%Y-%m-%d} and "
+                f"{'have' if refusing != 1 else 'has'} failed the secure handshake since. Usually the device's Wi-Fi profile trusts the old "
+                "server certificate itself instead of the CA: enroll it again. "
+                + (f"Until {rs.server_cert_rotated_at + timedelta(days=renewal.ROLLBACK_DAYS):%Y-%m-%d} you can put the previous certificate back "
+                   "from the RADIUS page." if prev else ""),
+                "Review the server certificate", "radius", affected=refusing, impact_at=None, source_at=last)
 
     ca = s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == t.id, m.CertificateAuthority.role == "issuing")).first()
     if ca is not None and ca.not_after <= now:
         add("issuing_ca_expired", "critical", "Issuing CA has expired",
             "Every certificate it issued has stopped working, and no new ones can be issued. A new issuing CA from the offline root is needed.",
             "Review PKI", "pki", affected=holders, impact_at=ca.not_after, source_at=ca.not_before)
-    elif ca is not None and ca.not_after <= now + timedelta(days=180):
-        add("issuing_ca_expiring", "warning", "Issuing CA expires within six months",
-            "Certificates can't outlive the CA that issued them. Plan a new issuing CA from the offline root before it expires.",
-            "Review PKI", "pki", affected=holders, impact_at=ca.not_after, source_at=ca.not_before)
+    elif ca is not None:
+        longest = s.scalar(select(func.max(m.CertificateTemplate.validity_days)).where(m.CertificateTemplate.tenant_id == t.id)) or 0
+        shortening = ca.not_after - now < timedelta(days=longest)
+        if ca.not_after <= now + timedelta(days=180):
+            add("issuing_ca_expiring", "warning", "Issuing CA expires within six months",
+                "Certificates can't outlive the CA that issued them, so new ones already end when it does. Plan a new issuing CA from "
+                "the offline root before it expires.", "Review PKI", "pki", affected=holders, impact_at=ca.not_after, source_at=ca.not_before)
+        elif shortening:
+            add("issuing_ca_cap", "warning", "New certificates are shorter than their templates say",
+                f"The issuing CA expires on {ca.not_after:%Y-%m-%d} and certificates can't outlive it, so new ones end then too and "
+                "renew sooner in proportion. Plan a new issuing CA from the offline root (PKI → Renewal shows when).",
+                "Review PKI", "pki", affected=0, impact_at=ca.not_after, source_at=ca.not_before)
     if ca is not None and ca.not_after > now and ca.crl_next_update is not None and ca.crl_next_update - now <= CRL_WARN:
         lapsed = ca.crl_next_update <= now
         add("crl_expiring", "critical" if ca.crl_next_update - now <= CRL_CRIT else "warning",
@@ -294,14 +319,24 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
             AUDIT_TEXT.get(top.kind, ("", ""))[0] + where + (f" And {n - 1} more." if n > 1 else ""),
             "Review the switch audit", f"radius:client:{cid}", affected=0, impact_at=None, source_at=top.opened_at)
 
-    soon = now + timedelta(days=ps.expiry_warning_days)
-    exp = s.execute(select(func.count(), func.min(m.Certificate.not_after), func.count(distinct(m.Certificate.identity_id))).where(
-        m.Certificate.tenant_id == t.id, m.Certificate.status == "active", m.Certificate.not_after > now, m.Certificate.not_after <= soon,
-        m.Certificate.purpose.in_(m.CLIENT_PURPOSES))).one()
-    if exp[0]:
-        add("certs_expiring", "warning", f"{exp[0]} certificate{'s' if exp[0] != 1 else ''} expire within {ps.expiry_warning_days} days",
-            "Devices that aren't re-enrolled stop connecting when their certificate expires. Create a renewal link from each user's record.",
-            "Review expiring certificates", "certificates:expiring", affected=exp[2], impact_at=exp[1], source_at=now)
+    # Certificates that renew by themselves (Group Policy, the setup file, the Linux script) aren't counted until they're
+    # overdue; the rest need someone (docs/plans/cert-renewal.md §15a item 7).
+    cr = renewal.client_renewal(s, t.id, ps.expiry_warning_days, now)
+    manual, overdue = cr["manual"], cr["overdue"]
+    if manual:
+        n = len(manual)
+        add("certs_expiring", "warning", f"{n} certificate{'s' if n != 1 else ''} expire within {ps.expiry_warning_days} days",
+            f"{'They don’t' if n != 1 else 'It doesn’t'} renew by {'themselves' if n != 1 else 'itself'} (an Apple or Android profile, a "
+            "certificate installed by hand, or renewal turned off), and devices stop connecting when their certificate expires. Give each "
+            "user a new link from their record.", "Review expiring certificates", "certificates:expiring",
+            affected=len({c.identity_id for c in manual}), impact_at=min(c.not_after for c in manual), source_at=now)
+    if overdue:
+        n = len(overdue)
+        add("renewal_overdue", "warning", f"{n} certificate{'s' if n != 1 else ''} should have renewed by {'themselves' if n != 1 else 'itself'}",
+            f"With {renewal.OVERDUE_LEFT_DAYS} days or less left, the device{'s haven’t' if n != 1 else ' hasn’t'} renewed: switched off or "
+            "away, the renewal task (or Group Policy) can't reach EasyEAP, or EasyEAP refused it (Audit log: Certificate renewal refused).",
+            "Review expiring certificates", "certificates:expiring", affected=len({c.identity_id for c in overdue}),
+            impact_at=min(c.not_after for c in overdue), source_at=now)
 
     day = now - timedelta(hours=24)
     rows = s.execute(select(m.AuthEvent.reason_code, func.count(), func.count(distinct(m.AuthEvent.calling_station_id)), func.max(m.AuthEvent.at))
