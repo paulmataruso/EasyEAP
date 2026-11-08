@@ -157,7 +157,10 @@ the configuration does.
 
 ## Rotating a key
 
-**Rotate key** creates a new key and shows it once. The old key keeps working for 24 hours, so you can change the
+The device's configuration can be opened again at any time; **Fill in the TACACS+ key** puts the current key in it
+(needs permission to manage admin logins; each showing is audited).
+
+**Rotate key** creates a new key and shows it. The old key keeps working for 24 hours, so you can change the
 device in that time: paste `tacacs server EASYEAP-ADMIN-<TENANT>` / ` key 0 <new key>` (or the full configuration
 again). Rotating again within the 24 hours ends the older key's grace.
 

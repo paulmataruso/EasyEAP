@@ -164,7 +164,7 @@ export default function Radius() {
         {s && (
           <Panel className="p-5 sm:p-6" aria-labelledby="rad-guide-h">
             <SectionHeader id="rad-guide-h" title="Wireless controller setup guides" meta="Filled with this tenant’s RADIUS address, ports and SSID. A switch’s configuration is in its panel above." />
-            <ControllerGuides settings={s} vendor={vendor} onVendor={(v) => { setVendor(v); if (selected && selected.vendor !== v) setSelectedId(null) }} forName={selected?.vendor === vendor ? selected.name : null} />
+            <ControllerGuides settings={s} vendor={vendor} onVendor={(v) => { setVendor(v); if (selected && selected.vendor !== v) setSelectedId(null) }} forName={selected?.vendor === vendor ? selected.name : null} forClientId={selected?.vendor === vendor ? selected.id : null} />
           </Panel>
         )}
 

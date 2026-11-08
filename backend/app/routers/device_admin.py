@@ -231,6 +231,18 @@ def rotate_key(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("admin:wri
     return {"device": device_out(c, {}), "key": key}
 
 
+@router.post("/devices/{client_id}/key")
+def show_key(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("admin:write"))) -> dict:
+    """The device's current TACACS+ key again, to fill in its configuration (whoever may rotate it may see it); audited."""
+    s = ctx.session
+    c = _client(ctx, client_id)
+    if not c.admin_enabled or not c.tacacs_key_ct:
+        raise _bad("key", "Admin logins aren't on for this device, so it has no key.")
+    key = crypto.decrypt_str(ctx.id, c.tacacs_key_ct)
+    audit.record(s, ctx.actor, "device_admin.key_shown", tenant_id=ctx.id, target_type="radius_client", target_id=c.id, target_label=c.name)
+    return {"key": key}
+
+
 @router.get("/devices/{client_id}/config")
 def device_config(client_id: uuid.UUID, legacy: bool = False, ctx: TenantCtx = Depends(require("admin:read"))) -> dict:
     c = _client(ctx, client_id)

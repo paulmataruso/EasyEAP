@@ -81,8 +81,9 @@ def _syslog_target() -> tuple[str, int] | None:
     return (dest or "<EasyEAP's address>", st.syslog_port)
 
 
-def _removal(mon: dict, c: m.RadiusClient) -> str:
-    return service.removal_block(mon, syslog=_syslog_target(), source=_source_address(), profile=c.wired_profile, vendor=c.vendor)
+def _removal(mon: dict, c: m.RadiusClient, community: str | None = None) -> str:
+    return service.removal_block(mon, community=community, syslog=_syslog_target(), source=_source_address(), profile=c.wired_profile,
+                                 vendor=c.vendor)
 
 
 def _heartbeat(s, key: str) -> dict:
@@ -313,12 +314,32 @@ def acknowledge(client_id: uuid.UUID, finding_id: uuid.UUID, body: AckIn, ctx: T
     return {"finding": service.finding_out(f)}
 
 
+@router.post("/clients/{client_id}/monitoring/credentials")
+def show_credentials(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius:secrets"))) -> dict:
+    """The SNMP credentials again, to fill in the block (whoever may generate new ones may see these); audited."""
+    c = _switch(ctx, client_id, read_only=True)
+    mon = c.monitoring or {}
+    if not mon.get("host") or not c.snmp_secret_ct:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Set up monitoring for this switch first.")
+    creds = json.loads(crypto.decrypt_str(ctx.id, c.snmp_secret_ct))
+    audit.record(ctx.session, ctx.actor, "radius.monitoring_credentials_shown", tenant_id=ctx.id, target_type="radius_client",
+                 target_id=c.id, target_label=c.name)
+    return {"credentials": {**creds, "user": (mon.get("user") or "easyeap") if mon.get("version") == "v3" else None}}
+
+
 @router.delete("/clients/{client_id}/monitoring")
 def remove_monitoring(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius:write"))) -> dict:
     """Stop polling and forget the credentials. Returns the lines that remove EasyEAP's SNMP access from the switch."""
     c = _switch(ctx, client_id, read_only=True)
     old = c.monitoring or {}
-    removal = _removal(old, c) if old.get("host") else None
+    community = None
+    if old.get("version", "v2c") == "v2c" and c.snmp_secret_ct and "radius:secrets" in ctx.perms:
+        # The lines are shown once and the credentials forgotten: IOS needs the community itself to remove it.
+        try:
+            community = json.loads(crypto.decrypt_str(ctx.id, c.snmp_secret_ct)).get("community")
+        except Exception:  # noqa: BLE001 — the placeholder stays, as for an admin without radius:secrets
+            community = None
+    removal = _removal(old, c, community) if old.get("host") else None
     _resolve_open(ctx, c)
     st = ctx.session.get(m.SwitchState, c.id)
     if st is not None:

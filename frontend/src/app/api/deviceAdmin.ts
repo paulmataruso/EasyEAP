@@ -132,6 +132,8 @@ export interface AccountIn { username: string; display_name: string; email: stri
 export interface AccountUpdate { display_name?: string; email?: string; role_id?: string; sites?: string[]; enabled?: boolean; expires_at?: string | null }
 
 const base = (tid: string) => `/api/tenants/${tid}/device-admin`
+/** The device's current TACACS+ key again, to fill its configuration (needs admin:write; audited). */
+export const showDeviceKey = (tid: string, id: string) => api.post<{ key: string }>(`${base(tid)}/devices/${id}/key`)
 
 export function useDeviceAdmin(tid: string, enabled = true) {
   return useQuery({

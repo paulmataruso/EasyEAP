@@ -2,19 +2,20 @@
 // 802.1X/MAB sessions, and the findings where that differs from what EasyEAP decided and sent.
 // The community or SNMPv3 keys are returned once by setup; like a RADIUS shared secret they're kept only in the setup
 // dialog's state, filled into the configuration block in the browser, and dropped when the dialog closes.
-import { useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useState } from 'react'
 import { Activity, Check, Eye, EyeOff, MessageSquareText, RefreshCw, Settings2, ShieldAlert, Trash2 } from 'lucide-react'
 import { errorField } from '../../api/client'
 import type { RadiusClient } from '../../api/radius'
 import {
-  AUTH_PLACEHOLDER, COMMUNITY_PLACEHOLDER, PRIV_PLACEHOLDER, fillCredentials, findingTitles, useAckFinding, useMonitoring, usePollNow, useRemoveMonitoring,
+  AUTH_PLACEHOLDER, COMMUNITY_PLACEHOLDER, PRIV_PLACEHOLDER, fillCredentials, findingTitles, showSnmpCredentials, useAckFinding, useMonitoring, usePollNow, useRemoveMonitoring,
   useSetupMonitoring, useTestMonitoring, useUpdateMonitoring,
   type Finding, type MonitoringInput, type MonitoringResponse, type SetupResult, type SnmpVersion, type SyslogLine, type TestResult,
 } from '../../api/switchAudit'
+import { useReveal } from '../../api/oneTime'
 import { useTenant } from '../../api/tenant'
 import { ago, fmtDateTime } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
-import { Btn, Callout, Chip, CopyButton, EDialog, ESelect, ESwitch, ErrorState, Field, LoadingBlock, OneTimeSecret, Seg, SeverityChip, errorMessage, toast } from '../../ui'
+import { Btn, Callout, Chip, CopyButton, EDialog, ESelect, ESwitch, ErrorState, Field, FillSecretButton, LoadingBlock, OneTimeSecret, Seg, SeverityChip, errorMessage, toast, toastError } from '../../ui'
 import { Marked } from './Guide'
 
 const macText = (m: string | null) => (m && m.length === 12 ? m.match(/../g)!.join(':') : m ?? '')
@@ -294,14 +295,18 @@ function SetupDialog({ client, data, open, onClose }: { client: RadiusClient; da
   const [saved, setSaved] = useState(false)
   const [fieldErr, setFieldErr] = useState<{ field: string; message: string } | null>(null)
   const [tested, setTested] = useState<TestResult | null>(null)
+  const shown = useReveal(useCallback(() => showSnmpCredentials(tid, client.id), [tid, client.id]))
   // A switch already set up opens on Test connection; new credentials are a deliberate second step.
   const [mode, setMode] = useState<'form' | 'test'>(mon.set_up ? 'test' : 'form')
   useEffect(() => {
     if (open) { setForm(blank()); setMode(mon.set_up ? 'test' : 'form'); return }
-    const t = setTimeout(() => { setResult(null); setSaved(false); setFieldErr(null); setTested(null); test.reset(); setupM.reset() }, 200)  // the one-time credentials go with the dialog
+    const t = setTimeout(() => { setResult(null); setSaved(false); setFieldErr(null); setTested(null); test.reset(); setupM.reset(); shown.clear() }, 200)  // the credentials go with the dialog
     return () => clearTimeout(t)
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
-  const config = result ? fillCredentials(result.config, result.credentials) : data.config ?? ''
+  // The credentials: just generated (shown once above), or the current ones when an admin asks for them (audited).
+  const config = result ? fillCredentials(result.config, result.credentials) : fillCredentials(data.config ?? '', shown.value?.credentials ?? null)
+  const hasPlaceholders = [COMMUNITY_PLACEHOLDER, AUTH_PLACEHOLDER, PRIV_PLACEHOLDER].some((p) => config.includes(p))
+  const mayFill = !result && mon.set_up && can('radius:secrets')
   const secretValue = result ? (result.credentials.community ?? `${result.credentials.auth_key}  ${result.credentials.priv_key}`) : ''
   const submit = () => setupM.mutate(v2cOnly ? { ...form, version: 'v2c' } : form, {
     onSuccess: (r) => { setResult(r); setMode('test'); setFieldErr(null) },
@@ -399,11 +404,16 @@ function SetupDialog({ client, data, open, onClose }: { client: RadiusClient; da
             <section aria-label="Configuration">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <p className="text-[13px] font-semibold">Paste on the switch</p>
-                <CopyButton text={config} what="SNMP configuration" label="Copy configuration" />
+                <div className="flex flex-wrap items-center gap-2">
+                  {mayFill && hasPlaceholders && <FillSecretButton what="credentials" busy={shown.busy} onClick={() => shown.reveal(toastError('The credentials can’t be shown'))} />}
+                  <CopyButton text={config} what="SNMP configuration" label="Copy configuration" />
+                </div>
               </div>
               <pre className="ee-code max-h-[320px] overflow-auto" tabIndex={0} aria-label="SNMP configuration"><Marked text={config} /></pre>
-              {!result && [COMMUNITY_PLACEHOLDER, AUTH_PLACEHOLDER, PRIV_PLACEHOLDER].some((p) => config.includes(p)) && (
-                <p className="ee-small ee-ink-3 mt-1">The highlighted values are the credentials EasyEAP showed when monitoring was set up; it never shows them again. Generate new ones if they’re lost.</p>
+              {!result && hasPlaceholders && (
+                <p className="ee-small ee-ink-3 mt-1">{mayFill
+                  ? 'The highlighted values are this switch’s SNMP credentials: Fill in the credentials puts them in.'
+                  : 'The highlighted values are this switch’s SNMP credentials. An administrator who manages RADIUS secrets can fill them in.'}</p>
               )}
               {!data.source_address && <p className="ee-small ee-ink-3 mt-1">Replace <span className="ee-mono">&lt;EasyEAP’s address&gt;</span> with the address the switch sees EasyEAP’s requests come from.</p>}
             </section>

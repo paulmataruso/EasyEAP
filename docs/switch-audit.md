@@ -90,7 +90,9 @@ You need the **radius:secrets** permission (Tenant administrator): setting up sh
 
    `<EasyEAP's address>` is the address the switch sees EasyEAP's requests come from: normally the address switches
    send RADIUS to (`EASYEAP_RADIUS_ADDRESS`). If the switch reaches EasyEAP through NAT or another interface, use that.
-   The credentials are filled in while the dialog is open; EasyEAP never shows them again.
+   The credentials are filled in while the dialog is open. To see the block again later, with the credentials, open
+   **Set up** on a monitored switch and choose **Fill in the credentials** (needs permission to manage RADIUS secrets;
+   each showing is audited). Removing the audit also gives the removal lines with the community filled in.
 3. **Test connection.** EasyEAP asks the switch for its model, version and serial number and checks which tables it
    answers. When it gets an answer, monitoring turns on and the first poll runs within a minute.
 

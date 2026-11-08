@@ -264,6 +264,8 @@ export interface CoaRequest {
 }
 
 const base = (tid: string) => `/api/tenants/${tid}/radius`
+/** The shared secret again, to fill a configuration (needs radius:secrets; audited). */
+export const showClientSecret = (tid: string, id: string) => api.post<{ shared_secret: string }>(`${base(tid)}/clients/${id}/secret`)
 export const guideKey = (tid: string, vendor: string) => [...qk.radius(tid), 'guide', vendor] as const
 export const coaKey = (tid: string) => [...qk.radius(tid), 'coa'] as const
 

@@ -6,7 +6,7 @@ placeholders in angle brackets:
 | Placeholder | Value |
 |---|---|
 | `<easyeap-radius-ip>` | The RADIUS address (`EASYEAP_RADIUS_ADDRESS`), as the controller reaches it |
-| `<shared-secret-you-saved>` | The secret shown once when you added the controller in EasyEAP |
+| `<shared-secret-you-saved>` | The controller's shared secret: select the controller in EasyEAP's list and choose **Fill in the shared secret** |
 | `<wlan-id>` | A free WLAN ID |
 | `<policy-profile>` | The policy profile tagged to the SSID's access points |
 | `<default-vlan>` | The VLAN clients use before RADIUS assigns one |

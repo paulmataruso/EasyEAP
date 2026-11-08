@@ -265,7 +265,8 @@ EasyEAP decides who gets onto a network, so it fails closed and keeps keys where
 - **No custom cryptography.** It relies on OpenBao, pyca/cryptography, WebCrypto, PKI.js, argon2-cffi and age.
 - **Key custody.** The root CA key is exported once, encrypted, and never kept online. Issuing CA keys never leave
   OpenBao. Shared secrets, bind passwords and escrowed keys are stored only as per-tenant Transit ciphertext.
-  RADIUS shared secrets are shown once.
+  A switch's or controller's configuration can be shown again with its shared secret, TACACS+ key or SNMP
+  credentials filled in, by administrators allowed to manage those secrets; each showing is in the audit log.
 - **Tenant isolation.** PostgreSQL row-level security applies to every tenant table, through a non-owner application
   role.
 - **Fails closed.** Unknown certificates, stale snapshots, and disabled, locked or deleted accounts are all denied.

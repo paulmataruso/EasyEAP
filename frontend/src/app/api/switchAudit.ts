@@ -174,6 +174,8 @@ export const findingTitles: Record<string, string> = {
 }
 
 const base = (tid: string, id: string) => `/api/tenants/${tid}/radius/clients/${id}/monitoring`
+/** The SNMP credentials again, to fill the block (needs radius:secrets; audited). */
+export const showSnmpCredentials = (tid: string, id: string) => api.post<{ credentials: SetupResult['credentials'] }>(`${base(tid, id)}/credentials`)
 
 export function useMonitoring(tid: string, clientId: string, enabled = true) {
   return useQuery({

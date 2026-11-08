@@ -705,6 +705,18 @@ def _silent_failures(s, tenant_id: uuid.UUID, c: m.RadiusClient, since: datetime
     return list(out.values())
 
 
+@router.post("/clients/{client_id}/secret")
+def show_secret(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius:secrets"))) -> dict:
+    """The shared secret again, to fill in the configuration: whoever may rotate it may see it. Each showing is audited."""
+    c = ctx.session.get(m.RadiusClient, client_id)
+    if c is None or c.tenant_id != ctx.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Controller or switch not found.")
+    secret = crypto.decrypt_str(ctx.id, c.secret_ct)
+    audit.record(ctx.session, ctx.actor, "radius.client_secret_shown", tenant_id=ctx.id, target_type="radius_client", target_id=c.id,
+                 target_label=c.name)
+    return {"shared_secret": secret}
+
+
 @router.post("/clients/{client_id}/rotate-secret")
 def rotate_secret(client_id: uuid.UUID, ctx: TenantCtx = Depends(require("radius:secrets"))) -> dict:
     c = ctx.session.get(m.RadiusClient, client_id)

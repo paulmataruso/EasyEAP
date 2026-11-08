@@ -7,6 +7,11 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A switch's or controller's whole configuration, any time, with its secrets**: **Fill in the shared secret** (and
+  **Fill in the TACACS+ key**, **Fill in the credentials** for the switch audit) puts the secret EasyEAP already keeps
+  into the configuration on screen, so pasting it again no longer means generating a new secret. It needs the
+  permission that may rotate that secret, and each showing is in the audit log. Removing the switch audit gives the
+  removal lines with the community filled in.
 - **Show an enrollment link again**: a pending link's **Show link** on the user's page, until the device enrolls, the
   link is cancelled or it expires, so a lost link no longer means cancelling it and sending a new one. The link is
   kept encrypted with the tenant's key and cleared once it can't be used; each showing is audited. Links created

@@ -1,16 +1,17 @@
 // Vendor configuration guides from GET /radius/guide/{vendor}. The API fills the tenant's real values; this view
 // fills what it can't know (the one-time shared secret, an unset RADIUS address, controller-local IDs) in memory only.
-import { Fragment, useId, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useId, useMemo, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Tabs } from 'radix-ui'
 import { api } from '../../api/client'
 import { qk } from '../../api/keys'
 import {
-  ADDRESS_PLACEHOLDER, LOCAL_PLACEHOLDERS, SECRET_PLACEHOLDER, fillText, remainingPlaceholders, useGuide, vendorLabels,
+  ADDRESS_PLACEHOLDER, LOCAL_PLACEHOLDERS, SECRET_PLACEHOLDER, fillText, remainingPlaceholders, showClientSecret, useGuide, vendorLabels,
   type FillValues, type Guide, type RadiusSettings,
 } from '../../api/radius'
+import { useReveal } from '../../api/oneTime'
 import { useTenant } from '../../api/tenant'
-import { CopyButton, ErrorState, Field, LoadingBlock } from '../../ui'
+import { CopyButton, ErrorState, Field, FillSecretButton, LoadingBlock, toastError } from '../../ui'
 
 /** Render text with any remaining <placeholder> highlighted. */
 export function Marked({ text }: { text: string }) {
@@ -19,7 +20,7 @@ export function Marked({ text }: { text: string }) {
 }
 
 const placeholderLabels: Record<string, string> = {
-  [SECRET_PLACEHOLDER]: 'the shared secret you saved when you added the controller (EasyEAP never shows it again)',
+  [SECRET_PLACEHOLDER]: 'the controller’s shared secret (open the controller from the list to fill it in, or rotate it)',
   [ADDRESS_PLACEHOLDER]: 'the address your controllers use to reach EasyEAP RADIUS',
   [LOCAL_PLACEHOLDERS.wlanId]: 'the WLAN ID on the controller',
   [LOCAL_PLACEHOLDERS.policyProfile]: 'the policy profile your WLAN uses',
@@ -48,8 +49,13 @@ export function guideText(g: Guide, fill: FillValues): string {
  * One vendor's guide body. `secret` is passed only on the one-time step right after a controller is created or its
  * secret rotated; `onCopied` lets that step count copying the filled configuration as copying the secret.
  */
-export function GuideBody({ guide, settings, secret, onCopied, compact }: { guide: Guide; settings: RadiusSettings; secret?: string | null; onCopied?: () => void; compact?: boolean }) {
+export function GuideBody({ guide, settings, secret, onCopied, compact, clientId }: {
+  guide: Guide; settings: RadiusSettings; secret?: string | null; onCopied?: () => void; compact?: boolean
+  /** A registered controller of this type: an admin who may see secrets can fill its shared secret in (audited). */
+  clientId?: string | null
+}) {
   const { tid, can } = useTenant()
+  const shown = useReveal(useCallback(() => showClientSecret(tid, clientId ?? ''), [tid, clientId]))
   const id = useId()
   const defaultVlan = useDefaultVlan(tid, can('policy:read'))
   const [address, setAddress] = useState('')
@@ -58,11 +64,14 @@ export function GuideBody({ guide, settings, secret, onCopied, compact }: { guid
   const [vlan, setVlan] = useState<string | null>(null)
   const raw = [guide.cli ?? '', ...guide.steps].join('\n')
   const has = (p: string) => raw.includes(p)
-  const fill: FillValues = { secret, address: settings.radius_address ? null : address.trim() || null, wlanId: wlanId.trim(), policyProfile: profile.trim(), defaultVlan: (vlan ?? defaultVlan ?? '').trim() }
+  const fill: FillValues = { secret: secret ?? shown.value?.shared_secret ?? null, address: settings.radius_address ? null : address.trim() || null, wlanId: wlanId.trim(), policyProfile: profile.trim(), defaultVlan: (vlan ?? defaultVlan ?? '').trim() }
   const cli = guide.cli ? fillText(guide.cli, fill) : null
   const steps = guide.steps.map((s) => fillText(s, fill))
   const left = remainingPlaceholders([cli ?? '', ...steps].join('\n'))
   const copyText = guideText(guide, fill)
+  const fillButton = clientId && can('radius:secrets') && left.includes(SECRET_PLACEHOLDER)
+    ? <FillSecretButton what="shared secret" busy={shown.busy} onClick={() => shown.reveal(toastError('The shared secret can’t be shown'))} />
+    : null
 
   const inputs: ReactNode[] = []
   if (has(ADDRESS_PLACEHOLDER) || !settings.radius_address) {
@@ -100,7 +109,7 @@ export function GuideBody({ guide, settings, secret, onCopied, compact }: { guid
         <div>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <p className="text-[13px] font-semibold">Configuration{guide.vendor === 'cisco-9800' ? ' (IOS-XE CLI)' : guide.vendor === 'cisco-aireos' ? ' (AireOS CLI)' : ''}</p>
-            <CopyButton text={copyText} what={`${guide.title} configuration`} label="Copy configuration" onCopied={onCopied} />
+            <div className="flex flex-wrap items-center gap-2">{fillButton}<CopyButton text={copyText} what={`${guide.title} configuration`} label="Copy configuration" onCopied={onCopied} /></div>
           </div>
           <pre className="ee-code max-h-[420px] overflow-auto" tabIndex={0} aria-label={`${guide.title} configuration`}><Marked text={cli} /></pre>
         </div>
@@ -108,7 +117,7 @@ export function GuideBody({ guide, settings, secret, onCopied, compact }: { guid
       <div>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <p className="text-[13px] font-semibold">{cli ? 'Where to find it in the web interface' : 'Steps'}</p>
-          {!cli && <CopyButton text={copyText} what={`${guide.title} steps`} label="Copy steps" onCopied={onCopied} />}
+          {!cli && <div className="flex flex-wrap items-center gap-2">{fillButton}<CopyButton text={copyText} what={`${guide.title} steps`} label="Copy steps" onCopied={onCopied} /></div>}
         </div>
         <ol className="list-decimal space-y-1.5 pl-5 text-[13.5px] marker:text-[var(--ee-ink-3)] marker:tabular-nums">
           {steps.map((s, i) => <li key={i} className="pl-1"><Marked text={s} /></li>)}
@@ -135,19 +144,19 @@ export function GuideBody({ guide, settings, secret, onCopied, compact }: { guid
 }
 
 /** Fetches and renders one vendor's guide. */
-export function VendorGuide({ vendor, settings, secret, onCopied, compact }: { vendor: string; settings: RadiusSettings; secret?: string | null; onCopied?: () => void; compact?: boolean }) {
+export function VendorGuide({ vendor, settings, secret, onCopied, compact, clientId }: { vendor: string; settings: RadiusSettings; secret?: string | null; onCopied?: () => void; compact?: boolean; clientId?: string | null }) {
   const { tid } = useTenant()
   const q = useGuide(tid, vendor)
   if (q.isLoading) return <LoadingBlock rows={5} label={`Loading the ${vendorLabels[vendor] ?? vendor} guide`} />
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} title="The configuration guide couldn’t be loaded" />
   if (!q.data) return null
-  return <GuideBody guide={q.data} settings={settings} secret={secret} onCopied={onCopied} compact={compact} />
+  return <GuideBody guide={q.data} settings={settings} secret={secret} onCopied={onCopied} compact={compact} clientId={clientId} />
 }
 
 const GUIDE_TABS = ['cisco-9800', 'cisco-aireos', 'unifi', 'other'] as const
 
 /** "Controller setup guides" section: one tab per vendor. */
-export function ControllerGuides({ settings, vendor, onVendor, forName }: { settings: RadiusSettings; vendor: string; onVendor: (v: string) => void; forName?: string | null }) {
+export function ControllerGuides({ settings, vendor, onVendor, forName, forClientId }: { settings: RadiusSettings; vendor: string; onVendor: (v: string) => void; forName?: string | null; forClientId?: string | null }) {
   const tabs = useMemo(() => GUIDE_TABS.map((v) => ({ v, label: v === 'cisco-9800' ? 'Catalyst 9800' : v === 'cisco-aireos' ? 'AireOS' : v === 'unifi' ? 'UniFi' : 'Other' })), [])
   return (
     <Tabs.Root value={vendor} onValueChange={onVendor}>
@@ -163,7 +172,7 @@ export function ControllerGuides({ settings, vendor, onVendor, forName }: { sett
       </div>
       {tabs.map((t) => (
         <Tabs.Content key={t.v} value={t.v} className="outline-none">
-          <VendorGuide vendor={t.v} settings={settings} />
+          <VendorGuide vendor={t.v} settings={settings} clientId={t.v === vendor ? forClientId : null} />
         </Tabs.Content>
       ))}
     </Tabs.Root>

@@ -168,7 +168,7 @@ Authentication log's **Network** filter shows wired attempts, with the switch an
 | What you see | Why, and what to do |
 |---|---|
 | The wizard waits for the first request, and says the address isn't registered | The switch sends RADIUS from another address. Change the registration's address, or set the source interface. |
-| The wizard says the shared secret is wrong | Paste the configuration again with the secret EasyEAP showed, or rotate it. |
+| The wizard says the shared secret is wrong | Open the switch, choose **Fill in the shared secret** on its configuration, and paste the `key` line again. |
 | `show access-session interface Gi1/0/5 details` shows `Unauth` and no request in the log | The device isn't sending 802.1X (no supplicant, or wired 802.1X not set up on it). See [enrollment](../enrollment.md#wired-8021x). |
 | Accepted in the log, but the port shows `Authz Failed` | The VLAN EasyEAP sent doesn't exist on the switch. |
 | Requests stop for 3 minutes after an outage | `deadtime 3`: the switch skipped a dead server. Expected; it retries after 3 minutes. |

@@ -1,13 +1,14 @@
 // Device administration: a device's configuration guide (with the TACACS+ key filled in when it has just been shown)
 // and key rotation. The key is shown once: the dialog that shows it can't be dismissed until it's been copied or the
 // administrator ticks that it's saved.
-import { Fragment, useEffect, useId, useState } from 'react'
+import { Fragment, useCallback, useEffect, useId, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { ADDRESS_PLACEHOLDER } from '../../api/radius'
-import { KEY_PLACEHOLDER, fillConfig, useDeviceConfig, useRotateKey, type AdminDevice, type DeviceAdminOverview } from '../../api/deviceAdmin'
+import { KEY_PLACEHOLDER, fillConfig, showDeviceKey, useDeviceConfig, useRotateKey, type AdminDevice, type DeviceAdminOverview } from '../../api/deviceAdmin'
+import { useReveal } from '../../api/oneTime'
 import { useTenant } from '../../api/tenant'
 import { fmtDateTime } from '../../lib/format'
-import { Btn, Callout, CopyButton, EDialog, ErrorState, Field, LoadingBlock, OneTimeSecret, Seg, errorMessage } from '../../ui'
+import { Btn, Callout, CopyButton, EDialog, ErrorState, Field, FillSecretButton, LoadingBlock, OneTimeSecret, Seg, errorMessage, toastError } from '../../ui'
 import { Marked } from '../radius/Guide'
 
 /** `code` spans in the guide's prose, and <placeholders> marked. */
@@ -24,7 +25,7 @@ export function ConfigDialog({ device, secret, server, onClose }: {
   server: DeviceAdminOverview['server']
   onClose: () => void
 }) {
-  const { tid } = useTenant()
+  const { tid, can } = useTenant()
   const id = useId()
   const [legacy, setLegacy] = useState(false)
   const [address, setAddress] = useState('')
@@ -36,9 +37,12 @@ export function ConfigDialog({ device, secret, server, onClose }: {
   const q = useDeviceConfig(tid, device?.id ?? null, legacy)
   const guide = q.data
   const needsAddress = !!guide && guide.config.includes(ADDRESS_PLACEHOLDER)
-  const fill = (t: string) => fillConfig(t, secret, needsAddress ? address.trim() || null : null)
+  // The key: just created or rotated (shown once above), or the current one when an admin asks for it (audited).
+  const shown = useReveal(useCallback(() => showDeviceKey(tid, deviceId ?? ''), [tid, deviceId]))
+  const fill = (t: string) => fillConfig(t, secret ?? shown.value?.key ?? null, needsAddress ? address.trim() || null : null)
   const config = guide ? fill(guide.config) : ''
   const left = [...new Set(config.match(/<[a-z][a-z0-9-]*>/g) ?? [])]
+  const mayFill = !!device?.admin_enabled && can('admin:write')
   const mustAck = !!secret && !saved
   return (
     <EDialog open={!!device} onOpenChange={(o) => !o && onClose()} wide blockDismiss={mustAck}
@@ -87,7 +91,10 @@ export function ConfigDialog({ device, secret, server, onClose }: {
             <section aria-label="Configuration">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <p className="text-[13px] font-semibold">2. Configuration</p>
-                <CopyButton text={config} what={`${device?.name} admin login configuration`} label="Copy configuration" />
+                <div className="flex flex-wrap items-center gap-2">
+                  {mayFill && left.includes(KEY_PLACEHOLDER) && <FillSecretButton what="TACACS+ key" busy={shown.busy} onClick={() => shown.reveal(toastError('The key can’t be shown'))} />}
+                  <CopyButton text={config} what={`${device?.name} admin login configuration`} label="Copy configuration" />
+                </div>
               </div>
               <pre className="ee-code max-h-[420px] overflow-auto" tabIndex={0} aria-label="Admin login configuration"><Marked text={config} /></pre>
             </section>
@@ -111,7 +118,7 @@ export function ConfigDialog({ device, secret, server, onClose }: {
                 <ul className="mt-1 space-y-0.5">
                   {left.map((p) => (
                     <li key={p}><mark className="ee-mono rounded-[3px] bg-[rgba(226,194,117,0.16)] px-1 text-[var(--ee-gold)]">{p}</mark>{' '}
-                      {p === KEY_PLACEHOLDER ? 'the TACACS+ key EasyEAP showed when admin logins were turned on (rotate the key to get a new one)' : p === ADDRESS_PLACEHOLDER ? 'the address devices use to reach EasyEAP' : 'a value from your device'}</li>
+                      {p === KEY_PLACEHOLDER ? (mayFill ? 'the device’s TACACS+ key: Fill in the TACACS+ key puts it in' : 'the device’s TACACS+ key (an administrator who manages admin logins can fill it in)') : p === ADDRESS_PLACEHOLDER ? 'the address devices use to reach EasyEAP' : 'a value from your device'}</li>
                   ))}
                 </ul>
               </div>

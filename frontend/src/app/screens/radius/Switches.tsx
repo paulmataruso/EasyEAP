@@ -2,22 +2,23 @@
 // configuration), Enforce / back to monitor, editing the port plan, and the Windows wired kit.
 // Like Add controller, the shared secret is returned once, kept only in this component's state while the dialog is
 // open, filled into the configuration in the browser, and dropped when the dialog closes.
-import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { ArrowLeft, ArrowRight, Cable, Check, Download, Eye, Lock, Pencil, ShieldCheck, Undo2 } from 'lucide-react'
 import { cn } from '@/ui/lib'
 import { errorField, saveBlob } from '../../api/client'
 import {
-  ADDRESS_PLACEHOLDER, MAB_VENDORS, SECRET_PLACEHOLDER, SWITCH_VENDORS, ciscoPlatformLabels, defaultCoaPort, defaultWiredProfile, fillText, remainingPlaceholders, supportsMab, switchVendorLabels,
+  ADDRESS_PLACEHOLDER, MAB_VENDORS, SECRET_PLACEHOLDER, SWITCH_VENDORS, ciscoPlatformLabels, defaultCoaPort, defaultWiredProfile, fillText, remainingPlaceholders, showClientSecret, supportsMab, switchVendorLabels,
   useActivity, useCheckSessions, useCiscoDetect, useCiscoPlatforms, useConfigApplied, useCreateClient, useRadius, useReadiness, useSetMab, useSetWiredMode, useUpdateClient, useWiredGuide, useWiredKit,
   type CiscoDetected, type CiscoPlatform, type MabHealth, type RadiusClient, type RadiusSettings, type SwitchCaps, type WiredGuide, type WiredProfile,
 } from '../../api/radius'
+import { useReveal } from '../../api/oneTime'
 import { useTenant } from '../../api/tenant'
 import { failureExplanations } from '@/domain/explain'
 import type { FailureCode } from '@/domain/types'
 import { ago, fmtDate, fmtDateTime } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
-import { Btn, Callout, Chip, CopyButton, EDialog, ESelect, ESwitch, ErrorState, Field, LoadingBlock, OneTimeSecret, Seg, errorMessage, toast } from '../../ui'
+import { Btn, Callout, Chip, CopyButton, EDialog, ESelect, ESwitch, ErrorState, Field, FillSecretButton, LoadingBlock, OneTimeSecret, Seg, errorMessage, toast, toastError } from '../../ui'
 import { paths } from '../../routes'
 import { addressProblem } from './Controllers'
 import { Marked } from './Guide'
@@ -338,19 +339,27 @@ export function PortPlanForm({ vendor, value, onChange, touched, serverError, ma
 
 // ── Wired configuration ─────────────────────────────────────────────────────
 
-/** A wired guide: preflight, the configuration (filled with the one-time secret when given), safe-paste, steps. */
-export function WiredGuideBody({ guide, settings, secret, onCopied, which = 'initial', secretOf }: {
+/** A wired guide: preflight, the configuration, safe-paste, steps. The shared secret is filled in when given (just
+ * created) or when an admin who may see secrets asks for it (`clientId`: EasyEAP fetches it, and audits that). */
+export function WiredGuideBody({ guide, settings, secret, onCopied, which = 'initial', secretOf, clientId }: {
   guide: WiredGuide; settings: RadiusSettings; secret?: string | null; onCopied?: () => void; which?: 'initial' | 'enforce' | 'monitor' | 'mab'; secretOf?: string
+  clientId?: string
 }) {
   const id = useId()
+  const { tid, can } = useTenant()
   const [address, setAddress] = useState('')
-  const fill = { secret, address: settings.radius_address ? null : address.trim() || null }
+  const shown = useReveal(useCallback(() => showClientSecret(tid, clientId ?? ''), [tid, clientId]))
+  const fill = { secret: secret ?? shown.value?.shared_secret ?? null, address: settings.radius_address ? null : address.trim() || null }
   const rawCli = which === 'enforce' ? guide.enforce_cli : which === 'monitor' ? guide.monitor_cli : which === 'mab' ? guide.mab_cli : guide.cli
   const rawSteps = which === 'enforce' ? guide.enforce_steps : which === 'monitor' ? guide.monitor_steps : which === 'mab' ? guide.mab_steps : guide.steps
   const cli = rawCli ? fillText(rawCli, fill) : null
   const steps = (rawSteps ?? []).map((s) => fillText(s, fill))
   const left = remainingPlaceholders([cli ?? '', ...steps].join('\n'))
   const needsAddress = [rawCli ?? '', ...(rawSteps ?? [])].join('\n').includes(ADDRESS_PLACEHOLDER)
+  const mayFill = !!clientId && can('radius:secrets')
+  const fillButton = mayFill && left.includes(SECRET_PLACEHOLDER)
+    ? <FillSecretButton what="shared secret" busy={shown.busy} onClick={() => shown.reveal(toastError('The shared secret can’t be shown'))} />
+    : null
   return (
     <div className="space-y-5">
       {needsAddress && (
@@ -378,7 +387,10 @@ export function WiredGuideBody({ guide, settings, secret, onCopied, which = 'ini
         <section aria-label="Configuration">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <p className="text-[13px] font-semibold">{which === 'initial' && guide.preflight.length ? '2. ' : ''}{which === 'enforce' ? 'The change that enforces' : which === 'monitor' ? 'The change back to monitor mode' : which === 'mab' ? `The change that turns MAC authentication ${guide.mab ? 'on' : 'off'}` : 'Configuration'}</p>
-            <CopyButton text={cli} what={`${guide.title} configuration`} label="Copy configuration" onCopied={onCopied} />
+            <div className="flex flex-wrap items-center gap-2">
+              {fillButton}
+              <CopyButton text={cli} what={`${guide.title} configuration`} label="Copy configuration" onCopied={onCopied} />
+            </div>
           </div>
           <pre className="ee-code max-h-[420px] overflow-auto" tabIndex={0} aria-label={`${guide.title} configuration`}><Marked text={cli} /></pre>
         </section>
@@ -395,7 +407,7 @@ export function WiredGuideBody({ guide, settings, secret, onCopied, which = 'ini
         <section aria-label="Steps">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <p className="text-[13px] font-semibold">{cli ? 'Then' : 'Steps'}</p>
-            {!cli && <CopyButton text={steps.map((s, i) => `${i + 1}. ${s}`).join('\n')} what={`${guide.title} steps`} label="Copy steps" onCopied={onCopied} />}
+            {!cli && <div className="flex flex-wrap items-center gap-2">{fillButton}<CopyButton text={steps.map((s, i) => `${i + 1}. ${s}`).join('\n')} what={`${guide.title} steps`} label="Copy steps" onCopied={onCopied} /></div>}
           </div>
           <ol className="list-decimal space-y-1.5 pl-5 text-[13.5px] marker:text-[var(--ee-ink-3)] marker:tabular-nums">
             {steps.map((s, i) => <li key={i} className="pl-1"><Marked text={s} /></li>)}
@@ -413,7 +425,7 @@ export function WiredGuideBody({ guide, settings, secret, onCopied, which = 'ini
           <p>Replace the highlighted values before you paste:</p>
           <ul className="mt-1 space-y-0.5">
             {left.map((p) => <li key={p}><mark className="ee-mono rounded-[3px] bg-[rgba(226,194,117,0.16)] px-1 text-[var(--ee-gold)]">{p}</mark>{' '}
-              {p === SECRET_PLACEHOLDER ? `the shared secret you saved when you added ${secretOf ?? 'this switch'} (EasyEAP never shows it again)` : p === ADDRESS_PLACEHOLDER ? 'the address your switches use to reach EasyEAP RADIUS' : 'a value from your switch'}</li>)}
+              {p === SECRET_PLACEHOLDER ? (mayFill ? `${secretOf ?? 'this switch'}’s shared secret: Fill in the shared secret puts it in` : `${secretOf ?? 'this switch'}’s shared secret (an administrator who manages RADIUS secrets can fill it in)`) : p === ADDRESS_PLACEHOLDER ? 'the address your switches use to reach EasyEAP RADIUS' : 'a value from your switch'}</li>)}
           </ul>
         </div>
       )}
@@ -653,7 +665,7 @@ export function AddSwitchDialog({ open, onOpenChange, settings, clients, onAdded
             <h3 className="ee-h3 mb-3">Configure {result.client.name}</h3>
             {guide.isLoading ? <LoadingBlock rows={6} label="Building the configuration" />
               : guide.error ? <ErrorState error={guide.error} onRetry={() => guide.refetch()} title="The configuration couldn’t be built" />
-                : guide.data ? <WiredGuideBody guide={guide.data} settings={settings} secret={result.secret} onCopied={() => setAcked(true)} secretOf={result.client.name} /> : null}
+                : guide.data ? <WiredGuideBody guide={guide.data} settings={settings} secret={result.secret} onCopied={() => setAcked(true)} secretOf={result.client.name} clientId={result.client.id} /> : null}
           </section>
           <FirstRequest client={result.client} />
         </div>
@@ -733,12 +745,12 @@ export function SwitchPanel({ client, settings }: { client: RadiusClient; settin
       {client.vendor === 'cisco-switch' && (caps?.audit !== null || client.monitoring?.set_up) && <SwitchAuditPanel client={client} />}
       {view && (guide.isLoading ? <LoadingBlock rows={5} label="Loading the configuration" />
         : guide.error ? <ErrorState error={guide.error} onRetry={() => guide.refetch()} />
-          : guide.data ? <WiredGuideBody guide={guide.data} settings={settings} secretOf={client.name} /> : null)}
+          : guide.data ? <WiredGuideBody guide={guide.data} settings={settings} secretOf={client.name} clientId={client.id} /> : null)}
       {view && client.wired_mode === 'enforce' && guide.data?.enforce_cli && (
-        <WiredGuideBody guide={guide.data} settings={settings} which="enforce" secretOf={client.name} />
+        <WiredGuideBody guide={guide.data} settings={settings} which="enforce" secretOf={client.name} clientId={client.id} />
       )}
       {view && client.wired_mode === 'monitor' && (guide.data?.mab_cli || guide.data?.mab_steps) && (
-        <WiredGuideBody guide={guide.data} settings={settings} which="mab" secretOf={client.name} />
+        <WiredGuideBody guide={guide.data} settings={settings} which="mab" secretOf={client.name} clientId={client.id} />
       )}
       <MabDialog client={mabChange ? client : null} onClose={() => setMabChange(false)} settings={settings} />
       <EnforceDialog client={enforce ? client : null} onClose={() => setEnforce(false)} settings={settings} />
@@ -821,7 +833,7 @@ export function MabDialog({ client, onClose, settings }: { client: RadiusClient 
           })}><Cable aria-hidden />Turn {on ? 'off' : 'on'} and show the change</Btn>
         </>
       )}>
-      {done && c ? <WiredGuideBody guide={done} settings={settings} which="mab" secretOf={c.name} /> : !on ? (
+      {done && c ? <WiredGuideBody guide={done} settings={settings} which="mab" secretOf={c.name} clientId={c.id} /> : !on ? (
         <ul className="list-disc space-y-1.5 pl-5 text-[13px] ee-ink-2 marker:text-[var(--ee-ink-3)]">
           <li className="pl-1">A device gets about 30 seconds to answer 802.1X before the switch asks for its MAC address. Devices that answer and fail never fall back.</li>
           <li className="pl-1">A MAC address is easy to copy. Put these devices in groups whose VLAN reaches only what they need.</li>
@@ -961,7 +973,7 @@ export function EnforceDialog({ client, onClose, settings }: { client: RadiusCli
           })}><ShieldCheck aria-hidden />Enforce and show the change</Btn>
         </>
       )}>
-      {done && c && live ? <WiredGuideBody guide={done} settings={settings} which="enforce" secretOf={c.name} /> : done && c ? (
+      {done && c && live ? <WiredGuideBody guide={done} settings={settings} which="enforce" secretOf={c.name} clientId={c.id} /> : done && c ? (
         <div className="space-y-3" role="status" aria-live="polite">
           {applied.state === 'rejected' ? (
             <Callout tone="crit" title="RADIUS rejected the new configuration">
@@ -1021,7 +1033,7 @@ export function MonitorDialog({ client, onClose, settings }: { client: RadiusCli
           })}><Undo2 aria-hidden />Move back and show the change</Btn>
         </>
       )}>
-      {done && c ? <WiredGuideBody guide={done} settings={settings} which="monitor" secretOf={c.name} /> : (
+      {done && c ? <WiredGuideBody guide={done} settings={settings} which="monitor" secretOf={c.name} clientId={c.id} /> : (
         <p className="text-[13.5px] ee-ink-2">Use this while you fix something, for example a VLAN that doesn’t exist on the switch. EasyEAP keeps deciding and logging every request.</p>
       )}
     </EDialog>
