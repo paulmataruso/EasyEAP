@@ -171,6 +171,7 @@ Authentication log's **Network** filter shows wired attempts, with the switch an
 | The wizard says the shared secret is wrong | Open the switch, choose **Fill in the shared secret** on its configuration, and paste the `key` line again. |
 | `show access-session interface Gi1/0/5 details` shows `Unauth` and no request in the log | The device isn't sending 802.1X (no supplicant, or wired 802.1X not set up on it). See [enrollment](../enrollment.md#wired-8021x). |
 | Accepted in the log, but the port shows `Authz Failed` | The VLAN EasyEAP sent doesn't exist on the switch. |
+| A port in the plan never starts a session: no request, nothing in `show access-session`, and the switch audit shows the port down while its link is up | The port is a SPAN destination (`show monitor session all`, Destination Ports). The switch runs no 802.1X on it, and it forwards nothing, until the session is removed (`no monitor session <number>`). The preflight asks. |
 | Requests stop for 3 minutes after an outage | `deadtime 3`: the switch skipped a dead server. Expected; it retries after 3 minutes. |
 
 ## Not verified

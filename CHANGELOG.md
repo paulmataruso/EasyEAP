@@ -208,6 +208,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A switch port that's a SPAN destination never authenticates** (the switch runs no 802.1X on it), and nothing said
+  so: the preflight now asks for `show monitor session all`, and the troubleshooting table explains it.
 - **"Sessions aren't readable over SNMP" on a Catalyst 3850 with IOS-XE 16.6**: the switch has no
   cafAuthMethodRegTable, which was all EasyEAP checked; it answers the port and session tables, which are now enough.
 - **A switch audit poll took 13 seconds on a Catalyst 3850** with no 802.1X sessions: stepping past the end of an

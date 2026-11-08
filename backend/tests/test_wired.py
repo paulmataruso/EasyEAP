@@ -118,6 +118,7 @@ def test_ibns2_monitor_is_passive_and_safe():
     g = guide(PLAN)
     cli = g["cli"]
     assert g["mode"] == "monitor" and g["preflight"] and g["safe_paste"][0].startswith("In exec mode: reload in 15")
+    assert any(p["command"] == "show monitor session all" and "SPAN destination" in p["look_for"] for p in g["preflight"])
     assert SECRET_PLACEHOLDER in cli and "10.9.9.9" in cli
     # Open ports, no fallback actions, connected devices kept while EasyEAP is unreachable.
     assert "access-session closed" not in cli and "DOT1X_NO_RESP do-until-failure" not in cli and "AAA_SVR_DOWN_UNAUTHD_HOST do-until-failure" not in cli

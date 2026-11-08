@@ -347,6 +347,10 @@ def preflight(c: Ctx, vendor: str) -> list[dict]:
         {"command": existing,
          "look_for": "Must print nothing. If it prints anything, this switch already has 802.1X: stop here and merge by hand (docs/controllers/cisco-catalyst-switch.md)."},
         {"command": "show interfaces trunk", "look_for": "Trunk ports are uplinks or AP ports. Put them in “Leave alone”."},
+        {"command": "show monitor session all",
+         "look_for": "Destination Ports: a port listed there is a SPAN destination. The switch doesn't run 802.1X on it (and it doesn't "
+                     "forward traffic) until the monitor session is removed: leave it out of the plan, or remove the session first "
+                     "(no monitor session <number>). “No SPAN configuration”: nothing to do."},
         {"command": "show cdp neighbors", "look_for": "Switches, routers, access points and phones you see here: put their ports in “Leave alone”. (Or show lldp neighbors.)"},
         {"command": "show users", "look_for": "Your own session. If you're on a switch port (not the management network), find it with show mac address-table address <your-mac> and leave it alone."},
         {"command": f"ping{vrf} {c.server}{src}", "look_for": "Replies. Without them RADIUS can't reach EasyEAP; check routing, the source interface and the VRF first."},
