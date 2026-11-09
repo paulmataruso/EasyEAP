@@ -1,6 +1,6 @@
 # Plan: automatic renewal of client certificates, the RADIUS server certificate and the CA
 
-Status: plan (2026-11-08); phase 1 built (§15a). Request, in the user's words: "I think we should give the admin the option to
+Status: plan (2026-11-08); phases 1, 2a and 2b built (§15a, §15b, §15c), for 1.1.0. Request, in the user's words: "I think we should give the admin the option to
 enable auto-renew on the main CA, and user and machines certs, so users dont have to install a new cert when the time
 comes." §1 is what exists, §2 what each platform allows (vendor sources in §16), §3–§11 the design, §12 tests, §13
 risks, §14 the critique of this plan and what it changed, §15 the order of work.
@@ -684,8 +684,8 @@ Integration, throwaway containers like `tests/radius/run.sh` (not an EasyEAP sta
 - `test_linux_setup.py` plus a bash run of `renew.sh` v2 against a stub server.
 - Frontend: vitest for the Renewal section and ceremony dialog; the console smoke test covers the new screens.
 
-End to end on the demo (172.16.0.45), run by the main agent per its memory notes: back up the demo (pg_dump, `.env`,
-compose), build from a clean worktree, `docker compose up -d --no-build`, check migration, health and heartbeats. Then,
+End to end on a test deployment: back up the deployment (pg_dump, `.env`, compose), build from a clean worktree,
+`docker compose up -d --no-build`, check migration, health and heartbeats. Then,
 on a **temporary tenant** with local users only (no Active Directory reads or writes, nothing on the user's tenant):
 
 1. Settings: defaults present; turning `user_certs` off makes a renewal refuse with the message and an audit line.

@@ -1,6 +1,6 @@
 # Plan: the full device log, decoded by EasyEAP, and a live syslog view
 
-Status: plan, 2026-11-08. Requests: "send the full cisco log to the host, and decode it ourself", "a 100% live syslog
+Status: built for 1.1.0 (e7fec77, then 2a30408; 2026-11-08); §7 and the second critique in §9 say what wasn't. Requests: "send the full cisco log to the host, and decode it ourself", "a 100% live syslog
 view for diag … I want to see in real time what we are getting", "logging for UniFi and vWLC and C9800 as well".
 
 Research (Cisco syslog guides 16.12/17.3 and 9800 17.5 spreadsheets, TAC docs, AireOS 8.10 command reference, UniFi
@@ -11,7 +11,7 @@ help articles): the reports of 2026-11-08 in this session; sources are cited inl
 - The switch's block filters at the source: `logging discriminator EASYEAP facility includes …` sends only eight
   facilities, and the receiver keeps a fixed list of mnemonics from those. Anything else (LINK, LINEPROTO, ILPOWER,
   EPM, a START) never reaches EasyEAP or is dropped on arrival, so neither the admin nor EasyEAP sees the session's
-  story. office-sx sent six messages today; four were thrown away and nobody can tell what they were.
+  story. A test switch sent six messages in a day; four were thrown away and nobody can tell what they were.
 - Cisco switches log START/SUCCESS of a session only with `… logging verbose` (to be confirmed against Cisco's docs:
   the command references word it as "filters"; section 2 holds until that's settled).
 - Controllers (Catalyst 9800, AireOS, UniFi) can't send syslog to EasyEAP at all: sources are only the SNMP

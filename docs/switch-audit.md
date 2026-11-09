@@ -9,10 +9,11 @@ decision.
 The console has the same steps with your values filled in: **RADIUS → Switches →** a switch **→ Switch audit**. Where
 this page and the console differ, the console is current.
 
-> **Not yet verified on switch hardware.** The audit is tested end to end against net-snmp's SNMP agent (its own,
-> independent SNMPv3 implementation) serving a Catalyst-like set of tables, not against a real Catalyst. Which IOS-XE
-> releases implement the 802.1X tables over SNMP isn't documented by Cisco for every release: EasyEAP checks, and says
-> when a switch doesn't (see "Capability check").
+> **Checked on one switch so far.** A Catalyst 3850 (IOS-XE 16.6.1) has been polled (its ports and 802.1X session
+> tables) and its syslog received and decoded; other models, releases and families aren't verified yet. The audit is
+> also tested end to end against net-snmp's SNMP agent (its own, independent SNMPv3 implementation) serving a
+> Catalyst-like set of tables. Which IOS-XE releases implement the 802.1X tables over SNMP isn't documented by Cisco
+> for every release: EasyEAP checks, and says when a switch doesn't (see "Capability check").
 
 ## What's supported
 

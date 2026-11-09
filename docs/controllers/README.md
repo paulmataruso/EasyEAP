@@ -27,8 +27,9 @@ records.
 ## What every controller needs
 
 1. **A RADIUS client in EasyEAP.** Add the controller (or switch) on the tenant's RADIUS screen with the address its requests
-   come from. EasyEAP generates a 32-character shared secret and shows it **once**. Paste it into the controller
-   straight away. If it's lost, rotate it; it can't be displayed again.
+   come from. EasyEAP generates a 32-character shared secret and shows it. Paste it into the controller straight
+   away. To paste it again later, **Fill in the shared secret** on the controller's configuration puts in the secret
+   EasyEAP keeps (for administrators who may rotate it; each showing is audited). Rotate it if it may have leaked.
 2. **An authentication server** at the EasyEAP RADIUS address, UDP 1812 (or the tenant's dedicated port), and an
    **accounting server** on UDP 1813 (or the dedicated accounting port), with that secret.
 3. **An SSID** using WPA2-Enterprise or WPA3-Enterprise (802.1X). EAP-TLS asks the user for nothing; the device
@@ -45,7 +46,10 @@ records.
    (or their switch ports). If it isn't, authentication succeeds but the device lands nowhere useful. The
    Authentication log shows this as "VLAN could not be applied".
 6. **Message-Authenticator.** EasyEAP requires it on every request (`require_message_authenticator`, the Blast-RADIUS
-   mitigation for CVE-2024-3596). 802.1X/EAP requests always carry it, so this only affects non-EAP test tools.
+   mitigation for CVE-2024-3596), except from switches that send MAC authentication requests without it: Nexus,
+   Cisco Business, Meraki MS and classic IOS before 12.2(50)SE (the release from **Paste `show version`**). From
+   those, a request that carries Proxy-State without it is still dropped. 802.1X/EAP requests always carry it, so
+   elsewhere this only affects non-EAP test tools.
 
 ## Change of Authorization (CoA)
 

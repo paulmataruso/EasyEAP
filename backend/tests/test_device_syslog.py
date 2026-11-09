@@ -57,7 +57,7 @@ def test_failures_carry_their_reason():
             b"CBFF0000. Failure reason: Authc fail. Authc failure reason: Cred Fail."),
     ))[0]
     assert (s["state"], s["reason"], s["method"]) == ("unauthorized", "Cred Fail", "dot1x")
-    office = devicelog.syslog_sessions(rows(   # what office-sx logged (IOS-XE 16.6.1)
+    office = devicelog.syslog_sessions(rows(   # what sw-office logged (IOS-XE 16.6.1)
         (0, b"%SESSION_MGR-5-FAIL: Switch 1 R0/0: sessmgrd: Authorization failed or unapplied for client (0005.1b31.576e) on Interface "
             b"GigabitEthernet1/0/24 AuditSessionID AC1000030000000BBA220E17"),
         (0, b"%DOT1X-5-FAIL: Switch 1 R0/0: sessmgrd: Authentication failed for client (0005.1B31.576E) on Interface Gi1/0/24 "
@@ -132,15 +132,15 @@ def test_wireless_clients():
 
 
 def test_guides():
-    target = ("172.16.0.45", 5514)
+    target = ("192.0.2.45", 5514)
     g = devicelog.guide("cisco-9800", "10.0.0.5", [], target, False)
-    assert "logging host 172.16.0.45 transport udp port 5514" in g["config"] and g["removal"].startswith("no logging host 172.16.0.45")
+    assert "logging host 192.0.2.45 transport udp port 5514" in g["config"] and g["removal"].startswith("no logging host 192.0.2.45")
     assert "10.0.0.5" in g["config"] and g["can_send"]
     a = devicelog.guide("cisco-aireos", "10.0.0.6", [], target, False)
     assert not a["can_send"] and "UDP 514 only" in a["notes"][0]
     a514 = devicelog.guide("cisco-aireos", "10.0.0.6", [], target, True)
     assert a514["can_send"] and a514["port"] == 514 and "config logging syslog facility client authfail enable" in a514["config"]
-    assert "config logging syslog host 172.16.0.45 delete" in a514["removal"]
+    assert "config logging syslog host 192.0.2.45 delete" in a514["removal"]
     u = devicelog.guide("unifi", "10.0.10.0/24", ["10.0.0.2"], target, False)
     assert any("SIEM Server" in s for s in u["steps"]) and any("10.0.10.0/24, 10.0.0.2" in n for n in u["notes"])
     assert not devicelog.guide("other", "10.0.0.7", [], None, False)["can_send"]

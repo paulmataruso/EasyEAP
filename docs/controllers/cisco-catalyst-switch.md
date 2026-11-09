@@ -177,6 +177,8 @@ Authentication log's **Network** filter shows wired attempts, with the switch an
 ## Not verified
 
 EasyEAP's tests run the generated configuration's RADIUS side against real FreeRADIUS with real EAP-TLS
-(`tests/radius/run.sh`, `tests/e2e/run.sh`), but **no configuration has been pasted onto a real Catalyst switch** by
-these tests. The commands follow Cisco's IBNS 2.0 and classic 802.1X documentation. Review the configuration on one
-switch, with one test port, before rolling it out. The same goes for MAC authentication and for admin logins over TACACS+.
+(`tests/radius/run.sh`, `tests/e2e/run.sh`). On real hardware, one switch so far: a Catalyst 3850 (IOS-XE 16.6.1)
+took the IOS-XE configuration and, in monitor mode, accepted EAP-TLS from an enrolled computer. **Enforce mode, MAC
+authentication and admin logins over TACACS+ haven't been tried on a real Catalyst**, nor have classic IOS and other
+models. The commands follow Cisco's IBNS 2.0 and classic 802.1X documentation. Review the configuration on one
+switch, with one test port, before rolling it out.

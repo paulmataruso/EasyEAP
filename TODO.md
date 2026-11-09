@@ -2,7 +2,7 @@
 
 Started 2026-11-08. This is the working list: features not built yet, and what still needs testing on real gear. What's
 already done is in [CHANGELOG.md](CHANGELOG.md) and [PROGRESS.md](PROGRESS.md). PROGRESS.md was last refreshed at
-release 1.0.1 and is behind. Plans live in [docs/plans/](docs/plans/).
+release 1.1.0. Plans live in [docs/plans/](docs/plans/).
 
 Tick items off here when they're done or verified, and say where (commit, or the device and version it was tried on).
 
@@ -71,7 +71,7 @@ Tick items off here when they're done or verified, and say where (commit, or the
 - [ ] Directory sources other than Active Directory over LDAPS (Entra ID, Google Workspace).
 
 ### Housekeeping
-- [ ] Refresh PROGRESS.md (it stops at 1.0.1).
+- [x] Refresh PROGRESS.md: done 2026-11-09 (1.1.0).
 
 ## Things to test on real gear
 

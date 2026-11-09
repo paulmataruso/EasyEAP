@@ -636,7 +636,7 @@ def test_endpoint_permission_error_is_403(endpoint):
 
 def test_endpoint_needs_a_dns_name(endpoint, monkeypatch):
     from app.routers import autoenroll as r
-    monkeypatch.setattr(r, "console_host", lambda: "172.16.0.45")
+    monkeypatch.setattr(r, "console_host", lambda: "192.0.2.45")
     with pytest.raises(HTTPException) as e:
         endpoint.call()
     assert e.value.status_code == 400

@@ -38,8 +38,9 @@ Some failures never produce an authentication event:
 - **No event at all.** The controller isn't sending to EasyEAP, or EasyEAP doesn't recognise its source address.
   Check the controller's RADIUS server entry and the client address on the tenant's RADIUS screen, then
   `docker compose logs easyeap-radius` for "unknown client" lines. Check firewalls and the VPN for UDP 1812.
-- **Bad shared secret.** FreeRADIUS drops the request because the Message-Authenticator doesn't verify. Rotate the
-  secret in EasyEAP and paste the new one into the controller.
+- **Bad shared secret.** FreeRADIUS drops the request because the Message-Authenticator doesn't verify. Open the
+  controller or switch on the RADIUS screen, choose **Fill in the shared secret** on its configuration and paste the
+  secret again, or rotate it and paste the new one.
 - **The Add switch wizard explains both.** While it waits for a switch's first request, it reads FreeRADIUS's log
   for requests dropped from an address near the switch's: an unregistered source address (with the address the
   switch actually uses), or a wrong shared secret.
@@ -78,6 +79,55 @@ Every tenant has one enforcement status. The dashboard, the Tenants page, the te
 The revocation list has its own item: it's rebuilt daily and valid for 72 hours, so under 48 hours left means
 rebuilds are failing (warning), and under 12 hours is critical, because RADIUS rejects every certificate from the CA
 once it expires. **PKI → Rebuild now** publishes a new one at once.
+
+## Certificate renewal
+
+Renewal tasks (the Windows setup file, the portal's Windows helper, the Linux script) renew certificates by
+themselves from the tenant's percentage of each certificate's life (**Certificate authority → Renewal**); Windows
+renews Group Policy certificates on the template's own renewal period. The dashboard raises what needs a person:
+
+- **"N certificates should have renewed by themselves"** (overdue). The device hasn't renewed two weeks into its
+  renewal window (Group Policy and renewal tasks made before 1.1.0, which don't check in: not before two weeks before
+  expiry). It's switched off or away, the renewal task or Group Policy can't reach EasyEAP, or EasyEAP refused it:
+  the Audit log's **Certificate renewal refused** entries give the reason (table below).
+- **"N devices haven't checked in for renewal in a week"** (gone quiet). A renewal task that checks in daily stopped
+  while its certificate is due: the device is off or away, can't reach EasyEAP (a proxy or firewall), or the task was
+  removed. It renews by itself once it's back. Run the setup file or script again if the task is gone; revoke a
+  device that's gone for good. Both items turn critical once a certificate has 14 days or less.
+- **"A renewed certificate is still in use."** RADIUS accepted a certificate more than a day after the one that
+  renewed it was first used. A Windows PC that kept the old certificate can do that; so can a copied key. Check the
+  device, and revoke the old certificate if it isn't needed. With **Retire renewed certificates** on, EasyEAP revokes
+  it by itself once it hasn't connected for 7 days.
+- **"A certificate was renewed with two keys"** (conflict, critical). A renewal arrived signed by a certificate that
+  another key already renewed, and that newer certificate is in use: two devices hold the same key, so it may have
+  been copied. EasyEAP refuses it (`conflict`). Revoke the certificate (the revoke dialog includes the certificates
+  renewed from it) and enroll the device again.
+- **"N devices stopped connecting after the server certificate changed."** For 14 days after the RADIUS server
+  certificate rotates, the dashboard counts devices that connected in the week before and have since had two or more
+  `tls_handshake` or `client_timeout` rejects and no accept. Their Wi-Fi profile usually trusts the old server
+  certificate itself rather than the tenant's CA: enroll them again. Meanwhile **Put the previous certificate back**
+  on the RADIUS screen (for 14 days after the change, while that certificate names the same server and has more than
+  a day left) presents the old one again and pauses automatic rotation. Turn rotation back on under **Certificate
+  authority → Renewal** once those devices are enrolled again.
+
+Refused renewals are audited once a day per certificate and reason. Renewal tasks made with 1.1.0 keep their request
+after `clock`, `off`, `account` and `ca`, and ask again; after any other reason they stop asking for that certificate.
+
+| Reason | What it means | What to do |
+|---|---|---|
+| `clock` | The request's time is more than 10 minutes off. | Fix the device's clock (time sync). |
+| `off` | Automatic renewal of user (or device) certificates is turned off. | Turn it on under **Certificate authority → Renewal**, or give the user a new link. |
+| `account` | The account is disabled, locked out or deleted in the directory. | Re-enable or unlock it in AD and run a directory sync. |
+| `ca` | The issuing CA couldn't issue the new certificate, for example with less than a day left on the CA. | Check the PKI page and the dashboard's CA items. |
+| `revoked` | The certificate was revoked. | Enroll the device again. |
+| `expired` | The certificate expired before it renewed. | Enroll the device again. |
+| `renewed` | The certificate was already renewed, or replaced by a new enrollment or by Group Policy. EasyEAP reissues an unused renewal to a new key only within 14 days of it, at most 3 times. | Nothing, if the device has the newer certificate. Otherwise enroll it again. |
+| `conflict` | Another key already renewed it, and that certificate is in use. | See "A certificate was renewed with two keys" above. |
+| `gpo` | A Group Policy certificate: Windows renews it through autoenrollment. | Check autoenrollment on the PC ([docs/autoenrollment.md](autoenrollment.md)). |
+| `same_key` | The renewal request reused the old key. | Run the setup file or script again. |
+| `request` | The certificate request isn't valid. | Run the setup file or script again. |
+| `kind` | Not a user or device certificate, such as a Group Policy computer certificate. | As for `gpo`, for a Group Policy certificate; otherwise enroll the device again. |
+| `missing` | The certificate's user or template no longer exists, or the tenant isn't active. | Enroll the device again. |
 
 ## Remote syslog and backups
 

@@ -107,8 +107,9 @@ authentications and system log can forward to your SIEM over TLS.
 <td width="50%" valign="top">
 
 **MAC authentication for what can't do 802.1X**<br>
-Printers, cameras and phones on switch ports get on by MAC address (Cisco MAB, UniFi MAC-Based), each group on its
-own VLAN. Switches report what they see, so you build the allow list in monitor mode before you enforce.
+Printers, cameras and phones on switch ports get on by MAC address (Cisco MAB on Catalyst, Nexus and Cisco Business,
+Meraki MS, UniFi MAC-Based), each group on its own VLAN. Switches report what they see, so you build the allow list in
+monitor mode before you enforce.
 
 </td>
 <td width="50%" valign="top">
@@ -126,10 +127,17 @@ TACACS+, with roles, an admin log of every command, and the device's local accou
 EasyEAP reads what each Cisco switch reports over SNMP (v2c, or v3 encrypted) and compares it with its own answers:
 unprotected ports, devices it never accepted or has since denied, sessions in the wrong VLAN. With syslog it also shows
 what the switch says: 802.1X failures, err-disabled ports, RADIUS servers it can't reach. **Device syslog** shows
-everything switches and controllers (Catalyst 9800, AireOS, UniFi) send, live, decoded into sessions and clients.
+everything switches and controllers (Catalyst 9800, AireOS, UniFi, Meraki) send, live, decoded into sessions and
+clients (Meraki's isn't decoded yet).
 
 </td>
 <td width="50%" valign="top">
+
+**Certificates that renew themselves**<br>
+Turn renewal on or off for user and device certificates and the RADIUS server certificate, and choose when it starts.
+The Windows setup file and the Linux script check in daily and renew on their own; each certificate's page shows what
+renews it and when it last checked in. The server certificate rotates by itself, and **Put the previous certificate
+back** undoes a rotation.
 
 </td>
 </tr>
@@ -151,7 +159,7 @@ everything switches and controllers (Catalyst 9800, AireOS, UniFi) send, live, d
 <tr>
 <td width="50%" valign="top">
 <img src="docs/screenshots/radius.png" alt="RADIUS screen with agent, FreeRADIUS and snapshot status, server settings, server certificate and wireless controllers"><br>
-<b>RADIUS.</b> Live status, the server certificate, controllers with one-time shared secrets, and controller guides filled in with this tenant's settings.
+<b>RADIUS.</b> Live status, the server certificate, controllers and switches (<b>Fill in the shared secret</b> puts it back in their configuration, audited), and controller guides filled in with this tenant's settings.
 </td>
 <td width="50%" valign="top">
 <img src="docs/screenshots/certificate-authority.png" alt="Certificate authority screen with the offline root CA, the issuing CA, distribution URLs and the revocation list"><br>
@@ -185,7 +193,7 @@ everything switches and controllers (Catalyst 9800, AireOS, UniFi) send, live, d
 ```mermaid
 flowchart TB
   device["Laptop or phone<br/>with its own certificate"]
-  wlc["Wireless controller or switch<br/>Catalyst 9800 · AireOS · UniFi · Catalyst switches"]
+  wlc["Wireless controller or switch<br/>Catalyst 9800 · AireOS · UniFi<br/>Catalyst · Nexus · Cisco Business · Meraki MS"]
   admin["MSP technician<br/>or enrolling user"]
   subgraph host["EasyEAP host"]
     radius["FreeRADIUS + agent<br/>local snapshot, fails closed"]
@@ -252,10 +260,14 @@ in each guide with the tenant's own address, ports, SSID and VLANs.
 | Cisco Catalyst 9800 (IOS-XE 17.x) | Verified on a live controller, CoA on UDP 1700 | [cisco-catalyst-9800.md](docs/controllers/cisco-catalyst-9800.md) |
 | Cisco AireOS WLC 8.x | Guide and CLI snippet, CoA on UDP 3799 | [cisco-aireos.md](docs/controllers/cisco-aireos.md) |
 | UniFi Network | Step-by-step guide, Wi-Fi and switches | [unifi.md](docs/controllers/unifi.md) |
-| Cisco Catalyst switches (IBNS 2.0, classic IOS) | Wired 802.1X: Add switch wizard, monitor mode, then Enforce. Tested on real FreeRADIUS, not yet on switch hardware | [cisco-catalyst-switch.md](docs/controllers/cisco-catalyst-switch.md) |
+| Cisco Catalyst switches (IBNS 2.0, classic IOS) | Wired 802.1X: Add switch wizard, monitor mode, then Enforce. A Catalyst 3850 (IOS-XE 16.6.1) took the configuration, accepted EAP-TLS in monitor mode, and ran the switch audit over SNMP and syslog. Enforce and MAB not yet verified on hardware | [cisco-catalyst-switch.md](docs/controllers/cisco-catalyst-switch.md) |
+| Cisco Nexus switches (NX-OS) | Wired 802.1X and MAB, by model and release. Not yet verified on hardware | [cisco-nexus.md](docs/controllers/cisco-nexus.md) |
+| Cisco Business (Catalyst 1200/1300, CBS, SG/SF) | Wired 802.1X, and MAB on the models that have it. Not yet verified on hardware | [cisco-business.md](docs/controllers/cisco-business.md) |
+| Cisco Meraki MS | Wired 802.1X and MAC authentication, Dashboard steps, no CoA yet. Not yet verified on hardware | [meraki-ms.md](docs/controllers/meraki-ms.md) |
 
-Switches start in monitor mode: ports stay open and EasyEAP logs what it would decide, without changing any VLAN,
-until you enforce.
+Switches start in monitor mode: EasyEAP logs what it would decide and sends no VLAN until you enforce. Where the switch
+has an open mode its ports stay open; Nexus and most Meraki MS have none, so EasyEAP accepts their MAC requests
+instead. Some Cisco Business models have no monitor mode and start with one test port.
 
 ## Security
 
@@ -286,7 +298,7 @@ issue.
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Requirements, network, install, first run, upgrades, backup and restore, remote syslog, operations |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Services, multi-tenancy, PKI, enrollment, the RADIUS flow, policy precedence, the data model |
 | [SECURITY.md](SECURITY.md) | Threat model, key custody, controls, the RBAC matrix, what revocation means in practice |
-| [docs/controllers/](docs/controllers/README.md) | Cisco Catalyst 9800, Cisco AireOS, UniFi and Catalyst switch configuration |
+| [docs/controllers/](docs/controllers/README.md) | Cisco Catalyst 9800, Cisco AireOS, UniFi, and Catalyst, Nexus, Cisco Business and Meraki MS switch configuration |
 | [docs/enrollment.md](docs/enrollment.md) | Issuing certificates and what users do on each platform |
 | [docs/device-administration.md](docs/device-administration.md) | Switch and controller logins with AD and EasyEAP accounts over TACACS+ |
 | [docs/switch-audit.md](docs/switch-audit.md) | The switch audit: what Cisco switches report over SNMP compared with EasyEAP's decisions, and their syslog |
@@ -296,25 +308,36 @@ issue.
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Every failure reason and status, and how to fix it |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Repository layout, the development stack, tests, conventions |
 | [DESIGN.md](DESIGN.md) | The console's design system |
+| [PRODUCT.md](PRODUCT.md) | Who EasyEAP is for, what it's for, and its product principles |
+| [docs/plans/](docs/plans/) | The design plans and critiques behind each feature |
 | [CHANGELOG.md](CHANGELOG.md) · [PROGRESS.md](PROGRESS.md) | What changed; what's done, what isn't, and what's planned |
+| [TODO.md](TODO.md) | What's left to build, and what still needs testing on real gear |
 
 ## Status and roadmap
 
-**EasyEAP 1.0 is the first public release.** It has been run end to end against a real Active Directory domain controller
-and authenticated an enrolled iPhone through a live Cisco Catalyst 9800. Known limitations are listed in
-[PROGRESS.md](PROGRESS.md#not-done--known-limitations). The main ones:
+**EasyEAP 1.1** adds wired 802.1X and MAC authentication on Cisco, Meraki and UniFi switches, switch logins over
+TACACS+, the switch audit and device syslog, the Windows setup file and Linux setup script, Group Policy
+autoenrollment (preview), and certificates that renew themselves. 1.0 was the first public release. EasyEAP has been
+run end to end against a real Active Directory domain controller and authenticated an enrolled iPhone through a live
+Cisco Catalyst 9800. Known limitations are listed in [PROGRESS.md](PROGRESS.md#not-done--known-limitations), and what's
+left to build and test in [TODO.md](TODO.md). The main ones:
 
 - No SCEP or MDM enrollment (Intune, Jamf) yet. Apple devices enroll with a configuration profile from the portal.
 - No RadSec yet. Route RADIUS between sites over a VPN.
 - One RADIUS node per deployment.
-- Wired 802.1X and MAC authentication are tested on real FreeRADIUS with real EAP-TLS, but not yet on Catalyst or
-  UniFi switch hardware. Device administration (TACACS+) is tested against a protocol client, not yet on Cisco
-  hardware.
+- Wired 802.1X has run on one Catalyst 3850 (IOS-XE 16.6.1): it took the configuration, accepted EAP-TLS in monitor
+  mode, and ran the switch audit over SNMP and syslog. Enforce, MAC authentication, the other Cisco families, Meraki MS
+  and UniFi switches are tested on real FreeRADIUS with real EAP-TLS, not yet on hardware. Device administration
+  (TACACS+) is tested against a protocol client, not yet on Cisco hardware.
+- The Windows setup file and Group Policy autoenrollment (preview) are tested against stand-ins, not yet on a real
+  Windows PC.
 - The root CA's revocation list must be re-signed with the offline root key once a year. The dashboard warns 60 days
   ahead, but the console can't do the re-signing yet.
 
-Planned work includes SCEP, RadSec, additional RADIUS nodes, and email notifications for expiring certificates and
-failing directory syncs.
+Not built yet: the UniFi controller wizard (EasyEAP sets up a UniFi controller through its API), the rest of
+certificate renewal (phases 3 to 7: assisted renewal for Apple, Android and hand-configured Linux, and the root
+ceremony and CA rollovers from the console), and CoA for Meraki MS. Planned work also includes SCEP, RadSec, additional
+RADIUS nodes, and email notifications for expiring certificates and failing directory syncs.
 
 ## Contributing
 
@@ -330,7 +353,7 @@ EasyEAP is **source-available** under the [Business Source License 1.1](LICENSE)
 - **Needs a commercial license:** running it to provide services to third parties. That includes managing customers'
   networks as an MSP, offering it as a hosted service, and selling or bundling it.
 - **Becomes open source:** each version converts to the Apache License 2.0 four years after its release, on the
-  Change Date in its LICENSE file. Versions 1.0.0 and 1.0.1 convert on 6 November 2030.
+  Change Date in its LICENSE file. Versions 1.0.0 and 1.0.1 convert on 6 November 2030, and 1.1.0 on 9 November 2030.
 
 The [LICENSE](LICENSE) text is the authoritative version of these terms. For a commercial license, email
 [paulmataruso@dhitechnical.com](mailto:paulmataruso@dhitechnical.com). EasyEAP builds on FreeRADIUS, OpenBao, PostgreSQL,

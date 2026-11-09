@@ -17,6 +17,7 @@
 #   E2E_ADMIN=0            skip the device-administration (TACACS+) steps (a build from before device administration)
 #   E2E_WINSETUP=0         skip the Windows setup steps (a build from before the Windows setup)
 #   E2E_AUDIT=0            skip the switch audit steps (a build from before the switch audit)
+#   E2E_AUTOENROLL=0       skip the Group Policy autoenrollment steps (a build from before autoenrollment)
 set -uo pipefail
 shopt -s lastpipe   # `… | jok` runs jok in this shell, so its PASS/FAIL counts
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -732,6 +733,7 @@ for _ in $(seq 1 25); do   # easyeap-syslog reloads the switches' verified addre
   [ -n "$heard" ] && break
 done
 [ -n "$heard" ] && ok "syslog from the switch's address is received" || bad "no syslog received from the switch"
+SENT="$(date +%s)"
 say "<189>101: %DOT1X-5-FAIL: Switch 1 R0/0: sessmgrd: Authentication failed for client (0200.0000.1103) on Interface Gi1/0/5 AuditSessionID 0A0A0A0B0000000200ABCDEF" \
     "<189>102: %DOT1X-5-FAIL: Switch 1 R0/0: sessmgrd: Authentication failed for client (0200.0000.1103) on Interface Gi1/0/5 AuditSessionID 0A0A0A0B0000000200ABCDEF" \
     "<189>103: %DOT1X-5-FAIL: Switch 1 R0/0: sessmgrd: Authentication failed for client (0200.0000.1103) on Interface Gi1/0/5 AuditSessionID 0A0A0A0B0000000200ABCDEF" \
@@ -741,23 +743,24 @@ say "<189>101: %DOT1X-5-FAIL: Switch 1 R0/0: sessmgrd: Authentication failed for
     "<189>107: %SESSION_MGR-5-START: Switch 1 R0/0: sessmgrd: Starting 'dot1x' for client (0200.0000.1105) on Interface Gi1/0/7"
 $DC exec -T easyeap-api python -c "$SEND" "$SYSLOG_IP" "<189>%DOT1X-5-FAIL: Authentication failed for client (0200.0000.6666) on Interface Gi1/0/1 from-elsewhere"
 sleep 4
-syslog_json | jok "kept: the 802.1X failures coalesced (3), the err-disable, the RADIUS server down; a session start isn't kept" \
-  '(lambda r: sum(x["count"] for x in r if x["tag"] == "DOT1X-5-FAIL" and x["mac"] == "020000001103" and x["port"] == "GigabitEthernet1/0/5" and x["session_id"] == "0A0A0A0B0000000200ABCDEF") == 3 and any(x["tag"] == "PM-4-ERR_DISABLE" and x["port"] == "GigabitEthernet1/0/10" for x in r) and not any("START" in x["tag"] for x in r))(d["recent"]) and d["stats"]["filtered"] >= 1'
+syslog_json | jok "kept: the 802.1X failures coalesced (3), the err-disable, the RADIUS server down, and the session start (decoded)" \
+  '(lambda r: sum(x["count"] for x in r if x["tag"] == "DOT1X-5-FAIL" and x["mac"] == "020000001103" and x["port"] == "GigabitEthernet1/0/5" and x["session_id"] == "0A0A0A0B0000000200ABCDEF") == 3 and any(x["tag"] == "PM-4-ERR_DISABLE" and x["port"] == "GigabitEthernet1/0/10" for x in r) and any("START" in x["tag"] for x in r))(d["recent"]) and d["stats"]["received"] >= 8'
 syslog_json | jok "user names and passwords redacted before they're stored" \
   '(lambda t: "hunter2" not in t and "bob" not in t and "password <redacted>" in t)(" ".join(x["text"] for x in d["recent"]))'
 syslog_json | jok "a message from an address that isn't the switch is dropped" 'not any(x["mac"] == "020000006666" for x in d["recent"])'
 syslog_json | jok "the switch says a RADIUS server isn't responding (per server)" \
   "[(x['tag'], x['server']) for x in d['radius_down']] == [('RADIUS-4-RADIUS_DEAD', '$RADIUS_IP')]"
 syslog_json | jok "the syslog receiver's heartbeat is current" "d['listening']"
-drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "with syslog published, the configuration has the discriminator, then the logging host" \
-  "(lambda b: not b['syslog']['receiving'] or (b['config'].index('logging discriminator EASYEAP facility includes') < b['config'].index('logging host %s discriminator EASYEAP transport udp port %s' % (b['syslog']['address'], b['syslog']['port'])) and 'no logging discriminator EASYEAP' in b['removal']))(d['body'])"
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "with syslog published, the configuration sends the whole log (no filter) and the removal takes it off" \
+  "(lambda b, h: not b['syslog']['receiving'] or (h in b['config'] and 'logging discriminator EASYEAP facility' not in b['config'] and 'no ' + h in b['removal']))(d['body'], 'logging host %s transport udp port %s' % (d['body']['syslog']['address'], d['body']['syslog']['port']))"
 drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "findings show what the switch says about their device or port" \
   '(lambda f: any(x["tag"] == "DOT1X-5-FAIL" for x in f["authorized_despite_reject"]["switch_says"]) and any(x["tag"] == "PM-4-ERR_DISABLE" for x in f["err_disabled"]["switch_says"]))({x["kind"]: x for x in d["body"]["findings"]})'
 drive call GET "/radius/clients/$SW1_ID/monitoring/syslog?mac=02:00:00:00:11:03&hours=48" | jok "the switch's messages filtered by MAC" \
   'd["status"] == 200 and d["body"]["messages"] and all(x["mac"] == "020000001103" for x in d["body"]["messages"])'
-# An err-disable is a hint, not a command: the next poll moves to five minutes after the last one (the interval is 15).
-drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "an err-disable message brought the next poll forward to 5 minutes after the last" \
-  '(lambda st: 290 <= (datetime.fromisoformat(st["next_poll_at"]) - datetime.fromisoformat(st["polled_at"])).total_seconds() <= 310)(d["body"]["state"])'
+# A message is a hint, not a command: the next poll moves to 10 s after it, never sooner than 30 s after the last poll
+# (the interval is 15 minutes). The collector may already have made that poll.
+drive call GET "/radius/clients/$SW1_ID/monitoring" | jok "the messages brought the next poll forward (30 s after the last at the earliest), or it already ran" \
+  "(lambda p, n: p >= $SENT or (n >= p + 29 and n <= (p + 30 if p + 30 > $SENT + 10 else $SENT + 10) + 8))(datetime.fromisoformat(d['body']['state']['polled_at']).timestamp(), datetime.fromisoformat(d['body']['state']['next_poll_at']).timestamp())"
 say "<188>109: %RADIUS-4-RADIUS_ALIVE: RADIUS server $RADIUS_IP:1812,1813 is being marked alive."
 sleep 4
 syslog_json | jok "RADIUS server marked alive: no longer shown as down" 'd["radius_down"] == []'

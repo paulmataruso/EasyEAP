@@ -21,7 +21,7 @@ function show(permissions: string[]) {
   }))
   const tenant = { id: 't1', name: 'Acme', slug: 'acme', permissions } as unknown as TenantDetail
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={qc}><TenantProvider tenant={tenant}><WiredGuideBody guide={guide} settings={settings} secretOf="office-sx" clientId="c1" /></TenantProvider></QueryClientProvider>)
+  render(<QueryClientProvider client={qc}><TenantProvider tenant={tenant}><WiredGuideBody guide={guide} settings={settings} secretOf="sw-office" clientId="c1" /></TenantProvider></QueryClientProvider>)
   return calls
 }
 

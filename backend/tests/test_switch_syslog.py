@@ -16,7 +16,7 @@ SW = Device(uuid.uuid4(), uuid.uuid4())
 DOT1X_FAIL = (b"<189>1234: Nov  7 22:39:22.522 UTC: %DOT1X-5-FAIL: Switch 1 R0/0: sessmgrd: Authentication failed for client "
               b"(0200.0000.1103) on Interface Gi1/0/5 AuditSessionID 0A0A0A0B0000001200ABCDEF")
 ERR_DISABLE = b"<188>55: lab-sw1: *Nov  7 22:39:22: %PM-4-ERR_DISABLE: bpduguard error detected on Gi1/0/10, putting Gi1/0/10 in err-disable state"
-RADIUS_DEAD = b"<188>12: %RADIUS-4-RADIUS_DEAD: RADIUS server 172.16.0.45:1812,1813 is not responding."
+RADIUS_DEAD = b"<188>12: %RADIUS-4-RADIUS_DEAD: RADIUS server 192.0.2.45:1812,1813 is not responding."
 LINK_UP = b"<187>%LINK-3-UPDOWN: Interface GigabitEthernet1/0/5, changed state to up"
 LINK_DOWN = b"<187>%LINK-3-UPDOWN: Interface GigabitEthernet1/0/5, changed state to down"
 
@@ -29,7 +29,7 @@ def test_parse_ios_xe_messages():
     e = parse(ERR_DISABLE)
     assert e.tag == "PM-4-ERR_DISABLE" and e.port == "GigabitEthernet1/0/10" and e.mac == ""
     r = parse(RADIUS_DEAD)
-    assert r.tag == "RADIUS-4-RADIUS_DEAD" and r.port == "" and "172.16.0.45" in r.text
+    assert r.tag == "RADIUS-4-RADIUS_DEAD" and r.port == "" and "192.0.2.45" in r.text
     v = parse(b"<189>%AUTHMGR-5-SECURITY_VIOLATION: Security violation on the interface GigabitEthernet1/0/7, new MAC address "
               b"(02:00:00:00:99:05) is seen.AuditSessionID 0A0A0A0B0000001300ABCDEF")
     assert v.port == "GigabitEthernet1/0/7" and v.mac == "020000009905" and v.session_id == "0A0A0A0B0000001300ABCDEF"

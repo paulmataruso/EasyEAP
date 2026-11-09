@@ -9,8 +9,11 @@
 | `services/lab-client/` | `eapol_test` image used by the lab and the end-to-end test |
 | `frontend/` | React console (`src/app/`), enrollment portal (`src/enroll/`), shared domain code (`src/domain/`), design prototypes (`src/concepts/`, `src/prototype/`, `src/compare/`) |
 | `deploy/` | Compose files, installer, backup and restore, proxy, OpenBao and lab configuration |
+| `deploy/lab/switch/` | A pretend Cisco Catalyst (net-snmp) for the switch audit, used by the lab and the end-to-end test |
 | `tests/e2e/` | End-to-end EAP-TLS test against the full stack |
 | `tests/radius/` | FreeRADIUS integration test: the rendered configuration and agent store, real EAP-TLS, no API |
+| `tests/windows/` | Windows setup checks without Windows: the generated files and `renew.ps1`'s decisions, under PowerShell 7 |
+| `tests/autoenroll/` | Group Policy autoenrollment's Kerberos acceptance against a throwaway MIT KDC |
 | `design/` | Design concepts, critiques, audits and the chosen direction (`design/CONCEPTS.md`); the logo (`design/brand/`) |
 | `docs/` | Controller guides, enrollment, troubleshooting, plans and the README screenshots |
 | `.github/` | CI workflow, Dependabot, issue and pull request templates |
@@ -19,7 +22,7 @@
 
 ```sh
 cd deploy
-./install.sh --lab --no-start                     # secrets + .env once (lab adds Samba AD and a Wi-Fi client)
+./install.sh --lab --no-start                     # secrets + .env once (lab adds Samba AD, a Wi-Fi client and a switch)
 docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile lab up -d --build
 docker compose exec easyeap-api easyeap setup-token
 cd ../frontend && pnpm install && EASYEAP_API=http://127.0.0.1:8000 pnpm dev
@@ -44,6 +47,8 @@ and test users are described in `deploy/lab/README.md`. Read the domain's CA cer
 | Frontend unit tests | `cd frontend && pnpm test` | — |
 | Type check and lint | `cd frontend && pnpm typecheck && pnpm lint`; `docker compose exec easyeap-api ruff check --no-cache app tests` | — |
 | RADIUS integration (wired and Wi-Fi detection, monitor mode, MAC authentication, TACACS+, version skew) | `tests/radius/run.sh` | Docker; the `v1.0.1` tag |
+| Windows setup files and renewal (PowerShell 7, no Windows) | `tests/windows/run.sh` | Docker; an API image (`API_IMAGE`) |
+| Group Policy autoenrollment Kerberos (real MIT KDC) | `tests/autoenroll/kerberos.sh` | Docker; an API image (`API_IMAGE`); network access (it installs the KDC) |
 | End-to-end EAP-TLS | `tests/e2e/run.sh` | lab profile |
 | Console smoke test (browser) | `node tests/e2e/console-smoke.mjs https://127.0.0.1` | running stack, Playwright Chromium |
 
@@ -80,12 +85,17 @@ Then it authenticates with real EAP-TLS through FreeRADIUS. It checks:
 - device administration: TACACS+ logins from a lab container acting as a switch, with an EasyEAP account and with AD
   users through nested group mappings (privilege 15 and 1), refusals with their reasons, the Admin log with a masked
   command, key rotation with grace, a break-glass name, and admin logins turned off;
+- the Windows setup: user and computer certificates from one download, renewal, and the computer certificate on the
+  network;
+- Group Policy autoenrollment: Kerberos from the lab DC, policy and certificates through the proxy, and the computer
+  on the network;
+- the switch audit: SNMP and syslog from a pretend Catalyst, and its findings against EasyEAP's own answers;
 - the audit chain.
 
-`E2E_WIRED=0` skips the wired steps (for a build from before wired 802.1X), and `E2E_ADMIN=0` the device-administration
-steps. `E2E_DEPLOY_DIR`, `COMPOSE_PROJECT_NAME`
-and `COMPOSE_FILE` point it at another deployment, for example one installed from a previous release to test an
-upgrade.
+`E2E_WIRED=0` skips the wired steps (for a build from before wired 802.1X), `E2E_ADMIN=0` the device-administration
+steps, `E2E_WINSETUP=0` the Windows setup, `E2E_AUTOENROLL=0` Group Policy autoenrollment and `E2E_AUDIT=0` the switch
+audit. `E2E_DEPLOY_DIR`, `COMPOSE_PROJECT_NAME` and `COMPOSE_FILE` point it at another deployment, for example one
+installed from a previous release to test an upgrade.
 
 Two pieces of code exist twice and are tested to stay identical: the command masking in `backend/app/admin/mask.py`
 and `services/radius/agent/tacmask.py` (the agent has no access to the backend's code), and the reason codes the TACACS+

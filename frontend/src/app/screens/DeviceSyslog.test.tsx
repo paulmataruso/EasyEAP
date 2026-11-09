@@ -14,12 +14,12 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const at = new Date(Date.now() - 60_000).toISOString()
 const msg = (id: string, seq: number, over: Partial<LiveMessage> = {}): LiveMessage => ({
   id, seq, first_at: at, last_at: at, count: 1, tag: 'DOT1X-5-FAIL', facility: 'DOT1X', mnemonic: 'FAIL', severity: 5, port: 'GigabitEthernet1/0/24',
-  mac: '00051B31576E', session_id: null, subject: null, text: `Authentication failed ${id}`, notable: true, source: null, client_id: 'c1', device: 'office-sx', ...over,
+  mac: '00051B31576E', session_id: null, subject: null, text: `Authentication failed ${id}`, notable: true, source: null, client_id: 'c1', device: 'sw-office', ...over,
 })
 const meta = {
-  receiver: { receiving: true, listening: true, address: '172.16.0.45', port: 5514, port_514: true },
-  devices: [{ id: 'c1', name: 'office-sx', vendor: 'cisco-switch', address: '172.16.0.3', sends: true, via_audit: true, addresses: [], stats: { received: 9, kept: 9 } },
-    { id: 'c2', name: 'wlc', vendor: 'cisco-9800', address: '172.16.0.9', sends: false, via_audit: false, addresses: [], stats: {} }],
+  receiver: { receiving: true, listening: true, address: '192.0.2.45', port: 5514, port_514: true },
+  devices: [{ id: 'c1', name: 'sw-office', vendor: 'cisco-switch', address: '192.0.2.3', sends: true, via_audit: true, addresses: [], stats: { received: 9, kept: 9 } },
+    { id: 'c2', name: 'wlc', vendor: 'cisco-9800', address: '192.0.2.9', sends: false, via_audit: false, addresses: [], stats: {} }],
 }
 
 function wrap(ui: React.ReactNode, perms = ['radius:read', 'radius:write'], path = '/t/t1/syslog') {
@@ -45,7 +45,7 @@ describe('Device syslog live view', () => {
     }))
     wrap(<DeviceSyslog />)
     expect(await screen.findByText('Authentication failed a')).toBeInTheDocument()
-    expect(screen.getByText(/Receiving on/)).toHaveTextContent('Receiving on 172.16.0.45 UDP 5514 and 514')
+    expect(screen.getByText(/Receiving on/)).toHaveTextContent('Receiving on 192.0.2.45 UDP 5514 and 514')
     expect(screen.getByText('1 of 2 devices sending')).toBeInTheDocument()
     expect(calls[0]).toBe('/api/tenants/t1/syslog/live?limit=200&meta=true')
     let rows = within(screen.getByRole('table', { name: 'Device syslog, newest first' })).getAllByRole('row').slice(1)
@@ -76,8 +76,8 @@ describe('Device syslog live view', () => {
 const wlc = { id: 'c9', name: 'wlc-1', vendor: 'cisco-aireos', address: '10.0.0.6', networks: ['wireless'], wired_profile: null } as unknown as RadiusClient
 const panel = (over: Partial<DeviceSyslogResponse> = {}): DeviceSyslogResponse => ({
   settings: { enabled: false, addresses: [] }, via_audit: false,
-  receiver: { receiving: true, listening: true, address: '172.16.0.45', port: 5514, port_514: false },
-  guide: { steps: ['Management → Logs → Config.'], config: 'config logging syslog host 172.16.0.45', removal: 'config logging syslog host 172.16.0.45 delete',
+  receiver: { receiving: true, listening: true, address: '192.0.2.45', port: 5514, port_514: false },
+  guide: { steps: ['Management → Logs → Config.'], config: 'config logging syslog host 192.0.2.45', removal: 'config logging syslog host 192.0.2.45 delete',
     notes: ['AireOS (and the vWLC) sends syslog to UDP 514 only, and this EasyEAP server listens on 5514.', 'EasyEAP keeps messages sent from 10.0.0.6.'], can_send: false, port: 514 },
   stats: {}, recent: [], sessions: [], ...over,
 })
@@ -93,7 +93,7 @@ describe('DeviceSyslogPanel', () => {
     expect(await screen.findByText('This device can’t reach EasyEAP’s syslog port')).toBeInTheDocument()
     expect(screen.getByText(/UDP 514 only/)).toBeInTheDocument()
     expect(screen.getByText('EasyEAP keeps messages sent from 10.0.0.6.')).toBeInTheDocument()
-    expect(screen.getByLabelText('Syslog configuration')).toHaveTextContent('config logging syslog host 172.16.0.45')
+    expect(screen.getByLabelText('Syslog configuration')).toHaveTextContent('config logging syslog host 192.0.2.45')
     fireEvent.click(screen.getByRole('switch', { name: 'Keep syslog from this device' }))
     await waitFor(() => expect(puts).toEqual([{ enabled: true, addresses: [] }]))
   })

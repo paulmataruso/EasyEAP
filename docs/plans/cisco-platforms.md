@@ -310,7 +310,7 @@ Meraki: not available (formats undocumented / no CLI).
   breakpoint; each generator's output per family/mode/MAB, asserting the version-gated lines; plan validation refusals;
   `mab_detect`/`mab_decide` rendering for `pap-wired` and `monitor_accept`; ingest of `monitor = accepted`; TACACS+
   `shell:roles` replies; NX-OS syslog parsing; session parsing for `show dot1x all summary`.
-- On the demo (172.16.0.45, real RADIUS): temporary RADIUS clients (NX-OS monitor, Catalyst monitor, Meraki) and
+- On the demo (real RADIUS): temporary RADIUS clients (NX-OS monitor, Catalyst monitor, Meraki) and
   radclient MAB requests: unknown MAC → Accept without VLAN (server monitor) or Reject (switch monitor); allowed MAC →
   Accept; event logged as a refusal in monitor mode; sighting recorded. A TACACS+ client against the demo's TACACS+
   service as an NX-OS device, logging in with the AD account the user gave, expecting `shell:roles`. The temporary
