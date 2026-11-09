@@ -358,7 +358,8 @@ try {{
     if (-not (New-EasyEapRequest $Provider)) {{ throw 'Windows could not create a key for the certificate request.' }}
   }}
   Write-Host "Key created with: $Provider"
-  $Csr = Get-Content "$Work\\req.csr" -Raw
+  # ReadAllText, not Get-Content: Windows PowerShell's ConvertTo-Json writes a Get-Content string as an object.
+  $Csr = [IO.File]::ReadAllText("$Work\\req.csr")
   $Body = @{{ csr = $Csr; key_origin = 'device'; device_hint = $env:COMPUTERNAME; renewer = $Renewer }} | ConvertTo-Json
   Use-EasyEapPin
   try {{

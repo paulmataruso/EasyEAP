@@ -186,6 +186,17 @@ def test_a_failed_request_says_when_the_certificate_check_isnt_in_place():
         assert "if ($hint) { throw ($_.Exception.Message + $hint) }" in script.replace("{{", "{").replace("}}", "}")
 
 
+def test_the_certificate_request_is_read_as_plain_text():
+    """Windows PowerShell 5.1's ConvertTo-Json writes a string from Get-Content as an object (with its PSPath notes),
+    and EasyEAP refuses that csr ("Input should be a valid string"). tests/windows/request-bodies.ps1 runs the real code."""
+    renew = ws.renew_script(_options())
+    helper = profiles.windows_powershell("https://e.example", "tok", "Corp", "radius.corp.example", ROOT, ROOT, renew_ps1=renew)
+    for name, script in {"setup": ws.build(_options()), "renewal": renew, "helper": helper}.items():
+        assert "Pem = (Get-Content" not in script and "$Csr = Get-Content" not in script, name
+    assert "Pem = [IO.File]::ReadAllText($csr)" in renew and "Pem = [IO.File]::ReadAllText($csr)" in ws.build(_options())
+    assert '$Csr = [IO.File]::ReadAllText("$Work\\req.csr")' in helper
+
+
 def test_windows_own_powershell_never_one_in_the_downloads_folder():
     """cmd.exe and Start-Process look in the current folder (Downloads, for a double-clicked file) before the PATH."""
     setup = ws.build(_options())

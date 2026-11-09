@@ -350,7 +350,9 @@ function New-EasyEapRequest([string]$Work) {
     if ($LASTEXITCODE -eq 0 -and (Test-Path $csr)) {
       $entry = @(Get-ChildItem "$StoreRoot\REQUEST" -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq $subject }) | Select-Object -First 1
       if (-not $entry) { throw "Windows made the request but it isn't in the REQUEST store." }
-      return @{ Pem = (Get-Content $csr -Raw); Storage = $t.Storage; Request = $entry.Thumbprint }
+      # ReadAllText, not Get-Content: Windows PowerShell's ConvertTo-Json writes a Get-Content string as an object (its
+      # PSPath and other notes included), and EasyEAP refuses that csr ("Input should be a valid string").
+      return @{ Pem = [IO.File]::ReadAllText($csr); Storage = $t.Storage; Request = $entry.Thumbprint }
     }
   }
   throw 'Windows could not create a key for the new certificate.'
@@ -691,7 +693,8 @@ function New-EasyEapRequest([string]$Work, [bool]$Machine) {
       ('ProviderName = "' + $t.Provider + '"'), 'KeyUsage = 0x80', 'RequestType = PKCS10'
     ) | Set-Content -Path $inf -Encoding ASCII
     & { $ErrorActionPreference = 'Continue'; & certreq.exe -q -new $inf $csr 2>&1 | Out-Null }   # see renew.ps1
-    if ($LASTEXITCODE -eq 0 -and (Test-Path $csr)) { return @{ Pem = (Get-Content $csr -Raw); Storage = $t.Storage; Subject = $subject } }
+    # ReadAllText, not Get-Content: see renew.ps1's New-EasyEapRequest.
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $csr)) { return @{ Pem = [IO.File]::ReadAllText($csr); Storage = $t.Storage; Subject = $subject } }
   }
   throw 'Windows could not create a key for the certificate.'
 }

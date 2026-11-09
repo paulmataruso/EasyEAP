@@ -3,7 +3,8 @@
 # files parse in PowerShell, their profiles carry the right sign-in mode and issuer filter, a v2 renewal and check-in
 # signed by the script's own PowerShell code verify in EasyEAP (ECDSA P1363 and RSA), and renew.ps1's decisions hold
 # against a stand-in store and EasyEAP (renew-decisions.ps1), the server-certificate pin against a self-signed HTTPS
-# server (tls-pin.ps1), and the setup program (backend/winlauncher) built, filled and run under Mono (launcher.py).
+# server (tls-pin.ps1), the certificate requests as Windows PowerShell 5.1 would send them (request-bodies.ps1),
+# and the setup program (backend/winlauncher) built, filled and run under Mono (launcher.py).
 # Not covered: certreq, TPM, netsh, UAC, SmartScreen, tasks, toasts.
 #   API_IMAGE=easyeap-api-test:local PWSH_IMAGE=mcr.microsoft.com/powershell:7.5-ubuntu-24.04 tests/windows/run.sh
 set -euo pipefail
@@ -22,6 +23,9 @@ py fixture.py make
 set +e
 docker run --rm --network none -v "$OUT":/out -v "$PWD/tests/windows":/t:ro "$PWSH_IMAGE" pwsh -NoProfile -File /t/check.ps1
 ps=$?
+# The certificate requests as each script builds them, checked for what Windows PowerShell 5.1 would send.
+docker run --rm --network none -v "$OUT":/out:ro -v "$PWD/tests/windows":/t:ro "$PWSH_IMAGE" pwsh -NoProfile -File /t/request-bodies.ps1
+pb=$?
 py fixture.py verify
 pv=$?
 # The setup program: built as the API image builds it, then each one run with the extract hook instead of PowerShell.
@@ -51,6 +55,6 @@ pt=$?
 docker rm -f "$SRV" >/dev/null 2>&1
 docker network rm "$NET" >/dev/null 2>&1
 set -e
-fails=$((ps + pv + pt + pl))
+fails=$((ps + pb + pv + pt + pl))
 echo "windows checks: $fails failure(s)"
 exit $((fails > 0))

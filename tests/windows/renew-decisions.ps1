@@ -11,6 +11,8 @@ foreach ($st in $ast.EndBlock.Statements) {
   }
 }
 $RealGetCertificates = ${function:Get-EasyEapCertificates}
+# Everything renew.ps1 saves or sends, as Windows PowerShell 5.1 would write it (checked at the end).
+. /t/json51.ps1
 
 # ── Before the stand-ins: the real selection and the real HTTP client ─────────
 # Which certificates are EasyEAP's (X509Chain here is .NET on Linux, not CryptoAPI: the Windows 11 test repeats it).
@@ -278,3 +280,7 @@ DCheck 'expiry notice: once a day, users only' ((Logged 'notice*') -eq 2)
 $t = [DateTimeOffset]::new(2026, 11, 9, 10, 0, 0, [TimeSpan]::Zero)
 DCheck 'times read either way' ((ConvertTo-Instant '2026-11-09T10:00:00+00:00') -eq $t -and (ConvertTo-Instant '2026-11-09T12:00:00.0000000+02:00') -eq $t -and
   (ConvertTo-Instant $t.UtcDateTime) -eq $t -and $null -eq (ConvertTo-Instant '') -and $null -eq (ConvertTo-Instant $null) -and $null -eq (ConvertTo-Instant 'soon'))
+
+# Nothing renew.ps1 wrote to JSON above would come out differently in Windows PowerShell 5.1 (json51.ps1).
+$own = @($script:Json51 | Select-Object -Unique)
+Check 'renewal: everything it saves and sends is JSON Windows PowerShell 5.1 writes the same way' (-not $own.Count) ($own -join '; ')

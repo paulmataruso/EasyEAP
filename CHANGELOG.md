@@ -20,6 +20,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   not establish trust relationship for the SSL/TLS secure channel". They now accept that certificate when its public
   key is the one the file was made with, as the Linux script does. Files made before this fix still fail that way:
   download them again.
+- Windows setup files, the portal's Windows helper and their renewal tasks sent the certificate request in a form
+  EasyEAP refused ("csr: Input should be a valid string"): Windows PowerShell 5.1 writes text read with `Get-Content`
+  to JSON as an object. They now read it as plain text. Renewal tasks installed before this fix can't renew: run a new
+  setup file (or the portal helper) on those PCs.
 
 ## [1.1.0] - 2026-11-09
 
