@@ -379,7 +379,8 @@ rejected devices on the other ports would land on it.
 2. Per switch: read `rest/device/{_id}` **just before** writing, merge by `port_idx`, and PUT the whole
    `port_overrides` array:
    - an existing entry has only `dot1x_ctrl` changed, every other key kept;
-   - a new entry carries the port's `portconf_id` from `port_table`;
+   - a new entry carries the port's `portconf_id` from `port_table` or, on a site without port profiles (§11.4), its
+     `forward` and `native_networkconf_id`;
    - `null` is never sent;
    - if the array changed since discovery, stop and show it.
 3. **Effect check after provisioning.** The chosen ports' `port_table` `dot1x_mode`/`dot1x_status`, because a port
@@ -729,6 +730,65 @@ None of these is a second EasyEAP install.
 
 Phase 2 isn't built until S1, S2, S4 and S8 have run on a real console. Wired needs S5–S7 too. Without a console,
 the plan waits and the manual guide stays the way.
+
+### 11.4 Results so far (2026-11-09)
+
+Run on UniFi OS Server (port 11443, a publicly trusted certificate) with Network 10.6.109, on one site of a console
+that has many. The calls went through a helper that refused every other site and replaced secret values before
+printing.
+
+- **S1: done.**
+  - The local API key works on the classic endpoints (`/proxy/network/api/s/{site}/…`) with `X-API-KEY`. No login
+    is needed.
+  - `self` answers `site_role: admin` and `is_super: true`.
+  - A test RADIUS profile was created (`POST rest/radiusprofile`), renamed, then deleted:
+    - the rename's body was only `{name}`, and the servers were kept, which confirms the top-level merge;
+    - the official API listed it with `id` equal to the classic `external_id`.
+  - The official list also has a "UID" profile (`origin: DERIVED`) that the classic list doesn't.
+  - `GET /v1/sites` lists every site the key reaches. `internalReference` is the classic site name (`default`).
+- **S2: half done.**
+  - `x_secret` comes back whole and unmasked, both in the POST answer and on a later GET.
+  - What a read-only admin's key sees: not tried, as no such key was available.
+- **S6: reads only.**
+  - `get/setting` includes `global_switch` with the keys of §2.1.
+  - **`rest/portconf` was empty, and ports carry their settings directly.** `port_overrides[]` entries have
+    `forward`, `native_networkconf_id`, `dot1x_ctrl` and `dot1x_idle_timeout`, and no `portconf_id`. `port_table[]`
+    has no `portconf_id` either. §4.5 step 2 now covers this.
+  - With 802.1X off, the switch (US-24-PoE-250W, firmware 7.5.15):
+    - has `dot1x_portctrl_enabled: false` on the device, and no `radiusprofile_id` or
+      `dot1x_fallback_networkconf_id`;
+    - its ports show `dot1x_mode: unknown` and `dot1x_status: disabled`.
+- **S8: done.** Tested on a network created disabled, then deleted:
+  - **The §4.4 set is accepted for a new network.** The controller adds its own `dtim_*`, `iapp_enabled`,
+    `minrate_*`, `setting_preference`, `short_id` and an `x_iapp_key`.
+  - **Only `ap_group_ids` is required** (`api.err.ApGroupMissing`). Left out, the others default as follows:
+    - `usergroup_id` and `networkconf_id` take the site's defaults;
+    - `ap_group_mode` becomes `all`;
+    - `wlan_band` and `wlan_bands` become `both` and `["2g","5g"]`;
+    - without the `wpa3_*` keys, `pmf_mode` becomes `disabled`;
+    - without `wpa_mode` and `wpa_enc`, the network is stored without them.
+
+    So the wizard keeps sending them all.
+  - **Disabled networks count against the per-band limit.** A fifth network on a band was refused with
+    `api.err.TooManyWirelessNetwork`. The answer carries `max_wlan` (4 with wireless meshing on), `wlan_count`, the
+    band and the access point's MAC. The wizard counts every network on the chosen access point groups, enabled or
+    not, before offering to create one.
+- **S4: the settings side.** Sparse PUTs of the grouped keys worked:
+  - WPA3-Enterprise: `wpa3_support: true`, `wpa3_transition: false`, `pmf_mode: required`;
+  - WPA2/WPA3-Enterprise: `wpa3_transition: true`, `pmf_mode: optional`;
+  - WPA3-Enterprise 192-bit: `wpa3_enhanced_192: true`, with `wpa_enc` read back as `ccmp`.
+
+  Bad combinations are refused, not quietly changed:
+  - WPA2 with 6 GHz: `api.err.Wpa3MandatoryFor6GHzBand`;
+  - WPA3 transition with PMF off: `api.err.InvalidSecurityPmfModeCombination`.
+
+  WPA3 with 6 GHz was accepted. That was with no 6 GHz access point on the site, so whether 6 GHz is dropped on
+  real hardware is still open.
+- **Not run yet:**
+  - S4's joins (which networks Windows 11 `WPA3ENT` and `WPA2` profiles join) need an access point online.
+  - S5, the S6 writes and S7 turn 802.1X on for the site, which re-provisions the switch. They wait for the owner's
+    go-ahead.
+  - S0 needs a Site Manager key.
 
 ## 12. Phases
 
