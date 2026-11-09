@@ -5,6 +5,22 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Windows setup as a program.** **Download setup** in the console and the portal's Windows helper now give a `.exe`
+  users double-click, instead of a `.cmd` file or a PowerShell script to right-click and run. It carries the same setup
+  and runs it the same way, in the same window. **Download the .cmd instead** still gives the file. The program isn't
+  code-signed yet: SmartScreen asks once (**More info**, then **Run anyway**), and Smart App Control, where it's on,
+  blocks it as it blocks the `.cmd`.
+
+### Fixed
+
+- Windows setup files, the portal's Windows helper and their renewal tasks couldn't reach EasyEAP when the PC didn't
+  trust its web certificate, such as the temporary self-signed one `install.sh` makes: each request failed with "Could
+  not establish trust relationship for the SSL/TLS secure channel". They now accept that certificate when its public
+  key is the one the file was made with, as the Linux script does. Files made before this fix still fail that way:
+  download them again.
+
 ## [1.1.0] - 2026-11-09
 
 Wired 802.1X and MAC authentication on Cisco, Meraki MS and UniFi switches; switch logins over TACACS+; a switch

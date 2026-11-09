@@ -84,6 +84,29 @@ def test_both_codes_again(world):
     assert action == "enrollment.windows_setup_downloaded_again" and sorted(kw["detail"]["enrollments"]) == sorted([str(u.id), str(c.id)])
 
 
+def test_the_setup_file_comes_as_a_program_too(world, tmp_path, monkeypatch):
+    """With the launcher in the image, the same file inside the program users double-click (enrollment/windows_exe.py),
+    and the server certificate's pin in both. Without one (a development build), the .cmd alone."""
+    import base64
+
+    from app.enrollment import linux_setup, windows_exe
+    c = world.part("device")
+    world.s.rows = [c]
+    out = router.windows_setup_again(c.id, world.ctx)
+    assert out["exe_filename"] is None and out["exe_b64"] is None and "$TlsPin = ''" in out["content"]
+
+    exe, tls = tmp_path / "EasyEAP-Setup.exe", tmp_path / "proxy-tls.crt"
+    exe.write_bytes(b"MZ" + bytes(500))
+    tls.write_text(CA)
+    monkeypatch.setattr(windows_exe, "LAUNCHER", exe)
+    monkeypatch.setattr("app.autoenroll.kerberos.PROXY_CERT", tls)
+    out = router.windows_setup_again(c.id, world.ctx)
+    assert out["filename"] == "EasyEAP-Setup-nina.cmd" and out["exe_filename"] == "EasyEAP-Setup-nina.exe"
+    assert windows_exe.unwrap(base64.b64decode(out["exe_b64"])) == out["content"].encode()
+    pin = linux_setup.tls_pin(tls)
+    assert pin and f"$TlsPin = '{pin}'" in out["content"]
+
+
 def test_only_the_codes_not_used_yet_and_the_same_sign_in_mode(world):
     u, c = world.part("user", status="completed", token_ct=None), world.part("device")
     world.s.rows = [u, c]

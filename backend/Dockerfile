@@ -5,6 +5,13 @@ FROM python:3.13-slim AS gssapi
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libkrb5-dev && rm -rf /var/lib/apt/lists/* \
  && pip wheel --no-cache-dir --wheel-dir /wheels 'gssapi>=1.9,<2'
 
+# The Windows setup program users double-click (winlauncher/, app/enrollment/windows_exe.py): a small .NET Framework 4
+# console program, which every Windows 10 and 11 PC can run. Each download is it followed by that user's setup script.
+FROM mono:6.12.0.182 AS winlauncher
+COPY winlauncher /src
+RUN csc -nologo -deterministic -optimize+ -target:exe -platform:anycpu -win32manifest:/src/app.manifest \
+      -out:/EasyEAP-Setup.exe /src/Launcher.cs
+
 FROM python:3.13-slim
 ARG INSTALL_DEV=0
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -21,6 +28,7 @@ RUN apt-get update \
  && mkdir -p /var/lib/easyeap/secrets /var/lib/easyeap/backups /var/lib/easyeap/control \
  && chown -R easyeap:easyeap /var/lib/easyeap && chmod 0700 /var/lib/easyeap/secrets /var/lib/easyeap/backups /var/lib/easyeap/control
 COPY krb5.conf /etc/krb5.conf
+COPY --from=winlauncher /EasyEAP-Setup.exe /usr/local/share/easyeap/EasyEAP-Setup.exe
 COPY --from=gssapi /wheels /tmp/wheels
 RUN pip install /tmp/wheels/*.whl && rm -rf /tmp/wheels
 WORKDIR /app

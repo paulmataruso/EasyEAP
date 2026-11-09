@@ -186,17 +186,30 @@ export function LinuxHelperSteps({ c }: { c: GuideCtx }) {
 }
 
 export function WindowsHelperSteps({ c }: { c: GuideCtx }) {
+  const file = c.files.helper ?? 'EasyEAP-WiFi-Setup.exe'
   return (
     <HowTo label="Run the setup helper">
-      <li>Open your <b>Downloads</b> folder.</li>
       <li>
-        Right-click <b>{c.files.helper ?? 'EasyEAP-WiFi-Setup.ps1'}</b> and choose <b>Run with PowerShell</b>.
-        <Sub>On Windows 11, choose <Path>Show more options</Path> first.</Sub>
+        Open your <b>Downloads</b> folder.
+        <Sub>If your browser warned about the file, open its list of downloads and choose to keep it first.</Sub>
       </li>
-      <li>
-        If PowerShell asks whether to change the execution policy, type <b>Y</b> and press <b>Enter</b>.
-        <Sub>This applies only to that one window.</Sub>
-      </li>
+      {file.endsWith('.exe') ? (
+        <li>
+          Double-click <b>{file}</b>.
+          <Sub>If Windows says it protected your PC, choose <b>More info</b>, then <b>Run anyway</b>.</Sub>
+        </li>
+      ) : (
+        <>
+          <li>
+            Right-click <b>{file}</b> and choose <b>Run with PowerShell</b>.
+            <Sub>On Windows 11, choose <Path>Show more options</Path> first.</Sub>
+          </li>
+          <li>
+            If PowerShell asks whether to change the execution policy, type <b>Y</b> and press <b>Enter</b>.
+            <Sub>This applies only to that one window.</Sub>
+          </li>
+        </>
+      )}
       <li>When Windows asks whether to install a certificate from {rootName(c)}, check the name and click <b>Yes</b>.</li>
       <li>
         When it says <b>Done</b>, press <b>Enter</b> to close the window. This page notices, too.

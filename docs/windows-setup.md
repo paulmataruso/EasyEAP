@@ -20,14 +20,17 @@ For the Group Policy side, see [windows-group-policy.md](windows-group-policy.md
    - **Wi-Fi** (needs the network name in RADIUS settings) and **Wired 802.1X** (on by default when wired enrollment is
      on).
    - How long the codes last: 24 hours to 14 days (3 days by default).
-3. **Download setup** saves `EasyEAP-Setup-<username>.cmd`.
+3. **Download setup** saves `EasyEAP-Setup-<username>.exe`, a small program with the setup inside that the user
+   double-clicks. **Download the .cmd instead** saves the same setup as `EasyEAP-Setup-<username>.cmd`, which also runs
+   with a double-click; use it where your antivirus or policy stops unknown programs but allows scripts. (A server built
+   without the program saves the `.cmd`.) The browser may warn that the file isn't commonly downloaded: keep it.
 
 The file contains one-time codes, never a private key. Each code works once, for that user only, and expires. The
 console lists them under the user's **Enrollment links** ("Windows setup file") until they're used, and you can cancel
 them there. A file that was used or has expired does nothing; make a new one.
 
-Lost the file? **Download setup file** on the user's page (or **Setup file waiting** in **Users**) makes the same
-file again with the same codes, without a new certificate: EasyEAP keeps each code encrypted with the tenant's key
+Lost the file? **Download setup file** on the user's page (**.cmd** next to it for the script), or **Setup file
+waiting** in **Users**, makes the same file again with the same codes, without a new certificate: EasyEAP keeps each code encrypted with the tenant's key
 until it's used, cancelled or expires, and each download is in the audit log. Only the codes not used yet are in it,
 so a PC that finished half the setup (the user's certificate, say, but not the computer's) finishes the rest. The
 file keeps the choices it was made with (Wi-Fi, wired, shared PC, sign-in mode) and takes today's RADIUS settings
@@ -36,8 +39,12 @@ file keeps the choices it was made with (Wi-Fi, wired, shared PC, sign-in mode) 
 ## Run it on the PC
 
 1. Copy the file to the PC, or send it to the user.
-2. The user signs in **as themselves** and double-clicks the file. Windows warns that it came from the internet:
-   choose **More info → Run anyway** if SmartScreen asks.
+2. The user signs in **as themselves** and double-clicks the file. It isn't code-signed yet, so if Windows says it
+   protected the PC (Microsoft Defender SmartScreen), choose **More info**, then **Run anyway**. On a PC where **Smart
+   App Control** is on (Windows Security → App & browser control), Windows blocks unsigned programs and scripts from
+   the internet, both forms of this file included, without that choice. Smart App Control is off on PCs your
+   organisation manages, and Windows turns it off by itself where it would get in the way; on a PC where it's on, send
+   the user an enrollment link instead.
 3. Windows asks for administrator approval for the computer part. A standard user needs IT to type an administrator's
    name and password there. Don't start the file with "Run as administrator" from another account: the user's
    certificate would end up in the wrong account, so the setup skips it and says so.
@@ -74,6 +81,26 @@ certificate need the administrator part.
 
 The profiles check the RADIUS server's name and certificate authority, and pick the EasyEAP certificate even when the PC
 has other client certificates (they match the issuer).
+
+## The program, and how it reaches EasyEAP
+
+The `.exe` is a small .NET Framework program, which every Windows 10 and 11 PC can run (source in
+`backend/winlauncher`, built with the API image). EasyEAP builds it once, and each download adds that user's setup to
+the end of it. When it runs, it writes the setup to the user's temporary folder, runs it with Windows PowerShell exactly
+as the `.cmd` does (same window, same steps, same administrator prompt), and deletes it when PowerShell ends or the
+window is closed (or, after a crash, at the next run). It runs as the user who started it: it doesn't ask for
+administrator rights itself. Both forms start Windows' own PowerShell by its full path, never a `powershell.exe` in the
+Downloads folder.
+
+The setup and its renewal tasks reach EasyEAP over HTTPS at the address it was made with (`EASYEAP_PUBLIC_URL`). A web
+certificate Windows trusts is accepted as always. One it doesn't trust, such as the temporary self-signed certificate
+`install.sh` makes, or one from your own CA before the PC trusts it, is accepted only when its public key is the one the
+file was made with (a pin, `$TlsPin`, as in the Linux script). Where application control stops PowerShell from
+compiling that check, only certificates Windows trusts work, and a request that can't connect says so ("EasyEAP's server
+certificate couldn't be checked by its key"). If you later switch to a web certificate with another key that Windows
+doesn't trust, files and renewal tasks made before then can't reach EasyEAP: make the files again, or use a
+certificate from a public CA. A new certificate made with the same key keeps the pin (see
+[Replace the TLS certificate](../DEPLOYMENT.md#replace-the-tls-certificate)).
 
 ## Where the keys are
 
@@ -157,5 +184,9 @@ event log, source **EasyEAP**.
 The setup is tested without Windows: PowerShell parses every generated file, the setup's steps run with Windows'
 commands replaced by recorders (success, partial failure, no administrator), its own signing code signs check-ins and
 renewals that EasyEAP verifies, and the renewal's decisions run against a stand-in store and EasyEAP (a lost answer,
-a lost key, refusals, a key that can't sign, an unconfirmed install). It hasn't run on a real Windows 11 PC in EasyEAP's lab, so certreq with the TPM, netsh, the
-approval prompt and the scheduled tasks are unverified. Windows 10 usually works; the setup says when it runs there.
+a lost key, refusals, a key that can't sign, an unconfirmed install). The setup program is built, filled and run
+under Mono, and the server-certificate pin is checked against a self-signed HTTPS server. A first run on a real Windows
+11 PC trusted the CA and added the wired and Wi-Fi profiles and the renewal tasks, then couldn't reach EasyEAP over its
+self-signed web certificate (the reason for the pin); certreq with the TPM, the approval prompt and the scheduled tasks
+running are still unverified, and so are SmartScreen's and antivirus products' view of the program. Windows 10 usually
+works; the setup says when it runs there.

@@ -53,7 +53,10 @@ Tick items off here when they're done or verified, and say where (commit, or the
 - [ ] A second RADIUS node against the same API, with its health on the System page.
 
 ### Certificates and enrollment
-- [ ] Windows setup as a signed `.exe` (needs a code-signing certificate so SmartScreen doesn't block it).
+- [ ] Code-sign the Windows setup program (the `.exe` is done, unsigned), so SmartScreen doesn't ask and Smart App
+  Control doesn't block it. Needs a code-signing certificate from a CA in Microsoft's Trusted Root Program (or Azure
+  Artifact Signing). A signature covers the whole file and Smart App Control also checks the scripts a program runs,
+  so the setup script has to become fixed, signed code with each user's settings carried as data.
 - [ ] A computer-wide Mac profile (login window), so a Mac joins Wi-Fi before anyone signs in.
 - [ ] SCEP / MDM enrollment (Intune, Jamf).
 - [ ] Email delivery of enrollment links and expiry notices (overlaps renewal phase 3).

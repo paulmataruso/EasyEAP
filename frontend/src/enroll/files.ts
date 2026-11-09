@@ -7,8 +7,12 @@ export const MIME = {
   crt: 'application/x-x509-ca-cert',
   xml: 'application/xml',
   ps1: 'text/plain',
+  exe: 'application/vnd.microsoft.portable-executable',
   sh: 'text/plain',
 } as const
+
+/** The type a setup helper is saved with, by its name. */
+export const helperMime = (file: string): string => (file.endsWith('.exe') ? MIME.exe : file.endsWith('.sh') ? MIME.sh : MIME.ps1)
 
 /** Set while handing a file to the browser by navigation, so the page's own "leave this page?" guard stays quiet. */
 export const handoff = { until: 0 }

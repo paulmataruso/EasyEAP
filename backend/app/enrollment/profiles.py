@@ -265,11 +265,13 @@ WINDOWS_GPO_STEPS = [
 
 
 def windows_powershell(api_base: str, token: str, ssid: str, server_name: str, root_pem: str, issuing_pem: str, wpa3: bool = False,
-                       renew_ps1: str | None = None) -> str:
+                       renew_ps1: str | None = None, pin: str = "") -> str:
     """Enrollment helper: non-exportable key in the TPM when Windows can create one there (the software key store
     otherwise), CSR to EasyEAP, then the certificate, the CA chain and the Wi-Fi profile. Runs as a standard user.
     `renew_ps1` (windows_setup.renew_ps1, kind windows-helper): a per-user task renews the certificate, as the setup
-    file's does when no administrator ran it (docs/plans/cert-renewal.md §15c item 8)."""
+    file's does when no administrator ran it (docs/plans/cert-renewal.md §15c item 8). `pin`: the server certificate's
+    public key, accepted when the PC doesn't trust the certificate (windows_setup.tls_pin_ps)."""
+    from app.enrollment.windows_setup import tls_pin_ps  # windows_setup imports this module
     xml = windows_wlan_xml(ssid, server_name, root_pem, wpa3)  # in a here-string: quotes stay as they are
     if renew_ps1 is not None and not ps_here_ok(renew_ps1):
         raise ValueError("the renewal script can't start a line with '@")
@@ -277,6 +279,8 @@ def windows_powershell(api_base: str, token: str, ssid: str, server_name: str, r
     script = f"""# EasyEAP Wi-Fi enrollment for Windows. Run in PowerShell as the user who will connect (no admin rights needed).
 # The private key is created on this computer (in the TPM when available) and never leaves it.
 $ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+{tls_pin_ps(pin)}
 $Api = '{api_base.rstrip('/')}'
 $Token = '{token}'
 $Work = Join-Path $env:TEMP ('easyeap-' + [guid]::NewGuid())
@@ -311,8 +315,13 @@ function Install-Renewal {{
   # The setup file's shared task, when its script is for this EasyEAP (it renews only certificates under its own root).
   # The setup file leaves a note when it adds that task: a standard user can't always list it.
   $shared = Join-Path $env:ProgramFiles 'EasyEAP'
+  # It must also reach EasyEAP the way this helper does: one from before the server-certificate pin can't, where Windows
+  # doesn't trust EasyEAP's web certificate.
   $ours = $false
-  try {{ $ours = (Get-Content (Join-Path $shared 'renew.ps1') -Raw -ErrorAction Stop).Contains('{root_b64}') }} catch {{ }}
+  try {{
+    $text = Get-Content (Join-Path $shared 'renew.ps1') -Raw -ErrorAction Stop
+    $ours = $text.Contains('{root_b64}') -and (-not $TlsPin -or $text.Contains("`$TlsPin = '$TlsPin'"))
+  }} catch {{ }}
   if ($ours) {{
     if (Test-Path (Join-Path $shared 'renews-users.txt')) {{ return $true }}
     try {{
@@ -351,7 +360,14 @@ try {{
   Write-Host "Key created with: $Provider"
   $Csr = Get-Content "$Work\\req.csr" -Raw
   $Body = @{{ csr = $Csr; key_origin = 'device'; device_hint = $env:COMPUTERNAME; renewer = $Renewer }} | ConvertTo-Json
-  $Resp = Invoke-RestMethod -Method Post -Uri "$Api/api/enroll/$Token/csr" -ContentType 'application/json' -Body $Body
+  Use-EasyEapPin
+  try {{
+    $Resp = Invoke-RestMethod -Method Post -Uri "$Api/api/enroll/$Token/csr" -ContentType 'application/json' -Body $Body
+  }} catch {{
+    $hint = Get-EasyEapPinHint $_
+    if ($hint) {{ throw ($_.Exception.Message + $hint) }}
+    throw
+  }}
   Set-Content -Path "$Work\\cert.pem" -Value $Resp.certificate_pem -Encoding ASCII
   certreq.exe -q -accept -user "$Work\\cert.pem" | Out-Null
 @'

@@ -146,6 +146,65 @@ def test_the_portal_helper_installs_its_renewal():
         profiles.windows_powershell("https://e.example", "tok", "Corp", "r.example", ROOT, ROOT, renew_ps1="x\n'@\ny")
 
 
+def test_every_request_accepts_the_pinned_server_certificate():
+    """A PC that doesn't trust the server's certificate (EasyEAP's temporary one) accepts the one with the public key the
+    file was made with: the setup file, its renew.ps1, and the portal helper with its own, before every request.
+    tests/windows/tls-pin.ps1 runs the generated check against a self-signed HTTPS server."""
+    pin = base64.b64encode(b"\x01" * 32).decode()
+    renew = ws.renew_ps1(api="https://e.example", kind="windows-helper", org="Corp", root_pems=[ROOT], issuing_pem=ROOT,
+                         user_days=30, computer_days=30, pin=pin)
+    scripts = {"setup": ws.build(_options(pin=pin)), "setup renewal": ws.renew_script(_options(pin=pin)), "helper renewal": renew,
+               "helper": profiles.windows_powershell("https://e.example", "tok", "Corp", "radius.corp.example", ROOT, ROOT, renew_ps1=renew, pin=pin)}
+    for name, script in scripts.items():
+        if "$RenewPs1 = @'" in script:  # the file's own code, not the renew.ps1 it carries (checked on its own)
+            head, rest = script.split("$RenewPs1 = @'", 1)
+            script = head + rest.split("\n'@", 1)[1]
+        assert f"$TlsPin = '{pin}'" in script, name
+        lines = script.splitlines()
+        calls = [i for i, line in enumerate(lines) if "Invoke-RestMethod" in line]
+        assert calls, name
+        for i in calls:
+            assert "Use-EasyEapPin" in [x.strip() for x in lines[i - 2:i]], (name, lines[i])
+        assert "[EasyEapTlsPin]::Use($TlsPin)" in script and "-IgnoreWarnings" in script, name
+    # Without a pin (no certificate file): nothing to accept beyond what Windows trusts.
+    assert "$TlsPin = ''" in ws.build(_options())
+
+
+def test_a_failed_request_says_when_the_certificate_check_isnt_in_place():
+    """Where PowerShell can't compile the check (application control) or can't use it (PowerShell 7), a request that
+    fails before EasyEAP answers says so; one EasyEAP refused keeps EasyEAP's own reason."""
+    pin = base64.b64encode(b"\x02" * 32).decode()
+    renew = ws.renew_script(_options(pin=pin))
+    setup = ws.build(_options(pin=pin))
+    helper = profiles.windows_powershell("https://e.example", "tok", "Corp", "radius.corp.example", ROOT, ROOT, renew_ps1=renew, pin=pin)
+    for script in (renew, setup, helper):
+        assert "$script:TlsPinProblem = \"Windows didn't allow that check here" in script
+        assert "PSEdition -eq 'Core'" in script and "function Get-EasyEapPinHint($Err)" in script
+        assert "-not ($Err -and $Err.Exception -and $Err.Exception.Response)" in script
+    assert "$detail = $_.Exception.Message + (Get-EasyEapPinHint $_)" in renew
+    for script in (setup, helper):
+        assert "if ($hint) { throw ($_.Exception.Message + $hint) }" in script.replace("{{", "{").replace("}}", "}")
+
+
+def test_windows_own_powershell_never_one_in_the_downloads_folder():
+    """cmd.exe and Start-Process look in the current folder (Downloads, for a double-clicked file) before the PATH."""
+    setup = ws.build(_options())
+    first = setup.split("\r\n#>\r\n", 1)[0]
+    assert '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile' in first
+    assert "\npowershell.exe" not in first.replace("\r\n", "\n")
+    assert '$PowerShellExe = "$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"' in setup
+    assert "Start-Process -FilePath $PowerShellExe -Verb RunAs" in setup and "Start-Process -FilePath 'powershell.exe'" not in setup
+
+
+def test_the_helper_leaves_renewal_to_the_shared_task_only_when_it_has_the_pin():
+    """A shared renew.ps1 from before the pin can't reach EasyEAP over a certificate Windows doesn't trust: the helper
+    then adds its own task."""
+    helper = profiles.windows_powershell("https://e.example", "tok", "Corp", "radius.corp.example", ROOT, ROOT, renew_ps1="x", pin="P")
+    assert "$ours = $text.Contains(" in helper and "(-not $TlsPin -or $text.Contains(\"`$TlsPin = '$TlsPin'\"))" in helper
+    # The setup file writes exactly that line into the shared renew.ps1.
+    assert "$TlsPin = 'P'" in ws.renew_script(_options(pin="P"))
+
+
 @pytest.mark.parametrize(("method", "platform", "origin", "renewer", "expected"), [
     ("link", "windows", "device", "windows-helper", "windows-helper"),
     ("link", "windows", "device", None, None),                       # an older helper, or one that couldn't install the task

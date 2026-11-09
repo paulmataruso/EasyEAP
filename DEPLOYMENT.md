@@ -73,12 +73,12 @@ setup token.
 
 Put your certificate chain and key at `deploy/secrets/tls.crt` and `deploy/secrets/tls.key` (PEM), then run
 `docker compose restart easyeap-proxy easyeap-api`. The API reads the certificate too (Group Policy autoenrollment
-checks channel binding against it, and Linux setup scripts pin its public key). It's a single-file mount, so the API
-sees a replaced file only after a restart.
+checks channel binding against it, and Linux setup scripts and Windows setup files pin its public key). It's a
+single-file mount, so the API sees a replaced file only after a restart.
 
-A Linux computer that doesn't trust the certificate (the temporary self-signed one, for example) falls back on its
-setup script's pin, renewals included. If such computers won't trust the new certificate either, make it with the same
-key (`deploy/secrets/tls.key`), or their renewals fail.
+A computer that doesn't trust the certificate (the temporary self-signed one, for example) falls back on its setup
+script's or setup file's pin, renewals included. If such computers won't trust the new certificate either, make it with
+the same key (`deploy/secrets/tls.key`), or their renewals fail.
 
 ### Settings (`deploy/.env`)
 
