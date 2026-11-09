@@ -36,7 +36,28 @@ export function UserCell({ e, tid, canUsers }: { e: AuthEvent; tid: string; canU
 
 function controllerText(e: AuthEvent, clients?: Lookups['clients']) {
   const c = controllerFor(clients, e)
-  return c?.name ?? e.nas_ip ?? 'Unknown controller'
+  return c?.name ?? e.nas_ip ?? (e.network === 'wired' ? 'Unknown switch' : 'Unknown controller')
+}
+
+/** Where on the network: the switch port for wired attempts, the SSID for Wi-Fi. Events from before wired 802.1X
+ * have no network and show the SSID as before. */
+export function networkLine(e: AuthEvent): string {
+  if (e.network === 'wired') return e.nas_port_id ? `Wired · ${e.nas_port_id}` : 'Wired · port not reported'
+  if (e.network === 'wireless') return e.ssid ? `Wi-Fi · ${e.ssid}` : 'Wi-Fi · SSID not reported'
+  return e.ssid ?? 'SSID not reported'
+}
+
+/** In monitor mode the VLAN is the one EasyEAP would have assigned; it sent none. */
+export const MONITOR_VLAN_NOTE = 'Not sent: monitor mode'
+
+function VlanCell({ e, vlan }: { e: AuthEvent; vlan?: VlanLite }) {
+  if (e.vlan_id === null) return <span className="ee-ink-3">{e.monitor && e.result === 'accept' ? 'None' : '—'}</span>
+  return (
+    <>
+      <VlanTag vlanId={e.vlan_id} name={vlan?.name} color={vlan?.color} />
+      {e.monitor && <span className="mt-0.5 block whitespace-nowrap text-[12px] ee-ink-3" title="The switch is in monitor mode: EasyEAP decided but sent no VLAN, so the device stayed on its port’s VLAN.">{MONITOR_VLAN_NOTE}</span>}
+    </>
+  )
 }
 
 export function EventTable({ tid, events, lookups, onOpen, compact, selectedId, groupByDay }: {
@@ -68,7 +89,7 @@ export function EventTable({ tid, events, lookups, onOpen, compact, selectedId, 
               <th>{compact ? 'Time' : `Time (${timeZoneName})`}</th>
               <th>User</th>
               {!compact && <th>Device MAC</th>}
-              {!compact && <th>Controller / SSID</th>}
+              {!compact && <th>Controller / network</th>}
               <th>Result</th>
               {!compact && <th>VLAN</th>}
               <th>Reason</th>
@@ -98,11 +119,11 @@ export function EventTable({ tid, events, lookups, onOpen, compact, selectedId, 
                     {!compact && (
                       <td className="max-w-[200px]">
                         <span className="block truncate">{controllerText(e, lookups.clients)}</span>
-                        <span className="block truncate text-[12px] ee-ink-3">{e.ssid ?? 'SSID not reported'}</span>
+                        <span className="block truncate text-[12px] ee-ink-3">{networkLine(e)}</span>
                       </td>
                     )}
                     <td><OutcomeChip outcome={e.result} /></td>
-                    {!compact && <td>{e.vlan_id !== null ? <VlanTag vlanId={e.vlan_id} name={vlan(e.vlan_id)?.name} color={vlan(e.vlan_id)?.color} /> : <span className="ee-ink-3">—</span>}</td>}
+                    {!compact && <td><VlanCell e={e} vlan={vlan(e.vlan_id)} /></td>}
                     <td className={cn(compact ? 'max-w-[260px]' : 'max-w-[300px]')}>
                       <span className="flex items-center gap-2">
                         <span className={cn('min-w-0 flex-1 truncate', e.result === 'accept' && 'ee-ink-2')}>{reasonLine(e, lookups.rules)}</span>
@@ -133,8 +154,8 @@ export function EventTable({ tid, events, lookups, onOpen, compact, selectedId, 
                   <p className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[12px] ee-ink-3">
                     <span className="ee-num">{groupByDay ? fmtTime(e.at, true) : ago(e.at, now)}</span>
                     {e.calling_station_id && <span className="ee-mono">{e.calling_station_id}</span>}
-                    {!compact && <span>{controllerText(e, lookups.clients)}{e.ssid ? ` · ${e.ssid}` : ''}</span>}
-                    {!compact && e.vlan_id !== null && <span>VLAN {e.vlan_id}</span>}
+                    {!compact && <span>{controllerText(e, lookups.clients)} · {networkLine(e)}</span>}
+                    {!compact && e.vlan_id !== null && <span>VLAN {e.vlan_id}{e.monitor ? ` (${MONITOR_VLAN_NOTE.toLowerCase()})` : ''}</span>}
                   </p>
                 </div>
                 <button type="button" data-open className="ee-btn ee-btn-ghost ee-btn-sm ee-btn-icon shrink-0" aria-label={`Details for the attempt by ${e.username ?? 'unknown user'} at ${fmtDateTime(e.at)}`}>

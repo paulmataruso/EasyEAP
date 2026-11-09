@@ -1,5 +1,6 @@
 // Client certificates issued in the tenant. GET /api/tenants/{tid}/certificates (routers/certificates.py):
-// q, status (active | expiring | superseded | expired | revoked), purpose, identity_id, page. Intents: ?status=… and ?revoke=<id>.
+// q, status (active | expiring | superseded | expired | revoked; renewal: the dashboard's automatic renewals that are
+// overdue or silent), purpose, identity_id, page. Intents: ?status=… and ?revoke=<id>.
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { FileKey, ShieldX, X } from 'lucide-react'
@@ -7,7 +8,7 @@ import { ApiError } from '../api/client'
 import { useTenant } from '../api/tenant'
 import { useCertificate, useCertificates, usePki, type Certificate, type CertStatusValue } from '../api/people'
 import { paths } from '../routes'
-import { Btn, CertChip, Empty, ErrorState, ESelect, PageHeader, Panel, PlatformIcon, platformLabels, Seg, Tip, toast } from '../ui'
+import { Btn, Callout, CertChip, Empty, ErrorState, ESelect, PageHeader, Panel, PlatformIcon, platformLabels, Seg, Tip, toast } from '../ui'
 import { fmtDate, fmtDateTime, fmtSerial, remaining } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { RevokeDialog } from './people/RevokeDialog'
@@ -24,10 +25,12 @@ export default function Certificates() {
   const now = useNow()
   const { values, page, set, params, setParams } = useUrlState(['q', 'status', 'purpose'] as const)
   const status: StatusFilter = (STATUSES as string[]).includes(values.status) ? (values.status as CertStatusValue) : 'all'
-  const list = useCertificates(tid, { q: values.q || undefined, status: status === 'all' ? undefined : status, purpose: values.purpose || undefined, page, page_size: PAGE_SIZE })
+  // From the dashboard: automatic renewals that are overdue or whose renewer stopped checking in (no segment of its own).
+  const renewalView = values.status === 'renewal'
+  const list = useCertificates(tid, { q: values.q || undefined, status: renewalView ? 'renewal' : status === 'all' ? undefined : status, purpose: values.purpose || undefined, page, page_size: PAGE_SIZE })
   const pki = usePki(tid)
   const data = list.data
-  const filtered = !!(values.q || status !== 'all' || values.purpose)
+  const filtered = !!(values.q || status !== 'all' || values.purpose || renewalView)
   const clear = () => set({ q: null, status: null, purpose: null })
   const issuing = pki.data?.authorities.find((a) => a.role === 'issuing' && a.status === 'active')
   const allCount = data ? STATUSES.reduce((n, s) => n + (data.counts[s] ?? 0), 0) : undefined
@@ -82,9 +85,17 @@ export default function Certificates() {
         <ESelect label="Status" className="min-w-0 flex-1 sm:hidden" value={status} onChange={onStatus}
           options={statusOptions.map((o) => ({ value: o.value, label: <>{o.label}{o.count !== undefined && <span className="ee-ink-3 ml-1.5 tabular-nums">{o.count}</span>}</> }))} />
         <ESelect label="Purpose" className="min-w-0 flex-1 sm:min-w-[160px] sm:flex-none" value={values.purpose || 'any'} onChange={(v) => set({ purpose: v === 'any' ? null : v })}
-          options={[{ value: 'any', label: 'User and device' }, { value: 'user', label: 'User certificates' }, { value: 'device', label: 'Device certificates' }]} />
+          options={[{ value: 'any', label: 'Every kind' }, { value: 'user', label: 'User certificates' }, { value: 'device', label: 'Device certificates' }, { value: 'computer', label: 'Domain computers' }]} />
         {filtered && <Btn size="sm" variant="ghost" onClick={clear}><X aria-hidden />Clear filters</Btn>}
       </div>
+
+      {renewalView && (
+        <Callout tone="warn" className="mb-4" title="Certificates that haven’t renewed by themselves"
+          action={<Btn size="sm" variant="ghost" onClick={clear}><X aria-hidden />Show all</Btn>}>
+          Each should have renewed by now, or its device stopped checking in while it’s due. Open one to see its last check-in and
+          what renews it; the audit log has any refusals (Certificate renewal refused).
+        </Callout>
+      )}
 
       {list.error ? (
         <ErrorState error={list.error} onRetry={() => list.refetch()} title="Certificates couldn’t be loaded" />

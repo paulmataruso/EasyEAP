@@ -14,6 +14,7 @@ from app import audit
 from app import models as m
 from app.config import get_settings
 from app.deps import TenantCtx, require
+from app.pki import renewal
 from app.pki import service as pki
 from app.pki.openbao import OpenBao
 
@@ -30,7 +31,10 @@ def ca_out(ca: m.CertificateAuthority) -> dict:
 def template_out(t: m.CertificateTemplate) -> dict:
     return {"id": str(t.id), "name": t.name, "purpose": t.purpose, "key_algorithm": t.key_algorithm, "validity_days": t.validity_days,
             "renew_before_days": t.renew_before_days, "extended_key_usage": t.extended_key_usage, "subject_pattern": t.subject_pattern,
-            "san_patterns": t.san_patterns, "allow_client_keygen": t.allow_client_keygen, "allow_server_keygen": t.allow_server_keygen}
+            "san_patterns": t.san_patterns, "allow_client_keygen": t.allow_client_keygen, "allow_server_keygen": t.allow_server_keygen,
+            # Group Policy autoenrollment's templates: edited under RADIUS → Windows Group Policy, not here.
+            "autoenroll_kind": t.autoenroll_kind, "template_oid": t.template_oid,
+            "revision": f"{t.revision_major}.{t.revision_minor}" if t.autoenroll_kind else None}
 
 
 @router.get("")
@@ -103,7 +107,8 @@ class TemplateIn(BaseModel):
     purpose: str = Field(pattern="^(user|device)$")
     key_algorithm: str = Field(default="ecdsa-p256", pattern="^(ecdsa-p256|ecdsa-p384|rsa-2048|rsa-3072|rsa-4096)$")
     validity_days: int = Field(default=365, ge=1, le=825)
-    renew_before_days: int = Field(default=30, ge=1, le=180)
+    # Ignored: derived from the tenant's renewal percentage (app/pki/renewal.py). Still accepted from older clients.
+    renew_before_days: int | None = None
     subject_pattern: str = Field(default="CN={upn}", max_length=200)
     san_patterns: list[str] = ["upn:{upn}", "email:{email}"]
     allow_client_keygen: bool = True
@@ -128,13 +133,14 @@ def _check_patterns(body: TemplateIn) -> None:
 def create_template(body: TemplateIn, ctx: TenantCtx = Depends(require("templates:write"))) -> dict:
     _check_patterns(body)
     issuing = pki.issuing_ca(ctx.session, ctx.id)
+    days = renewal.derived_days(body.validity_days, renewal.settings(ctx.session, ctx.id).renew_at_percent)
     t = m.CertificateTemplate(tenant_id=ctx.id, extended_key_usage=["clientAuth"], key_usage=["digitalSignature"],
-                              bao_role=f"tpl-{uuid.uuid4().hex[:12]}", **body.model_dump())
+                              bao_role=f"tpl-{uuid.uuid4().hex[:12]}", **body.model_dump(exclude={"renew_before_days"}), renew_before_days=days)
     ctx.session.add(t)
     ctx.session.flush()
     org = issuing.subject.split("O=", 1)[1].split(",", 1)[0] if "O=" in issuing.subject else ""
     pki.write_role(OpenBao(), ctx.id, t, organization=org)
-    audit.record(ctx.session, ctx.actor, "template.created", tenant_id=ctx.id, target_type="template", target_id=t.id, target_label=t.name, detail=body.model_dump())
+    audit.record(ctx.session, ctx.actor, "template.created", tenant_id=ctx.id, target_type="template", target_id=t.id, target_label=t.name, detail={**body.model_dump(), "renew_before_days": t.renew_before_days})
     return template_out(t)
 
 
@@ -144,10 +150,15 @@ def update_template(template_id: uuid.UUID, body: TemplateIn, ctx: TenantCtx = D
     t = ctx.session.get(m.CertificateTemplate, template_id)
     if t is None or t.tenant_id != ctx.id or t.purpose == "radius-server":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Template not found.")
-    for k, v in body.model_dump().items():
+    if t.autoenroll_kind:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This template belongs to Group Policy autoenrollment. Change its validity under "
+                                                         "RADIUS → Windows Group Policy → Autoenrollment.")
+    percent = renewal.settings(ctx.session, ctx.id).renew_at_percent  # read before changing t: the read flushes
+    for k, v in body.model_dump(exclude={"renew_before_days"}).items():
         setattr(t, k, v)
+    t.renew_before_days = renewal.derived_days(t.validity_days, percent)
     issuing = pki.issuing_ca(ctx.session, ctx.id)
     org = issuing.subject.split("O=", 1)[1].split(",", 1)[0] if "O=" in issuing.subject else ""
     pki.write_role(OpenBao(), ctx.id, t, organization=org)
-    audit.record(ctx.session, ctx.actor, "template.updated", tenant_id=ctx.id, target_type="template", target_id=t.id, target_label=t.name, detail=body.model_dump())
+    audit.record(ctx.session, ctx.actor, "template.updated", tenant_id=ctx.id, target_type="template", target_id=t.id, target_label=t.name, detail={**body.model_dump(), "renew_before_days": t.renew_before_days})
     return template_out(t)

@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { ArrowLeft, Circle, CircleCheck, CircleX, Download, Eye, EyeOff, KeyRound, LoaderCircle } from 'lucide-react'
-import { EnrollError, getCaChain, getWifiXml, getWindowsHelper, submitCsr, takePackage, type CsrResult, type PendingInfo, type Platform } from './api'
+import { EnrollError, getCaChain, getLinuxHelper, getWifiXml, getWindowsHelper, submitCsr, takePackage, type CsrResult, type PendingInfo, type Platform } from './api'
 import type { DeviceKey } from './crypto'
 import { fillMobileconfig, generatePassword, profileDisplayName } from './pem'
 import { MIME, saveFile } from './files'
-import { APPLE, closedMeanwhile, fileNames, rootPemOf, type BrowserResult, type GoneReason, type HelperResult, type PackageResult } from './model'
+import { APPLE, closedMeanwhile, fileNames, HELPER_FILE, rootPemOf, type BrowserResult, type GoneReason, type HelperResult, type PackageResult } from './model'
 
 /** pkijs is large: load it when the create step needs it (and prefetch it when that step opens). */
 const loadCrypto = () => import('./crypto')
@@ -217,17 +217,19 @@ export function BrowserCreate({ token, info, platform, onBack, onGone, onDone }:
   )
 }
 
-// ── Windows helper ───────────────────────────────────────────────────────
-export function HelperCreate({ token, info, onBack, onGone, onDone, onUseBrowser }: CreateProps & { onDone: (r: HelperResult) => void; onUseBrowser: () => void }) {
+// ── Setup helper (Windows: PowerShell; Linux: bash) ──────────────────────
+export function HelperCreate({ token, info, platform, onBack, onGone, onDone, onUseBrowser }: CreateProps & { onDone: (r: HelperResult) => void; onUseBrowser: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
+  const linux = platform === 'linux'
+  const file = HELPER_FILE[platform] ?? 'EasyEAP-WiFi-Setup.ps1'
   const get = async () => {
     setBusy(true)
     setError(null)
     try {
-      const script = await getWindowsHelper(token)
+      const script = linux ? await getLinuxHelper(token) : await getWindowsHelper(token)
       const caPem = await getCaChain(token).catch(() => null)
-      saveFile(script, 'EasyEAP-WiFi-Setup.ps1', MIME.ps1)
+      saveFile(script, file, linux ? MIME.sh : MIME.ps1)
       onDone({ kind: 'helper', script, caPem, rootCn: await rootCnOf(caPem), finished: false })
     } catch (e) {
       if (e instanceof EnrollError && e.kind === 'gone') { onGone(await closedMeanwhile(token)); return }
@@ -239,23 +241,37 @@ export function HelperCreate({ token, info, onBack, onGone, onDone, onUseBrowser
   const failure = error ? explain(error) : null
   return (
     <div className="en-enter">
-      <StepHeading focusKey="create-helper" lede={<>On Windows, a small setup helper from {info.tenant} does this for you. It creates your private key inside Windows, where it can’t be copied off this computer, then gets your certificate and adds the <b>{info.network.ssid}</b> network.</>}>
+      <StepHeading
+        focusKey="create-helper"
+        lede={linux
+          ? <>On Linux, a setup script from {info.tenant} does this for you. It creates your private key on this computer, gets your certificate and adds the <b>{info.network.ssid}</b> network, whichever network tools your computer uses.</>
+          : <>On Windows, a small setup helper from {info.tenant} does this for you. It creates your private key inside Windows, where it can’t be copied off this computer, then gets your certificate and adds the <b>{info.network.ssid}</b> network.</>}
+      >
         Create your certificate
       </StepHeading>
       <ul className="en-bullets">
-        <li>It runs as you and doesn’t need administrator rights.</li>
-        <li>It’s a PowerShell script made for this link. Don’t share it: anyone who runs it before you could use your link.</li>
+        {linux ? (
+          <>
+            <li>It works on Ubuntu, Debian, Fedora, Linux Mint and other Linux computers. It asks for your password once, because adding a network for the computer needs administrator rights.</li>
+            <li>It’s a script made for this link. Don’t share it: anyone who runs it before you could use your link.</li>
+          </>
+        ) : (
+          <>
+            <li>It runs as you and doesn’t need administrator rights.</li>
+            <li>It’s a PowerShell script made for this link. Don’t share it: anyone who runs it before you could use your link.</li>
+          </>
+        )}
       </ul>
       {failure && <Note tone="crit" title={failure.title} role="alert" className="mt-5">{failure.body}</Note>}
       <div className="en-actions">
         <Button variant="primary" block onClick={get} busy={busy}>
           {!busy && <Download aria-hidden />}
-          Download the setup helper
+          {linux ? 'Download the setup script' : 'Download the setup helper'}
         </Button>
         <Button variant="ghost" onClick={onBack}><ArrowLeft aria-hidden />Back</Button>
       </div>
       <p className="en-small mt-5">
-        Can’t run PowerShell scripts on this computer?{' '}
+        {linux ? 'Can’t run scripts on this computer?' : 'Can’t run PowerShell scripts on this computer?'}{' '}
         <button type="button" className="underline underline-offset-[3px] text-[var(--ee-ink)] min-h-[44px]" onClick={onUseBrowser}>Create the certificate in this browser instead</button>
       </p>
     </div>

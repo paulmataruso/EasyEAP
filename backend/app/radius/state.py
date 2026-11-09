@@ -15,6 +15,7 @@ from app import models as m
 from app.pki import crypto
 from app.pki import service as pki
 from app.pki.openbao import OpenBao
+from app.radius import cisco_platforms as cp
 
 DEFAULT_PORTS = (1812, 1813)
 log = logging.getLogger("easyeap.radius")
@@ -35,7 +36,9 @@ def parse_address(address: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
 def check_address_unique(session: Session, tenant_id: uuid.UUID, address: str, exclude_id: uuid.UUID | None = None) -> None:
-    """Controller source addresses must not overlap across tenants that share the RADIUS ports (platform-scoped query)."""
+    """Source addresses must not overlap across tenants that share the RADIUS ports (platform-scoped query). Within a
+    tenant a range may contain a more specific one (a switch inside a UniFi range): FreeRADIUS and EasyEAP both pick
+    the longest prefix. The same range twice is refused."""
     net = parse_address(address)
     mine = session.get(m.RadiusSettings, tenant_id)
     my_ports = (mine.auth_port, mine.acct_port) if mine and mine.dedicated_ports else DEFAULT_PORTS
@@ -45,14 +48,19 @@ def check_address_unique(session: Session, tenant_id: uuid.UUID, address: str, e
         ports = (rs.auth_port, rs.acct_port) if rs and rs.dedicated_ports else DEFAULT_PORTS
         if ports != my_ports:
             continue
-        if parse_address(c.address).overlaps(net):
+        other = parse_address(c.address)
+        if other.overlaps(net):
             if c.tenant_id == tenant_id:
-                raise RadiusConfigError(f"This address overlaps the existing controller “{c.name}”.")
+                if other == net:
+                    raise RadiusConfigError(f"“{c.name}” is already registered with this address.")
+                continue
             raise RadiusConfigError("This address overlaps a controller that belongs to another tenant on the same RADIUS ports. "
                                     "Give this tenant dedicated RADIUS ports (RADIUS settings → Advanced) or use a unique source address.")
 
 
-def ensure_server_certificate(session: Session, bao: OpenBao, tenant: m.Tenant, hostname: str) -> m.Certificate:
+def ensure_server_certificate(session: Session, bao: OpenBao, tenant: m.Tenant, hostname: str, now: datetime | None = None) -> m.Certificate:
+    """A new server certificate and key for the RADIUS server. The one it replaces is kept (with its key, encrypted) for
+    14 days so it can be put back if devices refuse the new one (app/pki/renewal.py)."""
     rs = session.get(m.RadiusSettings, tenant.id)
     if rs is None:
         raise RadiusConfigError("Save the RADIUS settings before issuing a server certificate.")
@@ -60,15 +68,43 @@ def ensure_server_certificate(session: Session, bao: OpenBao, tenant: m.Tenant, 
     if tpl is None:
         raise RadiusConfigError("The RADIUS server certificate template is missing. Initialize the tenant PKI first.")
     cert, key_pem = pki.issue_with_server_key(session, bao, tenant, tpl, {"server": hostname}, identity_id=None, device_id=None)
+    old = session.get(m.Certificate, rs.server_certificate_id) if rs.server_certificate_id else None
+    if old is not None and old.id != cert.id and rs.server_key_ct:
+        # Kept for a rollback only when it names the same server: one for an old host name would fail every device
+        # enrolled since the change. The watch (renewal.devices_refusing) starts from this change either way.
+        same = (old.common_name or "").lower() == hostname.lower()
+        rs.previous_server_certificate_id, rs.previous_server_key_ct = (old.id, rs.server_key_ct) if same else (None, None)
+        rs.server_cert_rotated_at = now or datetime.now(UTC)
     rs.server_key_ct = crypto.encrypt(tenant.id, key_pem, bao)
     del key_pem
-    old = session.get(m.Certificate, rs.server_certificate_id) if rs.server_certificate_id else None
     rs.server_certificate_id = cert.id
     rs.server_hostname = hostname
     rs.config_version += 1
     if old is not None and old.id != cert.id:
         old.status = "superseded"  # kept valid until expiry so roaming devices finish; not revoked
     return cert
+
+
+def mab_mode(c: m.RadiusClient) -> str:
+    """How this switch sends MAC authentication, when it's on: "pap" (Catalyst, Cisco Business: PAP with Service-Type
+    Call-Check), "pap-wired" (Nexus, Meraki: PAP without it), "eap" (UniFi MAC-Based, SG300: EAP-MD5); otherwise "no"."""
+    if "wired" not in (c.networks or []) or not (c.wired_profile or {}).get("mab"):
+        return "no"
+    caps = cp.caps_for(c.vendor, c.wired_profile)
+    if caps is not None:
+        return caps.mab or "no"
+    return {"unifi": "eap"}.get(c.vendor, "no")
+
+
+def client_flags(c: m.RadiusClient) -> dict:
+    """Per-switch RADIUS behaviour from its platform (docs/plans/cisco-platforms.md §4, §5): whether MAC refusals become
+    monitor accepts while it's in monitor mode, whether its requests must carry Message-Authenticator, and whether it can
+    apply a VLAN from RADIUS (one that can't fails the port when it gets one)."""
+    caps = cp.caps_for(c.vendor, c.wired_profile) if "wired" in (c.networks or []) else None
+    if caps is None:
+        return {"monitor_accept": False, "message_authenticator": "yes", "send_vlan": True}
+    return {"monitor_accept": caps.monitor == "server", "message_authenticator": caps.message_authenticator,
+            "send_vlan": caps.radius_vlan}
 
 
 def bump(session: Session, tenant_id: uuid.UUID) -> None:
@@ -95,6 +131,12 @@ def desired_state(session: Session, bao: OpenBao) -> dict:
         clients = [{
             "id": str(c.id), "name": c.name, "vendor": c.vendor, "address": c.address,
             "secret": crypto.decrypt_str(t.id, c.secret_ct, bao), "coa": c.coa_enabled, "coa_port": c.coa_port,
+            "networks": [n for n in ("wireless", "wired") if n in (c.networks or [])] or ["wireless"],
+            # Monitor mode: wired requests are decided and logged, but no VLAN or attribute is sent (§5.3).
+            "monitor": "wired" in (c.networks or []) and (c.wired_profile or {}).get("mode") == "monitor",
+            # MAC authentication (docs/plans/mac-auth.md §5.1): how this switch asks, or "no".
+            "mab": mab_mode(c),
+            **client_flags(c),
         } for c in session.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == t.id))]
         tenants.append({
             "id": str(t.id), "slug": t.slug, "name": t.name,

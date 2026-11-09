@@ -92,7 +92,7 @@ export interface CertificateAuthority {
   ocsp: { enabled: boolean; url: string | null } | null
 }
 
-export type CertPurpose = 'user' | 'device' | 'radius-server' | 'admin'
+export type CertPurpose = 'user' | 'device' | 'computer' | 'radius-server' | 'admin'
 
 export interface CertificateTemplate {
   id: string
@@ -205,7 +205,7 @@ export interface Decision {
 
 // ── RADIUS ──────────────────────────────────────────────────────────────────
 
-export type NasVendor = 'cisco-9800' | 'cisco-aireos' | 'unifi' | 'other'
+export type NasVendor = 'cisco-9800' | 'cisco-aireos' | 'cisco-switch' | 'unifi' | 'other'
 
 export interface RadiusClient {
   id: string
@@ -249,6 +249,16 @@ export type FailureCode =
   | 'snapshot_stale'
   | 'tls_handshake'
   | 'client_timeout'
+  | 'network_not_enabled'
+  | 'network_unknown'
+  | 'mab_unsupported'
+  | 'mab_not_enabled'
+  | 'mab_mismatch'
+  | 'mab_password'
+  | 'mac_unknown'
+  | 'mac_disabled'
+  | 'mac_expired'
+  | 'mac_group_disabled'
 
 export interface AuthEvent {
   id: string

@@ -8,17 +8,20 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, exists, func, select
 from sqlalchemy.orm import Session
 
 from app import models as m
+from app.pki import renewal
 from app.policy.service import policy_settings
 from app.radius.explain import explain
 
 SEVERITY = {"critical": 0, "warning": 1, "info": 2}
 # Reject reasons that indicate something to fix (policy_deny is the policy working as configured).
 ACTIONABLE_REJECTS = {"unknown_ca", "cert_unknown", "cert_expired", "cert_revoked", "identity_unauthorized", "account_disabled",
-                      "snapshot_stale", "vlan_assignment", "tls_handshake", "client_timeout"}
+                      "snapshot_stale", "vlan_assignment", "tls_handshake", "client_timeout", "network_not_enabled", "mab_unsupported"}
+# A switch left in monitor mode this long is a reminder: its ports aren't protected yet (docs/plans/wired-8021x.md §6.2).
+MONITOR_NUDGE = timedelta(days=14)
 
 
 # The worker heartbeats every minute and rebuilds every tenant's snapshot hourly.
@@ -45,7 +48,7 @@ def worker_seen_at(s: Session) -> datetime | None:
 def certificate_holders(s: Session, tenant_id: uuid.UUID, now: datetime) -> int:
     return s.scalar(select(func.count(distinct(m.Certificate.identity_id))).where(
         m.Certificate.tenant_id == tenant_id, m.Certificate.status != "revoked", m.Certificate.not_after > now,
-        m.Certificate.purpose.in_(("user", "device")))) or 0
+        m.Certificate.purpose.in_(m.CLIENT_PURPOSES))) or 0
 
 
 def enforcement(s: Session, t: m.Tenant, agent: dict | None, now: datetime | None = None) -> dict:
@@ -63,7 +66,7 @@ def enforcement(s: Session, t: m.Tenant, agent: dict | None, now: datetime | Non
     if rs is None or rs.server_certificate_id is None:
         missing.append({"code": "radius_certificate", "message": "Configure RADIUS and issue its server certificate", "target": "radius"})
     if clients == 0:
-        missing.append({"code": "controllers", "message": "Add a wireless controller", "target": "radius"})
+        missing.append({"code": "controllers", "message": "Add a wireless controller or switch", "target": "radius"})
     if t.status != "active":
         missing.append({"code": "tenant_status", "message": "Activate the tenant" if t.status == "setup" else "The tenant is suspended",
                         "target": "setup" if t.status == "setup" else "tenant"})
@@ -149,7 +152,8 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
     now = now or datetime.now(UTC)
     ps = policy_settings(s, t.id)
     holders = certificate_holders(s, t.id, now)
-    users = s.scalar(select(func.count()).select_from(m.Identity).where(m.Identity.tenant_id == t.id, m.Identity.account_state != "deleted")) or 0
+    users = s.scalar(select(func.count()).select_from(m.Identity).where(m.Identity.tenant_id == t.id, m.Identity.kind == "user",
+                                                                     m.Identity.account_state != "deleted")) or 0
     deadline = datetime.fromisoformat(enf["deadline_at"]) if enf["deadline_at"] else None
     items: list[dict] = []
 
@@ -229,23 +233,47 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
         add("directory_failed", "critical", "Directory sync is failing", detail, "Fix directory connection", "directory",
             affected=holders, impact_at=deadline if not enf["directory_fresh"] else None, source_at=dc.last_sync_at)
 
+    rst = renewal.settings(s, t.id)
     rs = s.get(m.RadiusSettings, t.id)
     if rs is not None and rs.server_certificate_id:
         sc = s.get(m.Certificate, rs.server_certificate_id)
         if sc is not None and sc.not_after <= now + timedelta(days=30):
+            why = (f"It should have rotated by itself on {renewal.renew_from(sc, rst.renew_at_percent):%Y-%m-%d}, which needs the issuing CA "
+                   f"to give the new one at least {renewal.MIN_SERVER_DAYS} days. " if rst.server_cert else
+                   "Automatic rotation is off (PKI → Renewal). ")
             add("server_cert_expiring", "critical", "RADIUS server certificate expires soon" if sc.not_after > now else "RADIUS server certificate has expired",
-                "Devices refuse to connect to a server whose certificate has expired. Rotating it is seamless: devices trust the CA, not the certificate.",
+                "Devices refuse to connect to a server whose certificate has expired. " + why
+                + "Rotating it is seamless for devices that trust the CA rather than the certificate.",
                 "Rotate server certificate", "radius", affected=holders, impact_at=sc.not_after, source_at=sc.not_before)
+        refusing, last = renewal.devices_refusing(s, t.id, now)
+        if refusing:
+            prev = renewal.rollback_candidate(s, rs, now)
+            add("server_cert_rejected", "critical",
+                f"{refusing} device{'s' if refusing != 1 else ''} stopped connecting after the server certificate changed",
+                f"{'They' if refusing != 1 else 'It'} connected in the week before the change on {rs.server_cert_rotated_at:%Y-%m-%d} and "
+                f"{'have' if refusing != 1 else 'has'} failed the secure handshake since. Usually the device's Wi-Fi profile trusts the old "
+                "server certificate itself instead of the CA: enroll it again. "
+                + (f"Until {rs.server_cert_rotated_at + timedelta(days=renewal.ROLLBACK_DAYS):%Y-%m-%d} you can put the previous certificate back "
+                   "from the RADIUS page." if prev else ""),
+                "Review the server certificate", "radius", affected=refusing, impact_at=None, source_at=last)
 
     ca = s.scalars(select(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == t.id, m.CertificateAuthority.role == "issuing")).first()
     if ca is not None and ca.not_after <= now:
         add("issuing_ca_expired", "critical", "Issuing CA has expired",
             "Every certificate it issued has stopped working, and no new ones can be issued. A new issuing CA from the offline root is needed.",
             "Review PKI", "pki", affected=holders, impact_at=ca.not_after, source_at=ca.not_before)
-    elif ca is not None and ca.not_after <= now + timedelta(days=180):
-        add("issuing_ca_expiring", "warning", "Issuing CA expires within six months",
-            "Certificates can't outlive the CA that issued them. Plan a new issuing CA from the offline root before it expires.",
-            "Review PKI", "pki", affected=holders, impact_at=ca.not_after, source_at=ca.not_before)
+    elif ca is not None:
+        longest = s.scalar(select(func.max(m.CertificateTemplate.validity_days)).where(m.CertificateTemplate.tenant_id == t.id)) or 0
+        shortening = ca.not_after - now < timedelta(days=longest)
+        if ca.not_after <= now + timedelta(days=180):
+            add("issuing_ca_expiring", "warning", "Issuing CA expires within six months",
+                "Certificates can't outlive the CA that issued them, so new ones already end when it does. Plan a new issuing CA from "
+                "the offline root before it expires.", "Review PKI", "pki", affected=holders, impact_at=ca.not_after, source_at=ca.not_before)
+        elif shortening:
+            add("issuing_ca_cap", "warning", "New certificates are shorter than their templates say",
+                f"The issuing CA expires on {ca.not_after:%Y-%m-%d} and certificates can't outlive it, so new ones end then too and "
+                "renew sooner in proportion. Plan a new issuing CA from the offline root (PKI → Renewal shows when).",
+                "Review PKI", "pki", affected=0, impact_at=ca.not_after, source_at=ca.not_before)
     if ca is not None and ca.not_after > now and ca.crl_next_update is not None and ca.crl_next_update - now <= CRL_WARN:
         lapsed = ca.crl_next_update <= now
         add("crl_expiring", "critical" if ca.crl_next_update - now <= CRL_CRIT else "warning",
@@ -261,14 +289,91 @@ def needs_action(s: Session, t: m.Tenant, agent: dict | None, enf: dict, now: da
             "start refusing the RADIUS server when it lapses. Renewing it needs the offline root key.",
             "Review PKI", "pki", affected=holders, impact_at=root.crl_next_update, source_at=None)
 
-    soon = now + timedelta(days=ps.expiry_warning_days)
-    exp = s.execute(select(func.count(), func.min(m.Certificate.not_after), func.count(distinct(m.Certificate.identity_id))).where(
-        m.Certificate.tenant_id == t.id, m.Certificate.status == "active", m.Certificate.not_after > now, m.Certificate.not_after <= soon,
-        m.Certificate.purpose.in_(("user", "device")))).one()
-    if exp[0]:
-        add("certs_expiring", "warning", f"{exp[0]} certificate{'s' if exp[0] != 1 else ''} expire within {ps.expiry_warning_days} days",
-            "Devices that aren't re-enrolled stop connecting when their certificate expires. Create a renewal link from each user's record.",
-            "Review expiring certificates", "certificates:expiring", affected=exp[2], impact_at=exp[1], source_at=now)
+    for c in s.scalars(select(m.RadiusClient).where(m.RadiusClient.tenant_id == t.id)):
+        prof = c.wired_profile or {}
+        set_at = prof.get("mode_set_at")
+        if "wired" not in (c.networks or []) or prof.get("mode") != "monitor" or not set_at:
+            continue
+        since = datetime.fromisoformat(set_at)
+        if now - since >= MONITOR_NUDGE:
+            add(f"wired_monitor:{c.id}", "info", f"{c.name} has been in monitor mode for {(now - since).days} days",
+                "Its ports are open: devices that fail 802.1X, or don't try it, still get on the network. Review the evidence and "
+                "enforce when every device that should connect is accepted.", "Review the switch", f"radius:client:{c.id}",
+                affected=0, impact_at=None, source_at=since)
+
+    # Switch audit: open findings nobody has acknowledged, one item per switch (docs/plans/switch-audit.md §7).
+    from app.switchaudit.findings import TEXT as AUDIT_TEXT
+    open_rows = s.execute(select(m.SwitchFinding, m.RadiusClient.name).join(m.RadiusClient, m.RadiusClient.id == m.SwitchFinding.client_id)
+                          .where(m.SwitchFinding.tenant_id == t.id, m.SwitchFinding.resolved_at.is_(None), m.SwitchFinding.opened_at.is_not(None),
+                                 m.SwitchFinding.acknowledged_at.is_(None))
+                          .order_by(m.SwitchFinding.opened_at)).all()
+    by_switch: dict[uuid.UUID, list] = {}
+    for f, name in open_rows:
+        by_switch.setdefault(f.client_id, []).append((f, name))
+    for cid, rows in by_switch.items():
+        crit = [f for f, _ in rows if f.severity == "critical"]
+        top = (crit or [f for f, _ in rows])[0]
+        n = len(rows)
+        where = f" ({top.port})" if top.port else ""
+        add(f"switch_audit:{cid}", "critical" if crit else "warning", f"{rows[0][1]}: {n} switch audit finding{'s' if n != 1 else ''}",
+            AUDIT_TEXT.get(top.kind, ("", ""))[0] + where + (f" And {n - 1} more." if n > 1 else ""),
+            "Review the switch audit", f"radius:client:{cid}", affected=0, impact_at=None, source_at=top.opened_at)
+
+    # Certificates that renew by themselves (Group Policy, the setup file, the Linux script) aren't counted until they're
+    # overdue or their renewer goes silent; the rest need someone (docs/plans/cert-renewal.md §15a item 7, §15b item 7).
+    cr = renewal.client_renewal(s, t.id, ps.expiry_warning_days, now)
+    manual, overdue, silent = cr["manual"], cr["overdue"], cr["silent"]
+    urgent = now + timedelta(days=renewal.OVERDUE_LEFT_DAYS)
+    if manual:
+        n = len(manual)
+        add("certs_expiring", "warning", f"{n} certificate{'s' if n != 1 else ''} expire within {ps.expiry_warning_days} days",
+            f"{'They don’t' if n != 1 else 'It doesn’t'} renew by {'themselves' if n != 1 else 'itself'} (an Apple or Android profile, a "
+            "certificate installed by hand, or renewal turned off), and devices stop connecting when their certificate expires. Give each "
+            "user a new link from their record.", "Review expiring certificates", "certificates:expiring",
+            affected=len({c.identity_id for c in manual}), impact_at=min(c.not_after for c in manual), source_at=now)
+    if silent:
+        n = len(silent)
+        add("renewal_silent", "critical" if any(c.not_after <= urgent for c in silent) else "warning",
+            f"{n} device{'s haven’t' if n != 1 else ' hasn’t'} checked in for renewal in a week",
+            f"{'Their certificates are' if n != 1 else 'Its certificate is'} due for renewal, and the renewal task stopped checking in "
+            f"{renewal.SILENT_DAYS} or more days ago: the device is switched off or away, can't reach EasyEAP, or the task was removed. "
+            "It renews by itself once it's back; one that's gone for good can be revoked.",
+            "Review the certificates", "certificates:renewal", affected=len({c.identity_id for c in silent}),
+            impact_at=min(c.not_after for c in silent), source_at=max(c.renewal_checked_at for c in silent))
+    if overdue:
+        n = len(overdue)
+        add("renewal_overdue", "critical" if any(c.not_after <= urgent for c in overdue) else "warning",
+            f"{n} certificate{'s' if n != 1 else ''} should have renewed by {'themselves' if n != 1 else 'itself'}",
+            f"The device{'s haven’t' if n != 1 else ' hasn’t'} renewed well into the renewal period: switched off or away, the renewal task "
+            "(or Group Policy) can't reach EasyEAP, or EasyEAP refused it (Audit log: Certificate renewal refused).",
+            "Review the certificates", "certificates:renewal", affected=len({c.identity_id for c in overdue}),
+            impact_at=min(c.not_after for c in overdue), source_at=now)
+    for code, action, sev, one, many, body, label in (
+            ("renewal_conflict", "certificate.renewal_conflict", "critical", "A certificate was renewed with two keys",
+             "{n} certificates were renewed with two keys",
+             "A renewal arrived signed by a certificate that another key already renewed, and that newer certificate is in use: "
+             "two devices hold the same key, so it may have been copied. Revoke the certificate (with the certificates renewed "
+             "from it) and enroll the device again.", "Review the certificate"),
+            ("superseded_used", "certificate.superseded_used", "warning", "A renewed certificate is still in use",
+             "{n} renewed certificates are still in use",
+             "RADIUS accepted a certificate more than a day after the one that renewed it was first used. A Windows PC that kept "
+             "the old certificate can do that; so can a copied key. Check the device; revoke the old certificate if it isn't "
+             "needed.", "Review the certificate")):
+        flagged = s.execute(select(m.AuditEvent.target_id, func.max(m.AuditEvent.at)).where(
+            m.AuditEvent.tenant_id == t.id, m.AuditEvent.action == action, m.AuditEvent.at >= now - timedelta(days=14))
+            .group_by(m.AuditEvent.target_id)).all()
+        ids = [uuid.UUID(tid) for tid, _ in flagged if tid]
+        succ = m.Certificate.__table__.alias("succ")
+        # A conflict lasts while a certificate renewed from it isn't revoked; a superseded one in use while it's valid.
+        still = [exists().where(succ.c.renewal_of == m.Certificate.id, succ.c.status != "revoked")] if code == "renewal_conflict" else \
+            [m.Certificate.status != "revoked", m.Certificate.not_after > now]
+        live = s.execute(select(m.Certificate.id, m.Certificate.identity_id).where(
+            m.Certificate.tenant_id == t.id, m.Certificate.id.in_(ids), *still)).all() if ids else []
+        if live:
+            n, last = len(live), max(at for tid, at in flagged if tid in {str(c.id) for c in live})
+            add(code, sev, one if n == 1 else many.format(n=n), body, label,
+                f"certificate:{live[0].id}" if n == 1 else "audit", affected=len({c.identity_id for c in live if c.identity_id}),
+                impact_at=None, source_at=last)
 
     day = now - timedelta(hours=24)
     rows = s.execute(select(m.AuthEvent.reason_code, func.count(), func.count(distinct(m.AuthEvent.calling_station_id)), func.max(m.AuthEvent.at))

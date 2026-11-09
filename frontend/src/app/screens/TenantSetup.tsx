@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowRight, BookUser, Check, KeyRound, ListOrdered, Plus, Power, Router } from 'lucide-react'
+import { ArrowRight, BookUser, Check, EthernetPort, KeyRound, ListOrdered, Plus, Power, Router } from 'lucide-react'
 import { cn } from '@/ui/lib'
 import { api } from '../api/client'
 import { qk } from '../api/keys'
@@ -16,6 +16,7 @@ import { useNow } from '../lib/useNow'
 import { paths, targetPath } from '../routes'
 import { Btn, Callout, Chip, Empty, ErrorState, LoadingBlock, PageHeader, Panel, SectionHeader, Skeleton, errorMessage, toast } from '../ui'
 import { AddControllerDialog } from './radius/Controllers'
+import { AddSwitchDialog, ModeChip } from './radius/Switches'
 import { RadiusSettingsForm, SettingsSummary } from './radius/Settings'
 import { CeremonyForm } from './setup/Ceremony'
 import { useDirectoryLite, useEnforcement, usePolicyLite } from './setup/data'
@@ -50,9 +51,12 @@ export default function TenantSetup() {
     })(),
     (() => {
       const s = radius.data?.settings
-      const n = radius.data?.clients.length ?? 0
+      const all = radius.data?.clients ?? []
+      const n = all.length
+      const sw = all.filter((c) => c.networks.includes('wired') && !c.networks.includes('wireless')).length
+      const counted = [n - sw && `${n - sw} controller${n - sw === 1 ? '' : 's'}`, sw && `${sw} switch${sw === 1 ? '' : 'es'}`].filter(Boolean).join(', ')
       const done = !!s?.server_certificate && n > 0
-      return { id: 'radius' as const, title: 'RADIUS and controllers', state: done ? 'done' as const : 'todo' as const, summary: !s ? 'Not configured' : n === 0 ? 'No controllers yet' : `${n} controller${n === 1 ? '' : 's'}` }
+      return { id: 'radius' as const, title: 'RADIUS and controllers', state: done ? 'done' as const : 'todo' as const, summary: !s ? 'Not configured' : n === 0 ? 'No controllers yet' : counted }
     })(),
     (() => {
       if (!policy.data) return { id: 'policy' as const, title: 'Access policy', state: 'unknown' as const, summary: 'Status unavailable' }
@@ -193,10 +197,12 @@ function RadiusStep({ step, onNext }: { step: Step; onNext: () => void }) {
   const { tid, tenant, can } = useTenant()
   const q = useRadius(tid)
   const [adding, setAdding] = useState(false)
+  const [addingSwitch, setAddingSwitch] = useState(false)
   const now = useNow()
   if (q.error || !q.data) return <><StepHeader step={step} n={3} /><ErrorState error={q.error} onRetry={() => q.refetch()} /></>
   const s = q.data.settings
-  const clients = q.data.clients
+  const clients = q.data.clients.filter((c) => c.networks.includes('wireless'))
+  const switches = q.data.clients.filter((c) => c.networks.includes('wired'))
   return (
     <div className="space-y-6">
       <StepHeader step={step} n={3} />
@@ -218,7 +224,7 @@ function RadiusStep({ step, onNext }: { step: Step; onNext: () => void }) {
         </div>
         {clients.length === 0 ? (
           <Empty icon={<Router />} title={s ? 'No controllers yet' : 'Save the RADIUS settings first'}>
-            {s ? `RADIUS answers only registered controllers. EasyEAP generates a shared secret for each and shows it once, with the controller’s configuration filled in.` : `Controllers are registered against ${tenant.name}’s RADIUS server.`}
+            {!s ? `Controllers are registered against ${tenant.name}’s RADIUS server.` : switches.length ? 'Not needed if this tenant uses only wired 802.1X.' : `RADIUS answers only registered controllers. EasyEAP generates a shared secret for each and shows it once, with the controller’s configuration filled in.`}
           </Empty>
         ) : (
           <>
@@ -233,11 +239,30 @@ function RadiusStep({ step, onNext }: { step: Step; onNext: () => void }) {
           </>
         )}
       </section>
+      <section aria-labelledby="setup-rad-c" className="space-y-3 border-t border-[var(--ee-line)] pt-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 id="setup-rad-c" className="ee-h3 flex items-center gap-2">{switches.length ? <Check className="size-4 text-[var(--ee-valid)]" aria-hidden /> : <span className="ee-num ee-ink-3">c</span>}Switches <span className="ee-small ee-ink-3 font-normal">optional</span></h3>
+          {s && can('radius:write') && <Btn size="sm" onClick={() => setAddingSwitch(true)}><EthernetPort aria-hidden />{switches.length ? 'Add another switch' : 'Add switch'}</Btn>}
+        </div>
+        {switches.length === 0 ? (
+          <p className="ee-small ee-ink-3 max-w-[70ch]">For wired 802.1X on switch ports, using the same device certificates. A new switch starts in monitor mode: devices are checked and logged, but no port is closed until you enforce. You can add switches later from the RADIUS page.</p>
+        ) : (
+          <ul className="divide-y divide-[var(--ee-line)] border-y border-[var(--ee-line)] text-[13.5px]">
+            {switches.map((c) => (
+              <li key={c.id} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2.5">
+                <span className="inline-flex flex-wrap items-baseline gap-2"><Link className="font-semibold underline-offset-2 hover:underline" to={paths.radius(tid, { client: c.id })}>{c.name}</Link> <span className="ee-mono text-[12.5px] ee-ink-2">{c.address}</span><ModeChip c={c} /></span>
+                <span className="ee-small ee-ink-3">{c.last_request_at ? `Last request ${ago(c.last_request_at, now)}` : 'No requests yet'}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
       <div className="flex flex-wrap gap-2 border-t border-[var(--ee-line)] pt-5">
         <NextBtn onNext={onNext} />
         <Link to={paths.radius(tid)} className="ee-btn ee-btn-ghost">RADIUS page</Link>
       </div>
-      {s && <AddControllerDialog open={adding} onOpenChange={setAdding} settings={s} clients={clients} />}
+      {s && <AddControllerDialog open={adding} onOpenChange={setAdding} settings={s} clients={q.data.clients} />}
+      {s && <AddSwitchDialog open={addingSwitch} onOpenChange={setAddingSwitch} settings={s} clients={q.data.clients} />}
     </div>
   )
 }

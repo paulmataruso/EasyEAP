@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Ban, Building, CircleCheck, Download, FilePlus, FlaskConical, Hourglass, Pencil, PlugZap, ShieldX, UserRoundCheck, X } from 'lucide-react'
+import { ArrowLeft, Ban, Building, CircleCheck, Download, FilePlus, FlaskConical, Hourglass, Link2, MonitorCog, Pencil, PlugZap, ShieldX, UserRoundCheck, X } from 'lucide-react'
 import { ApiError, filenameFrom, saveBlob } from '../api/client'
 import { useTenant } from '../api/tenant'
 import {
@@ -20,9 +20,11 @@ import { DecisionLedger, reasonText } from '../ui/ledger'
 import { ago, duration, fmtDate, fmtDateTime, fmtSerial, plural, relative, remaining } from '../lib/format'
 import { pushRecent } from '../lib/recent'
 import { useNow } from '../lib/useNow'
+import { saveSetupAgain, ShowLinkDialog } from './people/GiveAgain'
 import { IssueDialog } from './people/IssueDialog'
 import { RevokeDialog } from './people/RevokeDialog'
-import { AccountChip, EventList, GroupPicker, joinNames, keyOrigin, reasonLabel } from './people/shared'
+import { WindowsSetupDialog } from './people/WindowsSetupDialog'
+import { AccountChip, EventList, GroupPicker, joinNames, keyOrigin, keyStorage, reasonLabel } from './people/shared'
 
 const first = (name: string) => name.split(' ')[0] || name
 const statusRank: Record<string, number> = { active: 0, expiring: 1, expired: 2, revoked: 3 }
@@ -104,6 +106,8 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
   // Issue dialog returns focus to the header button (also when it was opened by ?issue=1).
   const issueBtn = useRef<HTMLButtonElement | null>(null)
   const focusAfterRevoke = useRef<HTMLElement | null>(null)
+  const [setupOpen, setSetupOpen] = useState(false)
+  const setupBtn = useRef<HTMLButtonElement | null>(null)
 
   const certs = useMemo(() => [...u.certificates].sort((a, b) => (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9) || b.not_after.localeCompare(a.not_after)), [u.certificates])
   const live = certs.filter((c) => c.status === 'active' || c.status === 'expiring')
@@ -128,6 +132,7 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
           <>
             <Link to={paths.policy(tid, { test: u.id })} className="ee-btn"><FlaskConical aria-hidden />Test access</Link>
             {canWrite && <Btn onClick={() => setDisconnectOpen(true)}><PlugZap aria-hidden />Disconnect</Btn>}
+            {canIssue && u.account_state === 'enabled' && <Btn ref={setupBtn} onClick={() => setSetupOpen(true)}><MonitorCog aria-hidden />Windows setup</Btn>}
             {canIssue && <Btn ref={issueBtn} variant="primary" onClick={() => setIssueOpen(true)}><FilePlus aria-hidden />Issue certificate</Btn>}
           </>
         }
@@ -214,7 +219,8 @@ function UserRecord({ identity: u, issueOpen, setIssueOpen, canIssue }: { identi
           emptyText={`${first(u.display_name)} hasn’t tried to join Wi-Fi with an EasyEAP certificate yet.`} />
       </Panel>
 
-      {canIssue && <IssueDialog identity={u} open={issueOpen} onOpenChange={setIssueOpen} returnFocus={issueBtn} />}
+      {canIssue && <IssueDialog identity={u} open={issueOpen} onOpenChange={setIssueOpen} returnFocus={issueBtn} onWindowsSetup={() => { setIssueOpen(false); setSetupOpen(true) }} />}
+      {canIssue && <WindowsSetupDialog identity={u} open={setupOpen} onOpenChange={setSetupOpen} returnFocus={setupBtn} />}
       <RevokeDialog cert={revoking ? { ...revoking, identity: { id: u.id, display_name: u.display_name } } : null} open={!!revoking} onOpenChange={(o) => { if (!o) setRevoking(null) }}
         returnFocus={focusAfterRevoke} />
       <DisconnectDialog u={u} open={disconnectOpen} onOpenChange={setDisconnectOpen} />
@@ -308,6 +314,7 @@ function AccessStatement({ u, live, listed, enforceable, enforcement, missing, l
 // ── Certificates ────────────────────────────────────────────────────────
 function CertRow({ tid, c, now, onRevoke, linkRef }: { tid: string; c: Certificate; now: Date; onRevoke?: () => void; linkRef: (el: HTMLAnchorElement | null) => void }) {
   const origin = keyOrigin(c.key_origin)
+  const storage = keyStorage(c.key_storage)
   return (
     <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 py-3 first:pt-0 last:pb-0">
       <div className="min-w-0">
@@ -320,7 +327,8 @@ function CertRow({ tid, c, now, onRevoke, linkRef }: { tid: string; c: Certifica
         <p className="ee-small ee-ink-3 mt-1 flex flex-wrap gap-x-2">
           <Link ref={linkRef} to={paths.certificate(tid, c.id)} className="ee-mono ee-ink-2 underline decoration-[var(--ee-line-3)] hover:text-[var(--ee-ink)]" aria-label={`Open certificate ${fmtSerial(c.serial)}`}>{fmtSerial(c.serial).slice(0, 19)}…</Link>
           <span>{c.purpose === 'device' ? 'Device' : 'User'} certificate</span>
-          <span title={origin.long}>Key: {origin.short}</span>
+          <span title={origin.long}>Key: {origin.short}{storage && <> · <span title={storage.long}>{storage.short}</span></>}</span>
+          {c.renewal_of && <span>Renewed automatically</span>}
         </p>
         {c.status === 'revoked' && (
           <p className="ee-small ee-ink-2 mt-1">Revoked {fmtDateTime(c.revoked_at)} · {reasonLabel(c.revocation_reason)}{c.revoked_by ? ` · by ${c.revoked_by}` : ''}</p>
@@ -338,11 +346,30 @@ function CertRow({ tid, c, now, onRevoke, linkRef }: { tid: string; c: Certifica
 }
 
 // ── Enrollment links ────────────────────────────────────────────────────
+const enrollmentKind = (e: IdentityEnrollment) =>
+  e.method === 'server' ? 'server-generated package'
+    : e.method === 'windows-setup' ? `Windows setup file · ${e.purpose === 'device' ? 'computer’s certificate' : 'user’s certificate'}`
+      : 'key on device'
+
 function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: IdentityDetail; pending: IdentityEnrollment[]; past: IdentityEnrollment[]; now: Date }) {
   const { can } = useTenant()
   const [showPast, setShowPast] = useState(false)
   const [cancelling, setCancelling] = useState<IdentityEnrollment | null>(null)
   const [taking, setTaking] = useState<IdentityEnrollment | null>(null)
+  const [showing, setShowing] = useState<IdentityEnrollment | null>(null)
+  const [saving, setSaving] = useState<string | null>(null)
+  // A Windows setup file holds both its codes: one Download button, on its first waiting row.
+  const fileRow = new Map<string, string>()
+  for (const e of pending) if (e.method === 'windows-setup' && e.device_id && !fileRow.has(e.device_id)) fileRow.set(e.device_id, e.id)
+  const fileAvailable = (e: IdentityEnrollment) => pending.some((p) => p.method === 'windows-setup' && (p.id === e.id || (!!e.device_id && p.device_id === e.device_id)) && p.link_available)
+  const live = (e: IdentityEnrollment) => new Date(e.expires_at) > now
+  const usable = u.account_state === 'enabled'   // a disabled account's codes wait until it's enabled again
+  const kept = (e: IdentityEnrollment) => (e.method === 'windows-setup' ? fileAvailable(e) : !!e.link_available)
+  const saveAgain = async (e: IdentityEnrollment) => {
+    setSaving(e.id)
+    await saveSetupAgain(tid, e, u.display_name)
+    setSaving(null)
+  }
   const statusChip = (e: IdentityEnrollment) => {
     if (e.status === 'pending' && new Date(e.expires_at) <= now) return <Chip tone="neutral" icon={<Hourglass aria-hidden />}>Expired</Chip>
     if (e.status === 'pending') return <Chip tone="gold" icon={<Hourglass aria-hidden />}>Waiting for device</Chip>
@@ -356,10 +383,12 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <PlatformIcon platform={e.platform} />
           <span className="text-[13.5px] font-semibold">{e.device_name}</span>
-          <span className="ee-small ee-ink-3">{platformLabels[e.platform] ?? e.platform} · {e.method === 'server' ? 'server-generated package' : 'key on device'}</span>
+          <span className="ee-small ee-ink-3">{platformLabels[e.platform] ?? e.platform} · {enrollmentKind(e)}</span>
           {statusChip(e)}
         </div>
         <p className="ee-small ee-ink-3 mt-1">
+          {actions && live(e) && e.method !== 'server' && !kept(e) && <span className="block">Made before EasyEAP kept {e.method === 'link' ? 'links' : 'setup files'}: it can’t be given again. If it was lost, cancel it and issue a new one.</span>}
+          {actions && live(e) && kept(e) && !usable && <span className="block">The account is {u.account_state} in the directory, so this can’t be used until it’s enabled again.</span>}
           Created {fmtDateTime(e.created_at)} by {e.created_by}
           {e.status === 'pending' && <> · {new Date(e.expires_at) > now ? 'expires' : 'expired'} <time dateTime={e.expires_at} className="ee-ink-2">{fmtDateTime(e.expires_at)}</time> ({relative(e.expires_at, now)})</>}
           {e.status === 'completed' && e.completed_at && <> · completed {fmtDateTime(e.completed_at)}</>}
@@ -367,6 +396,12 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
       </div>
       {actions && (
         <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-start">
+          {e.method === 'link' && e.link_available && usable && can('enrollment:manage') && live(e) && (
+            <Btn size="sm" onClick={() => setShowing(e)}><Link2 aria-hidden />Show link</Btn>
+          )}
+          {e.method === 'windows-setup' && (!e.device_id || fileRow.get(e.device_id) === e.id) && fileAvailable(e) && usable && can('enrollment:manage') && live(e) && (
+            <Btn size="sm" onClick={() => saveAgain(e)} busy={saving === e.id}><Download aria-hidden />Download setup file</Btn>
+          )}
           {e.method === 'server' && can('enrollment:server_keygen') && new Date(e.expires_at) > now && (
             <Btn size="sm" onClick={() => setTaking(e)}><Download aria-hidden />Download package</Btn>
           )}
@@ -383,7 +418,11 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
       ) : (
         <>
           <ul className="ee-divide">{pending.map((e) => row(e, true))}</ul>
-          <p className="ee-small ee-ink-3 mt-3">EasyEAP keeps only a hash of each link, so it can’t show a link again. If one was lost, cancel it and issue a new one.</p>
+          <p className="ee-small ee-ink-3 mt-3">
+            Lost one? <b>Show link</b> gives the same link again and <b>Download setup file</b> the same Windows setup file, with the same one-time codes:
+            no new certificate is made. EasyEAP keeps each code encrypted until it’s used, cancelled or expires, and records every time it’s given again in the audit log.
+            A server-generated package can be downloaded once.
+          </p>
         </>
       )}
       {past.length > 0 && (
@@ -396,6 +435,7 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
       )}
       <CancelEnrollmentDialog tid={tid} identityName={u.display_name} e={cancelling} onClose={() => setCancelling(null)} />
       <TakePackageDialog tid={tid} e={taking} onClose={() => setTaking(null)} />
+      <ShowLinkDialog tid={tid} identityName={u.display_name} e={showing} onClose={() => setShowing(null)} />
     </Panel>
   )
 }

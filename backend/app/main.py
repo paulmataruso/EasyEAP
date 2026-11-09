@@ -22,20 +22,26 @@ from app.routers import (
     admins,
     agent,
     auth,
+    autoenroll,
     backup,
     certificates,
     dashboard,
+    device_admin,
+    device_syslog,
     directory,
     enroll_public,
     enrollments,
     events,
     identities,
     logs,
+    mac,
     pki,
     pki_public,
     policy,
     radius,
+    renewal,
     setup,
+    switch_audit,
     system,
     tenants,
 )
@@ -51,9 +57,11 @@ app = FastAPI(
 )
 
 for r in (setup, auth, tenants, admins, dashboard, identities, directory, pki, certificates, enrollments, enroll_public, policy, radius,
-          events, system, backup, logs, agent, pki_public):
+          events, system, backup, logs, agent, pki_public, mac, device_admin, autoenroll, switch_audit,
+          device_syslog, renewal):
     app.include_router(r.router)
 app.include_router(backup.setup_router)
+app.include_router(autoenroll.public)  # /cep and /ces: Windows, Kerberos
 
 # While a backup is being restored the database and PKI are being replaced: everything except these answers 503 with
 # the progress, which the console shows full-page. RADIUS keeps authenticating from its local data meanwhile.

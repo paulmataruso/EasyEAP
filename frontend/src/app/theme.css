@@ -281,6 +281,9 @@ a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; 
   h1, h2, h3, p { margin: 0; }
 }
 @layer components {
+  /* Live syslog: a message that arrived (or repeated) while watching glows once. */
+  @keyframes ee-arrive { from { background-color: rgba(226, 194, 117, 0.16); } to { background-color: transparent; } }
+  .ee-arrive { animation: ee-arrive 1.6s ease-out; }
   /* Callout: a status line inside a panel. Tone sets the left rule. */
   .ee-callout { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--ee-line); background: rgba(6, 9, 17, 0.4); font-size: 13px; }
   .ee-callout > svg { width: 16px; height: 16px; flex: none; margin-top: 1px; }

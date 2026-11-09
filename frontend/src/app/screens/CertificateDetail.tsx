@@ -1,11 +1,12 @@
-// One certificate: identity, chain, fingerprint, validity, key, the RADIUS decision stored for it, and revocation.
+// One certificate: identity, chain, fingerprint, validity, key, how it renews, the RADIUS decision stored for it, and
+// revocation.
 // GET /api/tenants/{tid}/certificates/{id} and …/pem (routers/certificates.py); CA names from GET /api/tenants/{tid}/pki.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import { ArrowLeft, Download, FileBadge, KeyRound, Landmark, ShieldX, UserRound } from 'lucide-react'
 import { ApiError, saveBlob } from '../api/client'
 import { useTenant } from '../api/tenant'
-import { fetchPem, useCertificate, useCertificateEvents, useIdentity, usePki, usePolicy, type CertificateDetail as Cert } from '../api/people'
+import { fetchPem, useCertificate, useCertificateEvents, useIdentity, usePki, usePolicy, type CertificateDetail as Cert, type Renewer } from '../api/people'
 import { paths } from '../routes'
 import { Btn, Callout, CertChip, CopyButton, Dl, ErrorState, LoadingBlock, PageHeader, Panel, PlatformIcon, platformLabels, SectionHeader, toast, toastError } from '../ui'
 import { DecisionLedger } from '../ui/ledger'
@@ -13,7 +14,7 @@ import { ago, fmtDate, fmtDateTime, fmtFingerprint, fmtSerial, relative, remaini
 import { pushRecent } from '../lib/recent'
 import { useNow } from '../lib/useNow'
 import { RevokeDialog } from './people/RevokeDialog'
-import { certTone, EventList, keyAlgorithm, keyOrigin, REASON_META } from './people/shared'
+import { certTone, EventList, keyAlgorithm, keyOrigin, keyStorage, REASON_META } from './people/shared'
 
 export default function CertificateDetail() {
   const { id = '' } = useParams()
@@ -52,6 +53,7 @@ function CertRecord({ c }: { c: Cert }) {
   const root = pki.data?.authorities.find((a) => a.role === 'root' && a.status === 'active')
   const issuingCa = pki.data?.authorities.find((a) => a.common_name === c.issuer) ?? pki.data?.authorities.find((a) => a.role === 'issuing' && a.status === 'active')
   const origin = keyOrigin(c.key_origin)
+  const storage = keyStorage(c.key_storage)
   const isServerCert = c.purpose === 'radius-server'
   const revocable = c.status !== 'revoked' && !isServerCert && can('certificates:revoke')
   const holder = c.identity?.display_name ?? c.common_name
@@ -82,7 +84,7 @@ function CertRecord({ c }: { c: Cert }) {
     <>
       <PageHeader
         title={title}
-        lede={<>{c.purpose === 'device' ? 'Device' : c.purpose === 'radius-server' ? 'RADIUS server' : 'User'} certificate{c.identity ? <> for {c.identity.display_name}</> : null} · serial <span className="ee-mono">{fmtSerial(c.serial).slice(0, 19)}…</span></>}
+        lede={<>{c.purpose === 'device' ? 'Device' : c.purpose === 'computer' ? 'Domain computer' : c.purpose === 'radius-server' ? 'RADIUS server' : 'User'} certificate{c.identity ? <> for {c.identity.display_name}</> : null} · serial <span className="ee-mono">{fmtSerial(c.serial).slice(0, 19)}…</span></>}
         actions={
           <>
             <Btn onClick={downloadPem} busy={downloading}><Download aria-hidden />Download PEM</Btn>
@@ -92,7 +94,7 @@ function CertRecord({ c }: { c: Cert }) {
       >
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
           <CertChip status={c.status} />
-          {c.status === 'superseded' && <span className="ee-small ee-ink-2">A newer certificate replaced it. RADIUS still accepts this one until it expires; revoke it if the old device is gone.</span>}
+          {c.status === 'superseded' && <span className="ee-small ee-ink-2">A newer certificate replaced it. RADIUS still accepts this one until it expires, or until EasyEAP retires it once the device uses the newer one.</span>}
           <span className="ee-small ee-ink-2">
             {c.status === 'revoked' ? <>Revoked {ago(c.revoked_at, now)}</> : c.status === 'expired' ? <>Expired {relative(c.not_after, now)}</> : <>Valid for {remaining(c.not_after, now)}, until {fmtDate(c.not_after)}</>}
           </span>
@@ -126,7 +128,7 @@ function CertRecord({ c }: { c: Cert }) {
               ['Common name', <span className="break-all">{c.common_name}</span>],
               ['Holder', c.identity ? <Link to={paths.user(tid, c.identity.id)} className="underline hover:text-[var(--ee-gold)]">{c.identity.display_name}</Link> : <span className="ee-ink-3">No user linked</span>],
               ['Device', c.device ? <span className="inline-flex items-center gap-2"><PlatformIcon platform={c.device.platform} />{c.device.name}<span className="ee-ink-3">{platformLabels[c.device.platform] ?? c.device.platform}</span></span> : <span className="ee-ink-3">None recorded</span>],
-              ['Purpose', c.purpose === 'device' ? 'Device authentication' : c.purpose === 'radius-server' ? 'RADIUS server' : 'User authentication'],
+              ['Purpose', c.purpose === 'device' ? 'Device authentication' : c.purpose === 'computer' ? 'Domain computer authentication (Group Policy)' : c.purpose === 'radius-server' ? 'RADIUS server' : 'User authentication'],
               ['Subject alternative names', sanList.length === 0 ? <span className="ee-ink-3">None</span> : (
                 <ul className="space-y-0.5">{sanList.map((s) => <li key={s.label + s.value} className="break-all"><span className="ee-ink-3 mr-2 text-[12px]">{s.label}</span><span className="ee-mono text-[12.5px]">{s.value}</span></li>)}</ul>
               ), 'wide'],
@@ -161,6 +163,8 @@ function CertRecord({ c }: { c: Cert }) {
               ['Valid until', <><time dateTime={c.not_after} className="ee-num">{fmtDateTime(c.not_after)}</time><span className="ee-small ee-ink-3 block">{c.status === 'revoked' ? 'No longer valid: revoked' : remaining(c.not_after, now).startsWith('Expired') ? remaining(c.not_after, now) : `${remaining(c.not_after, now)} remaining`}</span></>],
               ['Key algorithm', keyAlgorithm(c.key_algorithm)],
               ['Key generated', <span className="inline-flex items-start gap-1.5"><KeyRound className="mt-0.5 size-3.5 shrink-0 ee-ink-3" aria-hidden /><span>{origin.short}<span className="ee-small ee-ink-3 block">{origin.long}</span></span></span>],
+              ...(storage ? [['Key storage', <>{storage.short}<span className="ee-small ee-ink-3 block">{storage.long}</span></>] as [string, ReactNode]] : []),
+              ...(c.renewal_of ? [['Renewed', <>Automatically, by its own key, from <Link to={paths.certificate(tid, c.renewal_of)} className="underline">the previous certificate</Link></>] as [string, ReactNode]] : []),
               ['Issued', <time dateTime={c.created_at ?? undefined} className="ee-num">{fmtDateTime(c.created_at)}</time>],
               ['Serial', <span className="ee-mono text-[12.5px] break-words">{fmtSerial(c.serial)}</span>],
             ]} />
@@ -168,6 +172,8 @@ function CertRecord({ c }: { c: Cert }) {
         </div>
 
         <div className="min-w-0 space-y-6">
+          {c.renewal && <RenewalCard c={c} />}
+
           <Panel className="px-5 py-4" aria-labelledby="cd-dec">
             <SectionHeader id="cd-dec" title="RADIUS decision for this certificate" meta={decision ? <>computed {ago(decision.computed_at, now)}</> : undefined} />
             {!decision ? (
@@ -202,6 +208,72 @@ function CertRecord({ c }: { c: Cert }) {
 const fpLines = (fp: string) => { const p = fp.split(':'); return [p.slice(0, 16).join(':'), p.slice(16).join(':')].filter(Boolean) }
 
 const tenantCas = (n: number) => (n === 1 ? '1 authority in this tenant' : `${n} authorities in this tenant`)
+
+const RENEWERS: Record<Renewer, { label: string; how: string }> = {
+  'windows-setup': { label: 'Windows setup file', how: 'Its scheduled task asks EasyEAP, signed with this certificate’s key.' },
+  'windows-helper': { label: 'Windows enrollment helper', how: 'Its scheduled task asks EasyEAP, signed with this certificate’s key.' },
+  linux: { label: 'Linux setup script', how: 'Its timer asks EasyEAP as root, signed with this certificate’s key.' },
+  gpo: { label: 'Group Policy autoenrollment', how: 'Windows renews it on its own schedule, inside the template’s renewal period.' },
+  renewed: { label: 'Renews itself', how: 'It was renewed with its own key before; whatever did that asks again.' },
+}
+
+/** How this certificate renews (docs/plans/cert-renewal.md §15b item 8): what does it, when, the last check-in, and
+ * what it was renewed into. */
+export function RenewalCard({ c }: { c: Cert }) {
+  const { tid } = useTenant()
+  const now = useNow()
+  const r = c.renewal
+  if (!r) return null
+  const who = c.renewer ? RENEWERS[c.renewer] : null
+  const v2 = !!c.renewal_checked_at
+  const live = c.status === 'active' || c.status === 'expiring'
+  const items: [string, ReactNode][] = [
+    ['How it renews', who ? <>{who.label}<span className="ee-small ee-ink-3 block">{who.how}</span></>
+      : <>It doesn’t renew by itself<span className="ee-small ee-ink-3 block">An Apple or Android profile, or a certificate installed by hand: the user needs a new link before it expires.</span></>],
+  ]
+  if (who && !r.enabled) items.push(['Automatic renewal', <span className="text-[var(--ee-warn)]">Turned off for {c.purpose === 'user' ? 'user' : 'device'} certificates (Certificate authority → Renewal)</span>])
+  if (live && who) items.push(['Renewal starts', <><time dateTime={r.renew_from} className="ee-num">{fmtDate(r.renew_from)}</time><span className="ee-small ee-ink-3 block">{relative(r.renew_from, now)}</span></>])
+  if (who && c.renewer !== 'gpo') {
+    items.push(['Last check-in', v2
+      ? <><time dateTime={c.renewal_checked_at!} className="ee-num">{ago(c.renewal_checked_at, now)}</time><span className="ee-small ee-ink-3 block">Renewal task version {c.renewer_version}, signed with this certificate’s key</span></>
+      : <span className="ee-ink-2">Not reported<span className="ee-small ee-ink-3 block">An older renewal task: it asks only once the certificate is due, and says nothing before.</span></span>])
+  }
+  if (c.retired_at) items.push(['Retired', <><time dateTime={c.retired_at} className="ee-num">{fmtDateTime(c.retired_at)}</time><span className="ee-small ee-ink-3 block">Revoked by EasyEAP once its device used the newer certificate</span></>])
+  const succ = c.successors ?? []
+  return (
+    <Panel className="px-5 py-4" aria-labelledby="cd-ren">
+      <SectionHeader id="cd-ren" title="Renewal" />
+      {r.state === 'silent' && (
+        <Callout tone="warn" className="mb-3" title="Its renewal task stopped checking in">
+          The certificate is due for renewal, and the device hasn’t been heard from since {fmtDate(c.renewal_checked_at)}: switched off or away, unable
+          to reach EasyEAP, or the task was removed. It renews by itself once it’s back.
+        </Callout>
+      )}
+      {r.state === 'overdue' && (
+        <Callout tone="warn" className="mb-3" title="It should have renewed by now">
+          {v2 ? 'The device checks in but hasn’t renewed: the audit log says why (Certificate renewal refused).'
+            : 'The device hasn’t asked, or EasyEAP refused it (Audit log: Certificate renewal refused). It may be switched off or away.'}
+        </Callout>
+      )}
+      <Dl items={items} />
+      {succ.length > 0 && (
+        <div className="mt-3 border-t border-[var(--ee-line)] pt-3">
+          <p className="ee-label">Superseded by</p>
+          <ul className="mt-1.5 space-y-1.5 text-[13px]">
+            {succ.map((n) => (
+              <li key={n.id} className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                <Link to={paths.certificate(tid, n.id)} className="ee-mono text-[12.5px] underline">{fmtSerial(n.serial).slice(0, 23)}…</Link>
+                <CertChip status={n.status} />
+                {n.replaced && <span className="ee-small ee-ink-3">Replaced: the device never received it, and asked again</span>}
+                {n.renewal === false && <span className="ee-small ee-ink-3">Replaced it (another template or device), not a renewal</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Panel>
+  )
+}
 
 function ChainStep({ icon, name, sub, current }: { icon: ReactNode; name: string; sub: string; current?: boolean }) {
   return (

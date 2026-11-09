@@ -17,7 +17,7 @@ export interface BrowserResult {
   /** Root CA common name, for the trust prompts. */
   rootCn: string | null
 }
-/** Windows helper downloaded; the helper itself creates the key and posts the CSR. */
+/** Setup helper downloaded (Windows: PowerShell, Linux: bash); the helper itself creates the key and posts the CSR. */
 export interface HelperResult { kind: 'helper'; script: Blob; caPem: string | null; rootCn: string | null; finished: boolean }
 /** IT's server-generated package, taken once: a .p12, or (iPhone, iPad, Mac) an Apple profile wrapping it. */
 export interface PackageResult {
@@ -56,9 +56,12 @@ export async function closedMeanwhile(token: string, ours = false): Promise<Gone
 
 export const APPLE: Platform[] = ['ios', 'macos']
 
-export function routeFor(info: PendingInfo, platform: Platform, windowsRoute: 'helper' | 'browser'): Route {
+/** Platforms with a setup helper: it makes the key on the device and adds the network, so it's their default route. */
+export const HELPER_FILE: Partial<Record<Platform, string>> = { windows: 'EasyEAP-WiFi-Setup.ps1', linux: 'EasyEAP-WiFi-Setup.sh' }
+
+export function routeFor(info: PendingInfo, platform: Platform, helperRoute: 'helper' | 'browser'): Route {
   if (info.method === 'server') return 'package'
-  if (platform === 'windows' && windowsRoute === 'helper') return 'helper'
+  if (HELPER_FILE[platform] && helperRoute === 'helper') return 'helper'
   return APPLE.includes(platform) ? 'profile' : 'p12'
 }
 
@@ -83,6 +86,7 @@ export function guideCtx(info: PendingInfo, platform: Platform, result: FlowResu
     ssid: csr?.network.ssid || info.network.ssid,
     serverName: csr?.network.server_name || info.network.server_name,
     wpa3: csr?.network.wpa3 ?? info.network.wpa3,
+    wired: csr?.network.wired ?? info.network.wired ?? false,
     identity: csr?.identity ?? info.user.upn,
     deviceName: info.device_name,
     profileName: result?.kind === 'browser' || result?.kind === 'package' ? result.profileName : null,
@@ -93,7 +97,7 @@ export function guideCtx(info: PendingInfo, platform: Platform, result: FlowResu
         : APPLE.includes(platform) && result?.kind === 'browser' && result.mobileconfig ? n.mobileconfig : undefined,
       ca: platform === 'android' ? n.caCrt : n.caPem,
       xml: platform === 'windows' && ((result?.kind === 'browser' && result.csr.profiles.windows_xml) || (result?.kind === 'package' && result.wifiXml)) ? n.xml : undefined,
-      helper: 'EasyEAP-WiFi-Setup.ps1',
+      helper: HELPER_FILE[platform] ?? 'EasyEAP-WiFi-Setup.ps1',
     },
     androidCertName: info.network.ssid,
   }

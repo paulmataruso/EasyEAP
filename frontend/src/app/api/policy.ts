@@ -14,9 +14,19 @@ export interface Vlan {
   name: string
   description: string
   color: string
+  /** What a switch port gets when a rule assigns this VLAN: the same VLAN ID, the port's own VLAN (none assigned), or
+   * another VLAN (`wired_vlan_id`). */
+  wired_mode: WiredMode
+  wired_vlan_id: number | null
   /** Certificates whose current decision places them on this VLAN. */
   certificates: number
 }
+
+export type WiredMode = 'same' | 'port' | 'vlan'
+
+/** The VLAN a switch port gets for a decision on `v` (null: none assigned, the port keeps its own). */
+export const wiredVlanOf = (v: Pick<Vlan, 'vlan_id' | 'wired_mode' | 'wired_vlan_id'>): number | null =>
+  v.wired_mode === 'port' ? null : v.wired_mode === 'vlan' ? v.wired_vlan_id : v.vlan_id
 
 export interface RuleGroup { id: string; name: string; deleted: boolean }
 export interface ExtraAttribute { name: string; value: string }
@@ -116,7 +126,10 @@ export interface PreviewResponse {
 
 export interface PublishResponse extends PolicyResponse { impact: PreviewSummary }
 
-export interface VlanBody { vlan_id: number; name: string; description: string; color: string }
+export interface VlanBody { vlan_id: number; name: string; description: string; color: string; wired_mode?: WiredMode; wired_vlan_id?: number | null }
+
+/** The simulator's answer: the decision, and its VLAN on switch ports (null: none assigned). */
+export type SimulatedOutcome = Outcome & { wired_vlan_id?: number | null }
 
 const base = (tid: string) => `/api/tenants/${tid}/policy`
 
@@ -127,7 +140,7 @@ export function usePolicy(tid: string) {
 export const policyApi = {
   preview: (tid: string, body: DraftBody) => api.post<PreviewResponse>(`${base(tid)}/preview`, body),
   publish: (tid: string, body: DraftBody) => api.post<PublishResponse>(`${base(tid)}/publish`, body),
-  simulate: (tid: string, identity_id: string, purpose: Purpose) => api.post<Outcome>(`${base(tid)}/simulate`, { identity_id, purpose }),
+  simulate: (tid: string, identity_id: string, purpose: Purpose) => api.post<SimulatedOutcome>(`${base(tid)}/simulate`, { identity_id, purpose }),
   createVlan: (tid: string, body: VlanBody) => api.post<Omit<Vlan, 'certificates'>>(`${base(tid)}/vlans`, body),
   updateVlan: (tid: string, id: string, body: VlanBody) => api.put<Omit<Vlan, 'certificates'>>(`${base(tid)}/vlans/${id}`, body),
   deleteVlan: (tid: string, id: string) => api.del<{ ok: true }>(`${base(tid)}/vlans/${id}`),

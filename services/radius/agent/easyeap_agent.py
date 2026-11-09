@@ -9,7 +9,10 @@ never making authentication depend on the API being reachable:
 * authorization: per-tenant snapshots are written into a local SQLite database (WAL) that FreeRADIUS reads. Each
   tenant's `valid_until` only advances when fresh data arrives, so a long outage fails closed.
 * events: FreeRADIUS writes JSON lines to the spool; the agent ships them in batches and deletes shipped files.
-* CoA: pending Disconnect-Requests are sent with radclient and the result reported back.
+* MAC allow list: its own versioned part of each tenant's snapshot, in the same store (authz_mac, meta_mac).
+* device administration: the admin part of each tenant's snapshot (admin.json, 0600, never read by FreeRADIUS) and
+  the TACACS+ service (tacacs.py), started once a device has admin logins on and supervised like FreeRADIUS.
+* CoA: pending Disconnect-Requests (and Cisco CoA-Requests) are sent with radclient and the result reported back.
 * logs: the agent's own messages and FreeRADIUS warnings and errors go to EasyEAP's system log (and from there to
   remote syslog). They wait in a bounded in-memory buffer while the API is away; FreeRADIUS output still reaches the
   container log unchanged.
@@ -44,6 +47,12 @@ POLL = float(os.environ.get("EASYEAP_POLL_SECONDS", "15"))
 LIVE = STATE / "raddb" / "live"
 DB = STATE / "authz.db"
 SPOOL = STATE / "spool"
+ADMIN_FILE = STATE / "admin.json"
+
+# What this agent's renderer supports beyond 1.0.1, reported in its status so the console offers only what RADIUS runs.
+# pap-wired, monitor-accept, send-vlan, client-message-authenticator and nxos-roles: the Cisco families beyond IOS-XE
+# (docs/plans/cisco-platforms.md), which the console offers only once an agent reports them.
+FEATURES = ["wired", "mab", "coa-request", "tacacs", "pap-wired", "monitor-accept", "send-vlan", "client-message-authenticator", "nxos-roles"]
 
 log = logging.getLogger("radius-agent")
 _stop = threading.Event()
@@ -85,6 +94,10 @@ def classify_freeradius(line: str) -> tuple[str, str] | None:
     if kind == "error":
         return "error", msg
     if kind in ("warning", "warn"):
+        return "warning", msg
+    # A wrong shared secret is logged at Info and the request dropped unanswered, so the NAS only sees a timeout. It's
+    # the one trace of the mistake: keep it (the console's "waiting for the first request" explains it).
+    if kind == "info" and "invalid Message-Authenticator" in msg:
         return "warning", msg
     return None
 
@@ -142,14 +155,24 @@ def api(method: str, path: str, body: dict | None = None, timeout: float = 20) -
 # ── Authorization snapshot store ────────────────────────────────────────────
 
 
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB, timeout=5, isolation_level=None)
+def db(path: Path | None = None) -> sqlite3.Connection:
+    conn = sqlite3.connect(path or DB, timeout=5, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("CREATE TABLE IF NOT EXISTS meta (tenant TEXT PRIMARY KEY, version INTEGER NOT NULL, built_at INTEGER NOT NULL, "
                  "valid_until INTEGER NOT NULL, applied_at INTEGER NOT NULL, digest TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS authz (tenant TEXT NOT NULL, serial TEXT NOT NULL, outcome TEXT NOT NULL, reason TEXT, "
                  "vlan TEXT, rule_id TEXT, username TEXT, extra TEXT, not_after INTEGER, PRIMARY KEY (tenant, serial))")
+    # The VLAN on switch ports, where the snapshot gives one ('' = assign none). A separate table, so `authz` stays
+    # exactly as older agents and configurations read and write it; the version ties each row to the snapshot that
+    # wrote it, so rows left behind by a rollback to an older agent are ignored.
+    conn.execute("CREATE TABLE IF NOT EXISTS authz_wired (tenant TEXT NOT NULL, serial TEXT NOT NULL, version INTEGER NOT NULL, "
+                 "vlan TEXT NOT NULL, PRIMARY KEY (tenant, serial))")
+    # The MAC allow list (docs/plans/mac-auth.md §4), with its own version: one row per listed MAC. vlan '' = assign
+    # none; expires_at is checked by RADIUS at lookup time, so an entry expiring needs no new version.
+    conn.execute("CREATE TABLE IF NOT EXISTS authz_mac (tenant TEXT NOT NULL, mac TEXT NOT NULL, version INTEGER NOT NULL, outcome TEXT NOT NULL, "
+                 "reason TEXT, vlan TEXT NOT NULL, device_id TEXT, group_id TEXT, expires_at INTEGER, PRIMARY KEY (tenant, mac))")
+    conn.execute("CREATE TABLE IF NOT EXISTS meta_mac (tenant TEXT PRIMARY KEY, version INTEGER NOT NULL, applied_at INTEGER NOT NULL)")
     return conn
 
 
@@ -157,21 +180,56 @@ def applied_versions(conn: sqlite3.Connection) -> dict[str, int]:
     return {t: v for t, v in conn.execute("SELECT tenant, version FROM meta")}
 
 
+def applied_mac_versions(conn: sqlite3.Connection) -> dict[str, int]:
+    return {t: v for t, v in conn.execute("SELECT tenant, version FROM meta_mac")}
+
+
+_MAC = re.compile(r"^[0-9A-F]{12}$")
+
+
+def apply_mac(conn: sqlite3.Connection, tid: str, version: int, entries: list[dict]) -> None:
+    rows = []
+    for e in entries:
+        mac = str(e.get("mac") or "")
+        if not _MAC.match(mac) or e.get("outcome") not in ("allow", "deny"):
+            continue  # never trust a malformed row into a SQL lookup key
+        rows.append((tid, mac, version, e["outcome"], e.get("reason"), str(e["vlan"]) if e.get("vlan") is not None else "",
+                     e.get("device_id"), e.get("group_id"), int(e["expires_at"]) if e.get("expires_at") else None))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DELETE FROM authz_mac WHERE tenant = ?", (tid,))
+        conn.executemany("INSERT INTO authz_mac VALUES (?,?,?,?,?,?,?,?,?)", rows)
+        conn.execute("INSERT INTO meta_mac VALUES (?,?,?) ON CONFLICT(tenant) DO UPDATE SET version=excluded.version, applied_at=excluded.applied_at",
+                     (tid, version, int(time.time())))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    log.info("Applied MAC allow list for tenant %s: version %s, %d entries", tid, version, len(rows))
+
+
 def apply_snapshot(conn: sqlite3.Connection, snap: dict) -> None:
     tid = snap["tenant_id"]
     now = int(time.time())
+    if "mac_entries" in snap and isinstance(snap.get("mac_version"), int):
+        apply_mac(conn, tid, snap["mac_version"], snap["mac_entries"] or [])
     if snap.get("unchanged"):
         conn.execute("UPDATE meta SET valid_until = MAX(valid_until, ?) WHERE tenant = ? AND version = ?", (snap["valid_until"], tid, snap["version"]))
         return
-    rows = []
+    rows, wired = [], []
     for e in snap["entries"]:
         extra = ";".join(f"{a['name']}={a['value']}" for a in e.get("attributes", []) if ";" not in a["value"])
         rows.append((tid, e["serial"], e["outcome"], e.get("reason"), str(e["vlan"]) if e.get("vlan") is not None else None,
                      e.get("rule_id"), e.get("username"), extra, e.get("not_after")))
+        # No key (an API from before wired 802.1X): no row, so switch ports get the Wi-Fi VLAN as they did then.
+        if "wired_vlan" in e:
+            wired.append((tid, e["serial"], snap["version"], str(e["wired_vlan"]) if e["wired_vlan"] is not None else ""))
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("DELETE FROM authz WHERE tenant = ?", (tid,))
+        conn.execute("DELETE FROM authz_wired WHERE tenant = ?", (tid,))
         conn.executemany("INSERT INTO authz VALUES (?,?,?,?,?,?,?,?,?)", rows)
+        conn.executemany("INSERT INTO authz_wired VALUES (?,?,?,?)", wired)
         conn.execute("INSERT INTO meta VALUES (?,?,?,?,?,?) ON CONFLICT(tenant) DO UPDATE SET version=excluded.version, "
                      "built_at=excluded.built_at, valid_until=excluded.valid_until, applied_at=excluded.applied_at, digest=excluded.digest",
                      (tid, snap["version"], snap["built_at"], snap["valid_until"], now, snap.get("digest")))
@@ -186,7 +244,115 @@ def drop_removed_tenants(conn: sqlite3.Connection, active: list[str]) -> None:
     for (t,) in conn.execute("SELECT tenant FROM meta").fetchall():
         if t not in active:
             conn.execute("DELETE FROM authz WHERE tenant = ?", (t,))
+            conn.execute("DELETE FROM authz_wired WHERE tenant = ?", (t,))
             conn.execute("DELETE FROM meta WHERE tenant = ?", (t,))
+    for (t,) in conn.execute("SELECT tenant FROM meta_mac").fetchall():
+        if t not in active:
+            conn.execute("DELETE FROM authz_mac WHERE tenant = ?", (t,))
+            conn.execute("DELETE FROM meta_mac WHERE tenant = ?", (t,))
+
+
+# ── Device administration (docs/plans/device-admin.md §4) ───────────────────
+
+
+def load_admin(path: Path | None = None) -> dict:
+    try:
+        data = json.loads((path or ADMIN_FILE).read_text())
+        return data if isinstance(data.get("tenants"), dict) else {"tenants": {}}
+    except (OSError, ValueError, AttributeError):
+        return {"tenants": {}}
+
+
+def write_admin(state: dict, path: Path | None = None) -> None:
+    """Atomically, readable by this user only: it holds TACACS+ keys, password hashes and TOTP secrets."""
+    path = path or ADMIN_FILE
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(state, fh, separators=(",", ":"))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def apply_admin(state: dict, snap: dict) -> bool:
+    """Merge one tenant's admin part. True when admin.json must be rewritten: a new version, or validity extended by
+    more than five minutes (the TACACS+ service answers ERROR once a tenant's data is past valid_until)."""
+    if not isinstance(snap.get("admin_version"), int):
+        return False
+    tid, version, until = snap["tenant_id"], snap["admin_version"], int(snap.get("admin_valid_until") or 0)
+    cur = state["tenants"].get(tid)
+    if isinstance(snap.get("admin"), dict):
+        state["tenants"][tid] = {"version": version, "valid_until": until, "admin": snap["admin"]}
+        log.info("Applied device-admin data for tenant %s: version %s, %d devices, %d local accounts, %d directory accounts", tid, version,
+                 len(snap["admin"].get("clients") or []), len(snap["admin"].get("users") or []), len(snap["admin"].get("candidates") or []))
+        return True
+    if cur and cur.get("version") == version and until - int(cur.get("valid_until") or 0) > 300:
+        cur["valid_until"] = until
+        return True
+    return False
+
+
+def admin_versions(state: dict) -> dict[str, int]:
+    return {t: e["version"] for t, e in state["tenants"].items() if isinstance(e.get("version"), int)}
+
+
+def admin_devices(state: dict) -> int:
+    return sum(len((e.get("admin") or {}).get("clients") or []) for e in state["tenants"].values())
+
+
+class Tacacs:
+    """The TACACS+ service as a child process, like FreeRADIUS: restarted if it exits, stopped when no device has admin
+    logins on."""
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen | None = None
+        self.lock = threading.Lock()
+
+    def start(self) -> None:
+        with self.lock:
+            if self.proc and self.proc.poll() is None:
+                return
+            log.info("Starting the TACACS+ service")
+            self.proc = subprocess.Popen([sys.executable, str(Path(__file__).parent / "tacacs.py")], stdout=subprocess.PIPE,  # noqa: S603
+                                         stderr=subprocess.STDOUT)
+            threading.Thread(target=pump_child, args=(self.proc.stdout, "tacacs"), name="tacacs-log", daemon=True).start()
+
+    def stop(self) -> None:
+        with self.lock:
+            if self.proc and self.proc.poll() is None:
+                log.info("Stopping the TACACS+ service")
+                self.proc.terminate()
+                try:
+                    self.proc.wait(10)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+            self.proc = None
+
+    @property
+    def running(self) -> bool:
+        return bool(self.proc and self.proc.poll() is None)
+
+    def ensure(self, wanted: bool) -> None:
+        if wanted and not self.running:
+            self.start()
+        elif not wanted and self.proc is not None:
+            self.stop()
+
+
+_CHILD_LINE = re.compile(r"^\S+ \S+ (?:tacacs) (WARNING|ERROR|CRITICAL) (.*)$")
+
+
+def pump_child(stream, source: str) -> None:
+    """Copy a child's output to the container log; its warnings and errors also go to the system log."""
+    for raw in iter(stream.readline, b""):
+        try:
+            sys.stdout.buffer.write(raw)
+            sys.stdout.flush()
+            m = _CHILD_LINE.match(raw.decode("utf-8", "replace").rstrip())
+            if m:
+                buffer_log(m.group(1).lower(), "radius-agent", m.group(2), source)
+        except Exception:  # noqa: BLE001, S110
+            pass
 
 
 # ── FreeRADIUS supervision ──────────────────────────────────────────────────
@@ -261,7 +427,10 @@ def apply_config(radius: Radius, desired: dict) -> tuple[bool, str | None]:
             LIVE.rename(old)
         new_live.rename(LIVE)
         (STATE / "config.json").write_text(json.dumps({"version": desired["version"], "applied_at": int(time.time()),
-                                                       "tenants": [t["id"] for t in desired.get("tenants", [])]}))
+                                                       "tenants": [t["id"] for t in desired.get("tenants", [])],
+                                                       # Per tenant: the change counter this configuration includes, so
+                                                       # the console knows when a change (e.g. Enforce) is live.
+                                                       "config_versions": {t["id"]: t.get("config_version") for t in desired.get("tenants", [])}}))
         radius.restart()
         return True, None
     except Exception as exc:  # noqa: BLE001
@@ -283,6 +452,15 @@ def current_config_version() -> str | None:
         return json.loads((STATE / "config.json").read_text())["version"]
     except (OSError, ValueError, KeyError):
         return None
+
+
+def applied_config_versions() -> dict[str, int]:
+    """Per tenant, the config_version of the configuration FreeRADIUS is running ({} if applied by an older agent)."""
+    try:
+        got = json.loads((STATE / "config.json").read_text()).get("config_versions")
+        return {str(k): v for k, v in got.items() if isinstance(v, int)} if isinstance(got, dict) else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
 
 
 def served_tenants() -> list[str] | None:
@@ -307,18 +485,28 @@ def _v(rec: dict, *names: str) -> str | None:
     return None
 
 
+ADMIN_FIELDS = ("uid", "ts", "tenant", "client_id", "nas_ip", "username", "user_id", "source", "kind", "result", "reason", "priv_lvl",
+                "command", "rem_addr", "port", "task_id", "message")
+
+
 def transform(kind: str, item: dict) -> dict:
+    if kind == "admin-events":
+        return {k: item.get(k) for k in ADMIN_FIELDS}  # written by tacacs.py, already in shape (commands masked)
     rec = item.get("rec") or {}
     if kind == "events":
         return {"uid": item.get("uid"), "ts": item.get("ts"), "result": item.get("result"), "tenant": _v(rec, "EasyEAP-Tenant"),
                 "user": _v(rec, "User-Name"), "serial": _v(rec, "EasyEAP-Serial", "TLS-Client-Cert-Serial"), "issuer": _v(rec, "TLS-Client-Cert-Issuer"),
                 "mac": _v(rec, "Calling-Station-Id"), "called": _v(rec, "Called-Station-Id"), "nas_ip": _v(rec, "NAS-IP-Address", "Packet-Src-IP-Address"),
                 "src_ip": _v(rec, "EasyEAP-Source", "Packet-Src-IP-Address"),
-                "vlan": _v(rec, "EasyEAP-Vlan"), "rule": _v(rec, "EasyEAP-Rule"), "reason": _v(rec, "EasyEAP-Reason"), "message": _v(rec, "Module-Failure-Message")}
+                "vlan": _v(rec, "EasyEAP-Vlan"), "rule": _v(rec, "EasyEAP-Rule"), "reason": _v(rec, "EasyEAP-Reason"), "message": _v(rec, "Module-Failure-Message"),
+                "network": _v(rec, "EasyEAP-Network"), "port_id": _v(rec, "NAS-Port-Id"), "port_type": _v(rec, "NAS-Port-Type"),
+                "monitor": _v(rec, "EasyEAP-Monitor"), "method": _v(rec, "EasyEAP-Method"), "device_mac": _v(rec, "EasyEAP-Mac"),
+                "mac_device": _v(rec, "EasyEAP-MacDevice"), "mac_group": _v(rec, "EasyEAP-MacGroup"), "service_type": _v(rec, "Service-Type")}
     return {"ts": item.get("ts"), "tenant": _v(rec, "EasyEAP-Tenant"), "status": _v(rec, "Acct-Status-Type"), "session_id": _v(rec, "Acct-Session-Id"),
             "nas_ip": _v(rec, "NAS-IP-Address", "Packet-Src-IP-Address"), "src_ip": _v(rec, "EasyEAP-Source", "Packet-Src-IP-Address"),
             "user": _v(rec, "User-Name"), "mac": _v(rec, "Calling-Station-Id"), "called": _v(rec, "Called-Station-Id"), "framed_ip": _v(rec, "Framed-IP-Address"), "vlan": _v(rec, "Tunnel-Private-Group-Id"),
-            "in_octets": _v(rec, "Acct-Input-Octets"), "out_octets": _v(rec, "Acct-Output-Octets"), "cause": _v(rec, "Acct-Terminate-Cause")}
+            "in_octets": _v(rec, "Acct-Input-Octets"), "out_octets": _v(rec, "Acct-Output-Octets"), "cause": _v(rec, "Acct-Terminate-Cause"),
+            "network": _v(rec, "EasyEAP-Network"), "port_id": _v(rec, "NAS-Port-Id")}
 
 
 def ship_events() -> int:
@@ -330,7 +518,7 @@ def ship_events() -> int:
     sent = 0
     current_hour = time.strftime("%Y%m%d%H", time.gmtime())
     for f in sorted(SPOOL.glob("*.jsonl")):
-        kind = "events" if f.name.startswith("auth-") else "accounting"
+        kind = "events" if f.name.startswith("auth-") else "admin-events" if f.name.startswith("admin-") else "accounting"
         off = offsets.get(f.name, 0)
         with f.open("rb") as fh:
             fh.seek(off)
@@ -360,6 +548,11 @@ def ship_events() -> int:
 # ── CoA ─────────────────────────────────────────────────────────────────────
 
 
+# What radclient sends for each request kind, and the answers that mean yes / no.
+COA_KINDS = {"disconnect": ("disconnect", "Disconnect-ACK", "Disconnect-NAK"),
+             "reauthenticate": ("coa", "CoA-ACK", "CoA-NAK"), "bounce": ("coa", "CoA-ACK", "CoA-NAK")}
+
+
 def send_coa(desired: dict | None) -> None:
     if not desired:
         return
@@ -369,14 +562,16 @@ def send_coa(desired: dict | None) -> None:
         if not secret:
             api("POST", f"/api/agent/coa/{r['id']}", {"status": "failed", "detail": "Controller not in current configuration"})
             continue
+        command, ack, nak = COA_KINDS.get(r.get("kind") or "disconnect", COA_KINDS["disconnect"])
         attrs = "\n".join(f'{k} = "{str(v).replace(chr(34), "")}"' for k, v in r["attributes"].items() if k and v) + "\n"
         try:
-            p = subprocess.run(["radclient", "-x", "-t", "3", "-r", "2", f"{r['address']}:{r['port']}", "disconnect", secret],
+            p = subprocess.run(["radclient", "-x", "-t", "3", "-r", "2", f"{r['address']}:{r['port']}", command, secret],
                                input=attrs, capture_output=True, text=True, timeout=20)
             out = p.stdout + p.stderr
-            status = "acked" if "Disconnect-ACK" in out else "nak" if "Disconnect-NAK" in out else "failed"
-            detail = "Controller acknowledged the disconnect" if status == "acked" else (
-                "Controller refused the disconnect (check CoA settings and the session identifiers)" if status == "nak" else
+            status = "acked" if ack in out else "nak" if nak in out else "failed"
+            what = "disconnect" if command == "disconnect" else "change"
+            detail = f"Controller acknowledged the {what}" if status == "acked" else (
+                f"Controller refused the {what} (check CoA settings and the session identifiers)" if status == "nak" else
                 "No answer from the controller (check that CoA is enabled and UDP %s is allowed)" % r["port"])
         except Exception as exc:  # noqa: BLE001
             status, detail = "failed", str(exc)[:300]
@@ -394,6 +589,9 @@ def main() -> None:
     os.umask(0o077)
     conn = db()
     radius = Radius()
+    tacacs = Tacacs()
+    admin = load_admin()
+    tacacs.ensure(admin_devices(admin) > 0)  # last known admin data, independent of the API
 
     def stop(*_):
         _stop.set()
@@ -409,8 +607,10 @@ def main() -> None:
     while not _stop.is_set():
         try:
             desired = api("GET", "/api/agent/config")
-            # served_tenants() is None once after upgrading from an agent that didn't record them: re-apply to record them.
-            if desired.get("version") != current_config_version() or not (LIVE / "radiusd.conf").exists() or served_tenants() is None:
+            # served_tenants() is None, or the per-tenant change counters are missing, once after upgrading from an agent
+            # that didn't record them: re-apply to record them.
+            if (desired.get("version") != current_config_version() or not (LIVE / "radiusd.conf").exists() or served_tenants() is None
+                    or (desired.get("tenants") and not applied_config_versions())):
                 if desired.get("tenants"):
                     ok, err = apply_config(radius, desired)
                     config_error = err
@@ -419,24 +619,40 @@ def main() -> None:
                     else:
                         log.error("Configuration rejected, keeping the running one: %s", err)
             have = ",".join(f"{t}:{v}" for t, v in applied_versions(conn).items())
-            snaps = api("GET", f"/api/agent/snapshots?have={have}")
+            have_mac = ",".join(f"{t}:{v}" for t, v in applied_mac_versions(conn).items())
+            have_admin = ",".join(f"{t}:{v}" for t, v in admin_versions(admin).items())
+            snaps = api("GET", f"/api/agent/snapshots?have={have}&have_mac={have_mac}&have_admin={have_admin}")
+            changed = False
             for snap in snaps.get("snapshots", []):
                 apply_snapshot(conn, snap)
+                changed |= apply_admin(admin, snap)
             drop_removed_tenants(conn, snaps.get("tenants", []))
+            for t in [t for t in admin["tenants"] if t not in snaps.get("tenants", [])]:
+                del admin["tenants"][t]
+                changed = True
+            if changed:
+                write_admin(admin)
+            tacacs.ensure(admin_devices(admin) > 0)
             ship_events()
             ship_logs()
             send_coa(desired)
             api("POST", "/api/agent/status", {"agent_id": AGENT_ID, "config_version": current_config_version() or "", "config_ok": config_error is None,
                                               "config_error": config_error, "snapshot_versions": applied_versions(conn), "radius_running": radius.running,
-                                              "detail": {"tenants": len((desired or {}).get("tenants", [])), "tenant_ids": served_tenants()}})
+                                              "detail": {"tenants": len((desired or {}).get("tenants", [])), "tenant_ids": served_tenants(),
+                                                         "config_versions": applied_config_versions(), "features": FEATURES,
+                                                         "mac_versions": applied_mac_versions(conn),
+                                                         "admin_versions": admin_versions(admin), "tacacs_running": tacacs.running}})
             last_ok = time.time()
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
             if time.time() - last_ok > 60:
                 log.warning("EasyEAP API unreachable (%s); RADIUS continues with local data", exc)
         except Exception as exc:  # noqa: BLE001
             log.exception("Agent loop error: %s", exc)
+        if admin_devices(admin) > 0 and not tacacs.running:
+            tacacs.start()  # it exited: restart (watched every poll)
         _nudge.wait(POLL)
         _nudge.clear()
+    tacacs.stop()
     radius.stop()
 
 

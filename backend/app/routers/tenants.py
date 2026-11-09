@@ -33,11 +33,12 @@ def health_for(s: Session, t: m.Tenant) -> dict:
     ps = s.get(m.PolicySettings, t.id)
     warn = ps.expiry_warning_days if ps else 30
     active = s.scalar(select(func.count()).select_from(m.Certificate).where(m.Certificate.tenant_id == t.id, m.Certificate.status == "active",
-                                                                            m.Certificate.not_after > now, m.Certificate.purpose.in_(("user", "device")))) or 0
+                                                                            m.Certificate.not_after > now, m.Certificate.purpose.in_(m.CLIENT_PURPOSES))) or 0
     expiring = s.scalar(select(func.count()).select_from(m.Certificate).where(m.Certificate.tenant_id == t.id, m.Certificate.status == "active",
                                                                               m.Certificate.not_after > now, m.Certificate.not_after <= now + timedelta(days=warn),
-                                                                              m.Certificate.purpose.in_(("user", "device")))) or 0
-    users = s.scalar(select(func.count()).select_from(m.Identity).where(m.Identity.tenant_id == t.id, m.Identity.account_state != "deleted")) or 0
+                                                                              m.Certificate.purpose.in_(m.CLIENT_PURPOSES))) or 0
+    users = s.scalar(select(func.count()).select_from(m.Identity).where(m.Identity.tenant_id == t.id, m.Identity.kind == "user",
+                                                                     m.Identity.account_state != "deleted")) or 0
     dc = s.get(m.DirectoryConfig, t.id)
     rs = s.get(m.RadiusSettings, t.id)
     has_ca = s.scalar(select(func.count()).select_from(m.CertificateAuthority).where(m.CertificateAuthority.tenant_id == t.id, m.CertificateAuthority.role == "issuing")) or 0

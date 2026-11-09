@@ -1,8 +1,8 @@
 // RADIUS server settings form and the server-certificate card. Used by the RADIUS screen and the setup wizard.
 import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
-import { RotateCw, Save } from 'lucide-react'
-import { useRotateServerCert, useSaveSettings, type RadiusSettings, type SettingsIn } from '../../api/radius'
+import { RotateCw, Save, Undo2 } from 'lucide-react'
+import { useRollbackServerCert, useRotateServerCert, useSaveSettings, type RadiusSettings, type SettingsIn } from '../../api/radius'
 import { useTenant } from '../../api/tenant'
 import { duration, fmtDate, fmtFingerprint, fmtSerial, remaining } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
@@ -22,11 +22,13 @@ export const defaultSettings = (domain: string): SettingsIn => ({
   tls_min_version: '1.2',
   tls_session_cache: false,
   session_timeout_seconds: 28_800,
+  wired_enabled: false,
 })
 
 const fromSettings = (s: RadiusSettings): SettingsIn => ({
   server_hostname: s.server_hostname, ssid: s.ssid, wpa3: s.wpa3, dedicated_ports: s.dedicated_ports, auth_port: s.auth_port,
   acct_port: s.acct_port, tls_min_version: s.tls_min_version, tls_session_cache: s.tls_session_cache, session_timeout_seconds: s.session_timeout_seconds,
+  wired_enabled: s.wired_enabled,
 })
 
 function validate(v: SettingsIn) {
@@ -141,6 +143,12 @@ export function RadiusSettingsForm({ current, onSaved, onCancel, submitLabel }: 
           options={timeouts.map((s) => ({ value: String(s), label: duration(s) }))} className="min-w-[140px]" />
       </SettingRow>
 
+      <SettingRow label="Wired settings in enrollment packages" hint={v.wired_enabled
+        ? 'On: macOS and Linux packages also set up the Ethernet port for 802.1X with the same certificate. Devices enrolled before this was turned on don’t have it until they enroll again. Windows wired is set up by IT with the Windows wired kit.'
+        : 'Off: packages set up Wi-Fi only. Turn on once a switch is ready for 802.1X; adding a test switch doesn’t change what new devices get.'}>
+        <ESwitch checked={!!v.wired_enabled} onChange={(x) => set('wired_enabled', x)} label="Wired settings in enrollment packages" disabled={!editable} />
+      </SettingRow>
+
       {serverError && <Callout tone="crit" title="Settings weren’t saved">{serverError}</Callout>}
       {editable ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -176,6 +184,7 @@ export function SettingsSummary({ s }: { s: RadiusSettings }) {
     ['Minimum TLS', <span className="ee-num">TLS {s.tls_min_version}</span>],
     ['TLS session cache', s.tls_session_cache ? 'On' : 'Off · full handshake every time'],
     ['Session timeout', duration(s.session_timeout_seconds)],
+    ['Wired in packages', s.wired_enabled ? 'On · macOS and Linux packages set up Ethernet too' : 'Off · Wi-Fi only'],
   ]
   return (
     <dl className="ee-divide">
@@ -194,8 +203,11 @@ export function ServerCertificateCard({ s }: { s: RadiusSettings }) {
   const { tid, can } = useTenant()
   const now = useNow(60_000)
   const [confirm, setConfirm] = useState(false)
+  const [undo, setUndo] = useState(false)
   const rotate = useRotateServerCert(tid)
+  const rollback = useRollbackServerCert(tid)
   const c = s.server_certificate
+  const r = s.server_certificate_renewal ?? null
   if (!c) return <Callout tone="warn" title="No server certificate">Save the settings to issue one. Devices can’t connect until RADIUS presents a certificate from this tenant’s CA.</Callout>
   const days = (new Date(c.not_after).getTime() - now.getTime()) / 864e5
   return (
@@ -211,11 +223,41 @@ export function ServerCertificateCard({ s }: { s: RadiusSettings }) {
           </span>
         </Row>
         <Row k="SHA-256"><span className="ee-mono text-[12px] leading-[1.6] break-all ee-ink-2">{fmtFingerprint(c.fingerprint_sha256)}</span></Row>
+        {r && (
+          <Row k="Renewal">
+            {r.rotates_at
+              ? new Date(r.rotates_at) > now ? <>Rotates by itself on {fmtDate(r.rotates_at)}.</>
+                : r.ca_too_short ? 'Due, but the issuing CA expires too soon to give a new one 30 days: it waits for a new issuing CA.'
+                  : 'Due: a new one is issued within 6 hours.'
+              : <>Automatic rotation is off{can('certificates:read') ? <> (<Link className="underline" to={paths.pki(tid)}>PKI → Renewal</Link>)</> : null}.</>}
+          </Row>
+        )}
       </dl>
+      {r?.previous && (
+        <Callout tone="neutral" title={`The previous certificate can be put back until ${fmtDate(r.previous.until)}`}
+          action={can('radius:write') ? <Btn size="sm" onClick={() => setUndo(true)}><Undo2 aria-hidden />Put the previous certificate back</Btn> : undefined}>
+          Changed {r.rotated_at ? fmtDate(r.rotated_at) : 'recently'}. If devices stopped connecting since (the dashboard says so), their Wi-Fi profile
+          probably trusts the old certificate itself rather than the CA. Putting it back lets them connect while you enroll them again.
+        </Callout>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         {can('radius:write') && <Btn size="sm" onClick={() => setConfirm(true)}><RotateCw aria-hidden />Rotate certificate</Btn>}
         {can('certificates:read') && <Link to={paths.certificate(tid, c.id)} className="ee-btn ee-btn-sm ee-btn-ghost">Certificate record</Link>}
       </div>
+      <EDialog open={undo} onOpenChange={setUndo} title="Put the previous server certificate back?" risk="gold"
+        description={r?.previous ? `RADIUS presents serial ${fmtSerial(r.previous.serial)} again, valid until ${fmtDate(r.previous.not_after)}.` : undefined}
+        footer={<>
+          <Btn variant="ghost" onClick={() => setUndo(false)}>Cancel</Btn>
+          <Btn variant="primary" busy={rollback.isPending} onClick={() => rollback.mutate(undefined, {
+            onSuccess: () => { setUndo(false); toast('Previous server certificate restored', 'RADIUS presents it after its next configuration refresh. Automatic rotation is paused.') },
+            onError: (e) => toast('The certificate wasn’t put back', errorMessage(e), 'crit'),
+          })}><Undo2 aria-hidden />Put it back</Btn>
+        </>}>
+        <div className="space-y-3 text-[13.5px] ee-ink-2">
+          <p>Automatic rotation is paused, or it would issue a new certificate again within hours. Turn it back on under PKI → Renewal once the devices that refused the new one are enrolled again.</p>
+          <p>The certificate set aside can be put back the same way until {r?.previous ? fmtDate(r.previous.until) : 'the end of the 14 days'}.</p>
+        </div>
+      </EDialog>
       <EDialog open={confirm} onOpenChange={setConfirm} title="Rotate the RADIUS server certificate?" risk="gold"
         description={`Issues a new certificate for ${s.server_hostname} from the issuing CA.`}
         footer={<>
@@ -227,7 +269,7 @@ export function ServerCertificateCard({ s }: { s: RadiusSettings }) {
         </>}>
         <div className="space-y-3 text-[13.5px] ee-ink-2">
           <p>Rotation is seamless. Devices validate the server by its name and the tenant’s CA, not by this particular certificate, so they accept the new one without any change on the device.</p>
-          <p>The current certificate is marked superseded rather than revoked, so it stays valid until {fmtDate(c.not_after)}.</p>
+          <p>The current certificate is marked superseded rather than revoked, so it stays valid until {fmtDate(c.not_after)}, and can be put back for 14 days if some devices refuse the new one.</p>
         </div>
       </EDialog>
     </div>

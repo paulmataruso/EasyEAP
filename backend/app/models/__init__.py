@@ -4,18 +4,21 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -23,6 +26,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db import Base
 
 TS = DateTime(timezone=True)
+
+# Certificates that authenticate to RADIUS: a user's, a user's device's, and a domain computer's (Group Policy
+# autoenrollment). The others (radius-server, admin) never get a policy decision.
+CLIENT_PURPOSES = ("user", "device", "computer")
 
 
 def uuid_pk() -> Mapped[uuid.UUID]:
@@ -166,6 +173,13 @@ class CertificateTemplate(Base):
     allow_server_keygen: Mapped[bool] = mapped_column(Boolean, default=False)
     bao_role: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+    # Group Policy autoenrollment (docs/plans/gpo-autoenrollment.md §2.4): the template OID and revision Windows sees
+    # in the policy and finds in the certificate template extension; autoenroll_kind = computer | user (None: not
+    # offered to Windows).
+    template_oid: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    revision_major: Mapped[int] = mapped_column(Integer, default=100, server_default="100")
+    revision_minor: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    autoenroll_kind: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
 
 class Certificate(Base):
@@ -194,6 +208,22 @@ class Certificate(Base):
     revoked_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
     enrollment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+    # Where Windows created the key: tpm | software (a PC without a TPM) | None (not reported). docs/plans/windows-setup.md
+    key_storage: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Renewal by the certificate's own key (POST /api/enroll/renew): the certificate this one replaced, and when this
+    # one was replaced. A certificate renews once.
+    renewal_of: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    renewed_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    # gpo: Windows enrolled it through Group Policy (no enrollment link or setup file). None otherwise.
+    enrollment_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # What renews it by itself (docs/plans/cert-renewal.md §15b): windows-setup | windows-helper | linux | gpo; None: it
+    # needs the user (a new link). The renewer's protocol version, its last signed check-in (v2), the roots it reported,
+    # and when a superseded certificate was revoked because its successor took over.
+    renewer: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    renewer_version: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    renewal_checked_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    trust_reported: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
 
 
 # ── Directory & identity ────────────────────────────────────────────────────
@@ -217,6 +247,10 @@ class DirectoryConfig(Base):
     bind_dn: Mapped[str] = mapped_column(String(500))
     bind_password_ct: Mapped[str] = mapped_column(Text)
     sync_interval_minutes: Mapped[int] = mapped_column(Integer, default=15)
+    # The domain's lockoutThreshold (0 = no lockout), read at sync: device-admin logins cap AD binds below it.
+    lockout_threshold: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The domain's lockOutObservationWindow in seconds (read with the threshold at each sync).
+    lockout_window: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_sync_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     last_sync_status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # ok | failed
     last_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -242,6 +276,9 @@ class Identity(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
     source: Mapped[str] = mapped_column(String(8))  # ad | local
+    # user | computer (an AD computer that enrolled through Group Policy; username NAME$, dns_name its dNSHostName)
+    kind: Mapped[str] = mapped_column(String(10), default="user", server_default="user")
+    dns_name: Mapped[str | None] = mapped_column(String(253), nullable=True)
     object_guid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     username: Mapped[str] = mapped_column(String(256))
     upn: Mapped[str | None] = mapped_column(String(256), nullable=True)
@@ -287,6 +324,10 @@ class Vlan(Base):
     name: Mapped[str] = mapped_column(String(80))
     description: Mapped[str] = mapped_column(String(300), default="")
     color: Mapped[str] = mapped_column(String(16), default="blue")
+    # What a switch port gets when a rule assigns this VLAN: the same VLAN ID, the port's own VLAN (none assigned),
+    # or another VLAN (wired_vlan_id). docs/plans/wired-8021x.md §3.
+    wired_mode: Mapped[str] = mapped_column(String(8), default="same")  # same | port | vlan
+    wired_vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class AccessRule(Base):
@@ -311,6 +352,19 @@ class AccessRuleGroup(Base):
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
 
 
+class RenewalSettings(Base):
+    """Certificate renewal for one tenant (docs/plans/cert-renewal.md §3, §15a)."""
+    __tablename__ = "renewal_settings"
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    user_certs: Mapped[bool] = mapped_column(Boolean, default=True)
+    machine_certs: Mapped[bool] = mapped_column(Boolean, default=True)
+    server_cert: Mapped[bool] = mapped_column(Boolean, default=True)
+    renew_at_percent: Mapped[int] = mapped_column(Integer, default=80)
+    retire_superseded: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    updated_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
+
+
 class PolicySettings(Base):
     __tablename__ = "policy_settings"
     tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
@@ -330,6 +384,7 @@ class Decision(Base):
     reason_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     deciding_rule_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    wired_vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # on switch ports, from the VLAN's mapping; None = assign none
     attributes: Mapped[list[dict]] = mapped_column(JSONB, default=list)
     steps: Mapped[list[dict]] = mapped_column(JSONB, default=list)
     computed_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
@@ -350,11 +405,21 @@ class RadiusSettings(Base):
     tls_min_version: Mapped[str] = mapped_column(String(4), default="1.2")
     tls_session_cache: Mapped[bool] = mapped_column(Boolean, default=False)
     session_timeout_seconds: Mapped[int] = mapped_column(Integer, default=28_800)
+    wired_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  # include wired settings in enrollment packages
     server_certificate_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("certificates.id", ondelete="SET NULL"), nullable=True)
     server_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The certificate and key before the last rotation, kept 14 days so it can be put back (app/pki/renewal.py).
+    previous_server_certificate_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    previous_server_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    server_cert_rotated_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     snapshot_version: Mapped[int] = mapped_column(BigInteger, default=0)
     snapshot_built_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     config_version: Mapped[int] = mapped_column(BigInteger, default=0)
+    # The MAC allow list's own snapshot version (docs/plans/mac-auth.md §4): bumped by admin edits to MAC devices and
+    # device groups only, so certificate recomputes never resend MAC entries and last-seen updates never re-version.
+    mac_version: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Device administration (docs/plans/device-admin.md): its own snapshot part, bumped by admin-login changes only.
+    admin_version: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
 class RadiusClient(Base):
@@ -362,7 +427,9 @@ class RadiusClient(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
     name: Mapped[str] = mapped_column(String(120))
-    vendor: Mapped[str] = mapped_column(String(16))  # cisco-9800 | cisco-aireos | unifi | other
+    vendor: Mapped[str] = mapped_column(String(16))  # cisco-9800 | cisco-aireos | cisco-switch | meraki | unifi | other
+    networks: Mapped[list[str]] = mapped_column(ARRAY(String), default=lambda: ["wireless"])  # wireless | wired: what it may authenticate
+    wired_profile: Mapped[dict] = mapped_column(JSONB, default=dict)  # the switch port plan and rollout mode (app/radius/wired.py); no secrets
     address: Mapped[str] = mapped_column(String(64), index=True)  # IP or CIDR; uniqueness across shared-port tenants enforced in service
     site: Mapped[str] = mapped_column(String(120), default="")
     secret_ct: Mapped[str] = mapped_column(Text)
@@ -371,10 +438,26 @@ class RadiusClient(Base):
     coa_port: Mapped[int] = mapped_column(Integer, default=3799)
     last_request_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+    # Device administration: TACACS+ logins from this device, with its own key (and the previous one during rotation).
+    admin_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    tacacs_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tacacs_key_set_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    tacacs_prev_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tacacs_prev_until: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    # Switch audit (docs/plans/switch-audit.md): how to poll the switch over SNMP (app/switchaudit/service.py
+    # MonitoringIn; no secrets) and the community or SNMPv3 keys as one Transit-encrypted JSON object.
+    monitoring: Mapped[dict] = mapped_column(JSONB, default=dict)
+    snmp_secret_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Device syslog (docs/plans/syslog-full.md §5): {"enabled": bool, "addresses": [extra source addresses]}. A switch
+    # with the audit set up sends from its verified SNMP address without this.
+    syslog: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
 
 
 class AuthEvent(Base):
     __tablename__ = "auth_events"
+    __table_args__ = (Index("ix_auth_events_tenant_network_at", "tenant_id", "network", "at"),
+                      # The switch audit's "EasyEAP's latest answer for this MAC from this switch".
+                      Index("ix_auth_events_client_mac_at", "nas_client_id", "mac", "at"))
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     tenant_id: Mapped[uuid.UUID] = tenant_fk()
     event_uid: Mapped[str] = mapped_column(String(64), unique=True)  # dedupe key from the agent
@@ -391,9 +474,16 @@ class AuthEvent(Base):
     nas_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     nas_client_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     ssid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    network: Mapped[str | None] = mapped_column(String(8), nullable=True)  # wireless | wired
+    nas_port_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # the switch port, e.g. GigabitEthernet1/0/5
+    monitor: Mapped[bool] = mapped_column(Boolean, default=False)  # monitor mode: vlan_id is what would have been assigned
     vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rule_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     raw_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The device's MAC, normalised (12 uppercase hex digits; app/mac.py), from Calling-Station-Id or a MAB User-Name.
+    mac: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    method: Mapped[str | None] = mapped_column(String(8), nullable=True)  # eap-tls | mab | mab-eap; NULL = certificate (older rows)
+    mac_device_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
 
 class AccountingSession(Base):
@@ -411,12 +501,15 @@ class AccountingSession(Base):
     called_station_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     framed_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    network: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    nas_port_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
     stopped_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     input_octets: Mapped[int] = mapped_column(BigInteger, default=0)
     output_octets: Mapped[int] = mapped_column(BigInteger, default=0)
     terminate_cause: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    mac: Mapped[str | None] = mapped_column(String(12), nullable=True)  # normalised Calling-Station-Id, for CoA by device
 
 
 class CoaRequest(Base):
@@ -431,6 +524,234 @@ class CoaRequest(Base):
     result_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+
+
+class DeviceGroup(Base):
+    """A group on the MAC allow list: devices in it get its switch VLAN (docs/plans/mac-auth.md §3)."""
+    __tablename__ = "device_groups"
+    __table_args__ = (UniqueConstraint("tenant_id", "name"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    name: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str] = mapped_column(String(300), default="")
+    # A VLAN from Access policy (mapped for switch ports like any VLAN), or explicitly the port's own VLAN.
+    vlan_ref: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("vlans.id", ondelete="RESTRICT"), nullable=True)
+    port_vlan: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+
+
+class MacDevice(Base):
+    """A device on the MAC allow list. `enabled = False` is blocked. The last-seen columns are filled at ingest and are
+    not part of the snapshot."""
+    __tablename__ = "mac_devices"
+    __table_args__ = (UniqueConstraint("tenant_id", "mac"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    mac: Mapped[str] = mapped_column(String(12))  # normalised: 12 uppercase hex digits
+    name: Mapped[str] = mapped_column(String(120))
+    notes: Mapped[str] = mapped_column(String(500), default="")
+    group_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("device_groups.id", ondelete="RESTRICT"), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    source: Mapped[str] = mapped_column(String(8), default="manual")  # manual | import | learned
+    created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+    created_by: Mapped[str] = mapped_column(String(254), default="")
+    last_seen_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    last_seen_client_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    last_seen_port: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class MacSighting(Base):
+    """A MAC that tried MAC authentication and was refused, per switch and port: what "Seen, not allowed" lists."""
+    __tablename__ = "mac_sightings"
+    __table_args__ = (UniqueConstraint("tenant_id", "mac", "client_id", "port"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    mac: Mapped[str] = mapped_column(String(12))
+    client_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    port: Mapped[str] = mapped_column(String(64), default="")
+    first_seen: Mapped[datetime] = mapped_column(TS)
+    last_seen: Mapped[datetime] = mapped_column(TS, index=True)
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    last_reason: Mapped[str] = mapped_column(String(32))
+    last_event_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)  # last attempt stored as an auth event
+
+
+# ── Device administration (TACACS+) ─────────────────────────────────────────
+
+
+class AdminRole(Base):
+    """What an administrator gets on a device: an IOS privilege level. Two built-ins per tenant."""
+    __tablename__ = "admin_roles"
+    __table_args__ = (UniqueConstraint("tenant_id", "name"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    name: Mapped[str] = mapped_column(String(60))
+    priv_lvl: Mapped[int] = mapped_column(Integer)
+    description: Mapped[str] = mapped_column(String(300), default="")
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+
+
+class AdminUser(Base):
+    """A local device-administration account (not an EasyEAP console administrator)."""
+    __tablename__ = "admin_users"
+    __table_args__ = (UniqueConstraint("tenant_id", "username"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    username: Mapped[str] = mapped_column(String(64))  # case-folded
+    display_name: Mapped[str] = mapped_column(String(120), default="")
+    email: Mapped[str] = mapped_column(String(254), default="")
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)  # scrypt$… (app/admin/passwords.py); None = no password yet
+    password_set_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    totp_secret_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("admin_roles.id", ondelete="RESTRICT"))
+    sites: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)  # empty = every site
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    unlocked_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)  # clears a lockout on the RADIUS nodes
+    last_login_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(254), default="")
+    created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+
+
+class AdminGroupMap(Base):
+    """Members of this directory group may log in to devices with this role (ordered: first match wins)."""
+    __tablename__ = "admin_group_maps"
+    __table_args__ = (UniqueConstraint("tenant_id", "group_id"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    group_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("directory_groups.id", ondelete="CASCADE"))
+    role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("admin_roles.id", ondelete="RESTRICT"))
+    sites: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+
+
+class AdminSettings(Base):
+    __tablename__ = "admin_settings"
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    # Break-glass names: EasyEAP answers ERROR, so the device falls back to its own local account even while EasyEAP is up.
+    local_only_usernames: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    retention_days: Mapped[int] = mapped_column(Integer, default=180)
+
+
+class AdminEvent(Base):
+    """A device-administration login, enable, authorization, exec session or command (TACACS+), from the agent."""
+    __tablename__ = "admin_events"
+    __table_args__ = (Index("ix_admin_events_tenant_at", "tenant_id", "at"), Index("ix_admin_events_tenant_user", "tenant_id", "user_id"))
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    event_uid: Mapped[str] = mapped_column(String(64), unique=True)
+    at: Mapped[datetime] = mapped_column(TS)
+    client_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    nas_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    username: Mapped[str | None] = mapped_column(String(256), nullable=True)  # verbatim for known accounts, a keyed hash otherwise
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)  # admin_users.id or identities.id
+    source: Mapped[str | None] = mapped_column(String(10), nullable=True)  # local | directory
+    kind: Mapped[str] = mapped_column(String(12))  # login | enable | authz | session | command
+    result: Mapped[str] = mapped_column(String(8))  # pass | fail | error | start | stop | update
+    reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    priv_lvl: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    command: Mapped[str | None] = mapped_column(Text, nullable=True)  # masked (app/admin/mask.py)
+    rem_addr: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    port: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class SwitchState(Base):
+    """The latest SNMP poll of one switch (replaced by every poll), and when to poll it next."""
+    __tablename__ = "switch_states"
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radius_clients.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    polled_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    error_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)  # timeout | auth | protocol | config | too_big
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failures: Mapped[int] = mapped_column(Integer, default=0)  # consecutive failed polls
+    last_ok_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    facts: Mapped[dict] = mapped_column(JSONB, default=dict)
+    capabilities: Mapped[dict] = mapped_column(JSONB, default=dict)
+    ports: Mapped[list] = mapped_column(JSONB, default=list)
+    sessions: Mapped[list] = mapped_column(JSONB, default=list)
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    slow: Mapped[bool] = mapped_column(Boolean, default=False)  # the last poll took over a minute: polled half as often
+    next_poll_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    poll_requested_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)  # "Poll now", or a syslog message
+    syslog: Mapped[dict] = mapped_column(JSONB, default=dict)  # no longer written (0012): the counters are in syslog_stats
+
+
+class SwitchFinding(Base):
+    """An audit finding (app/switchaudit/findings.py). Open while resolved_at is NULL: one per switch, kind, port and MAC."""
+    __tablename__ = "switch_findings"
+    __table_args__ = (Index("uq_switch_findings_open", "client_id", "kind", "port", "mac", unique=True,
+                            postgresql_where=text("resolved_at IS NULL")),
+                      Index("ix_switch_findings_tenant_resolved", "tenant_id", "resolved_at"))
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radius_clients.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    severity: Mapped[str] = mapped_column(String(8))  # critical | warning
+    port: Mapped[str] = mapped_column(String(64), default="")
+    mac: Mapped[str] = mapped_column(String(12), default="")
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+    detail_hash: Mapped[str] = mapped_column(String(32), default="")
+    first_seen_at: Mapped[datetime] = mapped_column(TS)
+    last_seen_at: Mapped[datetime] = mapped_column(TS)
+    seen_count: Mapped[int] = mapped_column(Integer, default=1)
+    missing_count: Mapped[int] = mapped_column(Integer, default=0)
+    opened_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)  # NULL: seen once, not confirmed yet
+    resolved_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    ack_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ack_hash: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class SwitchSyslog(Base):
+    """What a device (switch or controller) said over syslog (app/switchaudit/syslog.py), every message, coalesced per
+    identical text per minute. Unauthenticated: shown as "the device says", never a finding. Notable rows (the ones
+    EasyEAP decodes) are kept 14 days, the rest 3. `seq` is set by a trigger on every insert and update: the live
+    view's cursor (one writer, the receiver, keeps commit order = seq order)."""
+    __tablename__ = "switch_syslog"
+    __table_args__ = (Index("ix_switch_syslog_client_last", "client_id", "last_at"),
+                      Index("ix_switch_syslog_tenant_seq", "tenant_id", "seq"),
+                      Index("ix_switch_syslog_client_seq", "client_id", "seq"))
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radius_clients.id", ondelete="CASCADE"))
+    first_at: Mapped[datetime] = mapped_column(TS)
+    last_at: Mapped[datetime] = mapped_column(TS, index=True)
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    severity: Mapped[int] = mapped_column(Integer)
+    facility: Mapped[str] = mapped_column(String(32))
+    mnemonic: Mapped[str] = mapped_column(String(48))
+    port: Mapped[str] = mapped_column(String(64), default="")
+    mac: Mapped[str] = mapped_column(String(12), default="")
+    session_id: Mapped[str] = mapped_column(String(64), default="")
+    subject: Mapped[str] = mapped_column(String(64), default="")  # a RADIUS server, who configured, an err-disable cause, an AP
+    text: Mapped[str] = mapped_column(String(500))
+    seq: Mapped[int] = mapped_column(BigInteger, server_default=func.nextval("switch_syslog_seq"))
+    notable: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    source: Mapped[str] = mapped_column(String(64), default="", server_default="")  # the sender's address
+
+
+class SyslogStats(Base):
+    """Today's syslog counters per device, written by the receiver every few seconds (the quota reads `bytes`)."""
+    __tablename__ = "syslog_stats"
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("radius_clients.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    day: Mapped[date] = mapped_column(Date)
+    received: Mapped[int] = mapped_column(BigInteger, default=0)
+    kept: Mapped[int] = mapped_column(BigInteger, default=0)
+    quota: Mapped[int] = mapped_column(BigInteger, default=0)  # not stored: over the tenant's daily bytes, the device's rate or the open-entry caps
+    bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    last_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    last_tag: Mapped[str] = mapped_column(String(100), default="")
 
 
 class AgentStatus(Base):
@@ -472,6 +793,11 @@ class Enrollment(Base):
     method: Mapped[str] = mapped_column(String(16))  # browser | windows | csr | server
     template_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("certificate_templates.id"))
     token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    # The one-time code of a link or a Windows setup enrollment, encrypted with the tenant's key, so an admin can copy the
+    # link or download the setup file again while it's pending. Cleared when the code is used, cancelled or expires.
+    token_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A Windows setup file's choices, to make the same file again: {"wifi", "wired", "shared_pc", "user", "computer"}.
+    setup_options: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|completed|expired|cancelled
     created_by: Mapped[str] = mapped_column(String(254))
     created_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
@@ -479,6 +805,50 @@ class Enrollment(Base):
     completed_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     certificate_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     renewal_of: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class AutoenrollConfig(Base):
+    """Group Policy autoenrollment for one tenant (docs/plans/gpo-autoenrollment.md)."""
+    __tablename__ = "autoenroll_configs"
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    computers: Mapped[bool] = mapped_column(Boolean, default=True)
+    users: Mapped[bool] = mapped_column(Boolean, default=False)
+    policy_id: Mapped[str] = mapped_column(String(64))  # stable: Group Policy stores it ("Validate Server")
+    oid_root: Mapped[str] = mapped_column(String(128))  # 1.3.6.1.4.1.311.21.8.<6 random arcs>
+    service_account: Mapped[str] = mapped_column(String(20), default="easyeap-cep")
+    keytab_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    keytab_info: Mapped[dict] = mapped_column(JSONB, default=dict)  # principal, realm, kvno, enctypes, problems
+    keytab_uploaded_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    keytab_test: Mapped[dict] = mapped_column(JSONB, default=dict)  # ok, message, at
+    require_channel_binding: Mapped[bool] = mapped_column(Boolean, default=True)
+    computer_group_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("directory_groups.id", ondelete="SET NULL"), nullable=True)
+    response_format: Mapped[str] = mapped_column(String(16), default="unsigned")  # unsigned | signed | pkcs7
+    machine_account_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)  # read at each directory sync
+    signer_cert_pem: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signer_key_ct: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(TS, server_default=func.now())
+
+
+class AutoenrollEvent(Base):
+    """One policy or enrollment request from Windows, for the console's request log. The id is the WSTEP RequestID."""
+    __tablename__ = "autoenroll_events"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[uuid.UUID] = tenant_fk()
+    at: Mapped[datetime] = mapped_column(TS, server_default=func.now(), index=True)
+    service: Mapped[str] = mapped_column(String(8))  # cep | ces
+    caller: Mapped[str] = mapped_column(String(256), default="")
+    kind: Mapped[str | None] = mapped_column(String(10), nullable=True)  # computer | user
+    outcome: Mapped[str] = mapped_column(String(8))  # ok | denied | error
+    code: Mapped[str] = mapped_column(String(32), default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    template: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    machine: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    certificate_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class KeyEscrow(Base):
@@ -497,5 +867,6 @@ TENANT_TABLES = [
     "certificate_authorities", "certificate_templates", "certificates", "directory_configs", "directory_groups",
     "identities", "identity_groups", "devices", "vlans", "access_rules", "access_rule_groups", "policy_settings",
     "decisions", "radius_settings", "radius_clients", "auth_events", "accounting_sessions", "coa_requests",
-    "enrollments", "key_escrow",
+    "enrollments", "key_escrow", "device_groups", "mac_devices", "mac_sightings",
+    "admin_roles", "admin_users", "admin_group_maps", "admin_settings", "admin_events", "renewal_settings",
 ]

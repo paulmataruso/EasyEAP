@@ -1,12 +1,12 @@
 // The signed-in administrator's account: profile and session, password change, two-factor authentication.
-import { useId, useMemo, useState, type FormEvent } from 'react'
+import { useId, useState, type FormEvent } from 'react'
 import { Check, KeyRound, ShieldCheck, ShieldOff, X } from 'lucide-react'
 import { PASSWORD_MIN, groupSecret, passwordProblems, useChangePassword, useMfaDisable, useMfaEnable, useMfaSetup, type MfaSetup } from '../api/account'
 import { useSession } from '../api/session'
 import { fmtDateTime, relative } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { Btn, Callout, Chip, CopyButton, Dl, Field, PageHeader, Panel, SectionHeader, errorMessage, toast } from '../ui'
-import { qrMatrix, qrPath } from './account/qr'
+import { QrCode } from './account/QrCode'
 
 export default function Account() {
   const { me } = useSession()
@@ -97,17 +97,6 @@ function PasswordPanel({ email }: { email: string }) {
   )
 }
 
-function Qr({ text }: { text: string }) {
-  const qr = useMemo(() => { const m = qrMatrix(text); return m ? qrPath(m) : null }, [text])
-  if (!qr) return null
-  return (
-    <svg viewBox={`0 0 ${qr.size} ${qr.size}`} className="size-[184px] shrink-0 rounded-[8px]" role="img" aria-label="QR code for your authenticator app" shapeRendering="crispEdges">
-      <rect width={qr.size} height={qr.size} fill="#ffffff" />
-      <path d={qr.d} fill="#0b0f1a" />
-    </svg>
-  )
-}
-
 function TwoFactorPanel({ enabled, email }: { enabled: boolean; email: string }) {
   const id = useId()
   const setup = useMfaSetup()
@@ -165,7 +154,7 @@ function TwoFactorPanel({ enabled, email }: { enabled: boolean; email: string })
           <section aria-labelledby={`${id}-s1`} className="space-y-3">
             <h3 id={`${id}-s1`} className="ee-h3">1. Add EasyEAP to your authenticator app</h3>
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-              <Qr text={pending.otpauth_uri} />
+              <QrCode text={pending.otpauth_uri} />
               <div className="min-w-0 flex-1 space-y-3">
                 <p className="ee-small ee-ink-2">Scan the code, or enter this key manually as a time-based (TOTP) account named {email}.</p>
                 <div className="flex flex-wrap items-center gap-2">

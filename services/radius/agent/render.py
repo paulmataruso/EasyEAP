@@ -2,7 +2,8 @@
 
 Layout of a rendered tree (one per version, swapped atomically):
   radiusd.conf, dictionary, clients.conf
-  mods-enabled/   eap_<t> (one EAP-TLS instance per tenant), authz (SQLite), linelog_auth, linelog_acct, json, expr, always
+  mods-enabled/   eap_<t> (one EAP-TLS instance per tenant), eapmd5_<t> (UniFi MAC authentication only), authz (SQLite),
+                  linelog_auth, linelog_acct, json, expr, always
   sites-enabled/  easyeap_listen (shared 1812/1813), t_<t> (tenant), t_<t>_check (certificate authorization)
   tenants/<t>/    server.pem, server.key (0600), ca.pem (issuing + root + CRLs)
 """
@@ -119,15 +120,23 @@ ATTRIBUTE	EasyEAP-Vlan		3505	string
 ATTRIBUTE	EasyEAP-Lookup		3506	string
 ATTRIBUTE	EasyEAP-Extra		3507	string
 ATTRIBUTE	EasyEAP-Source		3508	string
+ATTRIBUTE	EasyEAP-Network		3509	string
+ATTRIBUTE	EasyEAP-Monitor		3510	string
+ATTRIBUTE	EasyEAP-Method		3511	string
+ATTRIBUTE	EasyEAP-Mac		3512	string
+ATTRIBUTE	EasyEAP-MacDevice	3513	string
+ATTRIBUTE	EasyEAP-MacGroup	3514	string
 """
 
 
 AUTH_ATTRS = ("&User-Name &Calling-Station-Id &Called-Station-Id &NAS-IP-Address &Packet-Src-IP-Address &TLS-Client-Cert-Serial "
-              "&TLS-Client-Cert-Issuer &Module-Failure-Message &control:EasyEAP-Tenant &control:EasyEAP-Serial &control:EasyEAP-Vlan "
-              "&control:EasyEAP-Rule &control:EasyEAP-Reason &control:EasyEAP-Source")
+              "&TLS-Client-Cert-Issuer &Module-Failure-Message &NAS-Port-Id &NAS-Port-Type &control:EasyEAP-Tenant &control:EasyEAP-Serial "
+              "&control:EasyEAP-Vlan &control:EasyEAP-Rule &control:EasyEAP-Reason &control:EasyEAP-Source &control:EasyEAP-Network &control:EasyEAP-Monitor "
+              "&control:EasyEAP-Method &control:EasyEAP-Mac &control:EasyEAP-MacDevice &control:EasyEAP-MacGroup &Service-Type")
 ACCT_ATTRS = ("&Acct-Status-Type &Acct-Session-Id &NAS-IP-Address &Packet-Src-IP-Address &User-Name &Calling-Station-Id &Called-Station-Id "
-              "&Framed-IP-Address &Tunnel-Private-Group-Id &Acct-Input-Octets &Acct-Output-Octets &Acct-Terminate-Cause &control:EasyEAP-Tenant "
-              "&control:EasyEAP-Source")
+              "&Framed-IP-Address &Tunnel-Private-Group-Id &Acct-Input-Octets &Acct-Output-Octets &Acct-Terminate-Cause &NAS-Port-Id "
+              "&control:EasyEAP-Tenant &control:EasyEAP-Source &control:EasyEAP-Network")
+NETWORKS = ("wireless", "wired")
 UID = "%{md5:%{Packet-Src-IP-Address}%{Packet-Src-Port}%{Packet-Dst-Port}%{Calling-Station-Id}%l%M%{reply:Packet-Type}}"
 
 
@@ -224,6 +233,254 @@ def eap_module(t: dict, raddb: str) -> str:
 """
 
 
+def eapmd5_module(t: dict) -> str:
+    """EAP-MD5, for UniFi's MAC-Based port mode only (docs/plans/mac-auth.md §5.1): the switch answers with the
+    device's MAC as identity and password. Never offered to anything else: certificates stay on eap_<t>."""
+    s = short(t["id"])
+    return f"""eap eapmd5_{s} {{
+	default_eap_type = md5
+	timer_expire = 60
+	ignore_unknown_eap_types = no
+	cisco_accounting_username_bug = no
+	max_sessions = 16384
+	md5 {{
+	}}
+}}
+"""
+
+
+def _set_network(value: str, indent: str) -> str:
+    return f"""{indent}update control {{
+{indent}	&EasyEAP-Network := "{value}"
+{indent}}}"""
+
+
+# A MAC address, as NASes put it at the start of Called-Station-Id ("AA-BB-CC-DD-EE-FF:SSID").
+MAC_RE = r"([0-9A-Fa-f]{2}[-:.]?){5}[0-9A-Fa-f]{2}"
+# A whole value that is a MAC in any usual notation (aabbccddeeff, AA-BB-CC-DD-EE-FF, aabb.ccdd.eeff), with the six
+# octets captured so "%{toupper:%{1}%{2}%{3}%{4}%{5}%{6}}" is EasyEAP's canonical form (app/mac.py).
+MAC_CAPTURE = r"^([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})[-:.]?([0-9A-Fa-f]{2})$"
+MAC_JOINED = "%{toupper:%{1}%{2}%{3}%{4}%{5}%{6}}"
+# pap: Service-Type Call-Check (Catalyst, Cisco Business); pap-wired: PAP with a MAC as name and password on a wired
+# request, without Call-Check (Nexus, Meraki); eap: EAP-MD5 (UniFi MAC-Based, SG300). docs/plans/cisco-platforms.md §5.
+MAB_MODES = ("pap", "pap-wired", "eap", "no")
+# Refusals that a switch in server-side monitor (§4) turns into an Accept without VLAN, logged as what EasyEAP would do.
+MONITOR_ACCEPTABLE = ("mac_unknown", "mac_expired", "snapshot_stale", "deny")
+MONITOR_SESSION_TIMEOUT = 1800  # monitor-accepted devices re-authenticate soon after the switch is enforced
+
+
+def network_block(indent: str = "\t\t") -> str:
+    """Which network a request came from (docs/plans/wired-8021x.md §5.1), as a fixed word in control:EasyEAP-Network.
+
+    1. Called-Station-Id "MAC:" with an empty SSID is wired. hostapd's wired authenticator sends that, and it also
+       hard-codes NAS-Port-Type = Wireless-802.11, so this comes before the port type.
+    2. The port type the NAS reports (Ethernet / Wireless-802.11).
+    3. The one network the client is registered for.
+    4. For a client registered for both (UniFi reports APs and switches from one range): Wi-Fi when Called-Station-Id
+       names an SSID, otherwise wired.
+    Then, for wired requests through a switch in monitor mode, control:EasyEAP-Monitor = "yes" (§5.3)."""
+    i = indent
+    return f"""{i}if (&Called-Station-Id && (&Called-Station-Id =~ /^{MAC_RE}:$/)) {{
+{_set_network("wired", i + chr(9))}
+{i}}}
+{i}elsif (&NAS-Port-Type == Ethernet) {{
+{_set_network("wired", i + chr(9))}
+{i}}}
+{i}elsif (&NAS-Port-Type == Wireless-802.11) {{
+{_set_network("wireless", i + chr(9))}
+{i}}}
+{i}elsif ("%{{client:easyeap_networks}}" == "wired") {{
+{_set_network("wired", i + chr(9))}
+{i}}}
+{i}elsif ("%{{client:easyeap_networks}}" == "wireless") {{
+{_set_network("wireless", i + chr(9))}
+{i}}}
+{i}elsif (&Called-Station-Id && (&Called-Station-Id =~ /^{MAC_RE}:.+$/)) {{
+{_set_network("wireless", i + chr(9))}
+{i}}}
+{i}else {{
+{_set_network("wired", i + chr(9))}
+{i}}}
+{i}if ((&control:EasyEAP-Network == "wired") && ("%{{client:easyeap_monitor}}" == "yes")) {{
+{i}	update control {{
+{i}		&EasyEAP-Monitor := "yes"
+{i}	}}
+{i}}}"""
+
+
+def network_gate(indent: str = "\t\t") -> str:
+    """Refuse a request from a network the client isn't registered for, so a switch registered for Wi-Fi only can't
+    open wired ports. Runs before EAP, so the device learns nothing."""
+    i = indent
+    out = []
+    for n in NETWORKS:
+        out.append(f"""{i}if ((&control:EasyEAP-Network == "{n}") && ("%{{client:easyeap_networks}}" !~ /(^|,){n}(,|$)/)) {{
+{i}	update control {{
+{i}		&EasyEAP-Reason := "network_not_enabled"
+{i}	}}
+{i}	reject
+{i}}}""")
+    return "\n".join(out)
+
+
+def _reject(reason: str, indent: str, extra: str = "") -> str:
+    i = indent
+    return f"""{i}update control {{
+{i}	&EasyEAP-Reason := "{reason}"{extra}
+{i}}}
+{i}reject"""
+
+
+def _refuse(reason: str | None, indent: str) -> str:
+    """A MAC refusal that a switch in server-side monitor (docs/plans/cisco-platforms.md §4) turns into an Accept with no
+    VLAN and a short session: the reason is kept and EasyEAP-Monitor becomes "accepted", so the log shows what EasyEAP
+    would have done. Only PAP MAC requests from a client marked easyeap_monitor_accept, through a switch in monitor mode."""
+    i = indent
+    why = f'{chr(10)}{i}		&EasyEAP-Reason := "{reason}"' if reason else ""
+    return f"""{i}if (("%{{client:easyeap_monitor_accept}}" == "yes") && &control:EasyEAP-Monitor && (&control:EasyEAP-Monitor == "yes") && (&control:EasyEAP-Method == "mab")) {{
+{i}	update control {{{why}
+{i}		&EasyEAP-Monitor := "accepted"
+{i}		&Auth-Type := Accept
+{i}	}}
+{i}	update reply {{
+{i}		&Session-Timeout := {MONITOR_SESSION_TIMEOUT}
+{i}		&Termination-Action := RADIUS-Request
+{i}	}}
+{i}	return
+{i}}}
+{_reject(reason, i) if reason else i + "reject"}"""
+
+
+def mab_detect(indent: str = "\t\t") -> str:
+    """Which requests are MAC authentication (docs/plans/mac-auth.md §5.1), in control:EasyEAP-Method:
+    - "mab": PAP with Service-Type Call-Check and no EAP, from a switch with MAC authentication on and positive
+      evidence of a switch port (Cisco: NAS-Port-Type Ethernet; UniFi: a wired request);
+    - "mab-eap": EAP with a MAC as identity, from a UniFi switch with MAC authentication on, on a wired request.
+    - "mab" too: PAP without Call-Check from a switch whose MAC requests carry none ("pap-wired": Nexus, Meraki), only
+      on a wired request with a port (NAS-Port-Type Ethernet, NAS-Port-Id or NAS-Port), never with a login Service-Type
+      (Login, Administrative, NAS-Prompt), and only when the name is a MAC. A switch admin's RADIUS login is never MAB.
+    A Call-Check request from anything else is refused as mab_not_enabled. Everything else takes the certificate path
+    unchanged, so a certificate whose identity looks like a MAC still works on Wi-Fi and on switches without MAB.
+    control:EasyEAP-Mac is the identity in canonical form; it's set only for these requests, and it's the only value
+    the MAC lookups use."""
+    i = indent
+    return f"""{i}if ((&Service-Type && (&Service-Type == Call-Check) && !&EAP-Message) || (&EAP-Message && ("%{{client:easyeap_mab}}" == "eap") && (&control:EasyEAP-Network == "wired"))) {{
+{i}	if (&User-Name =~ /{MAC_CAPTURE}/) {{
+{i}		update control {{
+{i}			&EasyEAP-Mac := "{MAC_JOINED}"
+{i}		}}
+{i}	}}
+{i}}}
+{i}if (!&EAP-Message && !(&Service-Type && (&Service-Type == Call-Check)) && ("%{{client:easyeap_mab}}" == "pap-wired") && (&control:EasyEAP-Network == "wired") && &User-Password && ((&NAS-Port-Type && (&NAS-Port-Type == Ethernet)) || (!&NAS-Port-Type && (&NAS-Port-Id || &NAS-Port))) && !(&Service-Type && ((&Service-Type == Login-User) || (&Service-Type == Administrative-User) || (&Service-Type == NAS-Prompt-User)))) {{
+{i}	if (&User-Name =~ /{MAC_CAPTURE}/) {{
+{i}		update control {{
+{i}			&EasyEAP-Mac := "{MAC_JOINED}"
+{i}			&EasyEAP-Method := "mab"
+{i}		}}
+{i}	}}
+{i}}}
+{i}elsif (&Service-Type && (&Service-Type == Call-Check) && !&EAP-Message) {{
+{i}	if (&control:EasyEAP-Mac && ((("%{{client:easyeap_mab}}" == "pap") && &NAS-Port-Type && (&NAS-Port-Type == Ethernet)) || (("%{{client:easyeap_mab}}" =~ /^(eap|pap-wired)$/) && (&control:EasyEAP-Network == "wired")))) {{
+{i}		update control {{
+{i}			&EasyEAP-Method := "mab"
+{i}		}}
+{i}	}}
+{i}	else {{
+{_reject("mab_not_enabled", i + chr(9) + chr(9), chr(10) + i + chr(9) + chr(9) + chr(9) + '&EasyEAP-Method := "mab"')}
+{i}	}}
+{i}}}
+{i}elsif (&EAP-Message && &control:EasyEAP-Mac) {{
+{i}	update control {{
+{i}		&EasyEAP-Method := "mab-eap"
+{i}	}}
+{i}}}"""
+
+
+def mab_decide(tid: str, s: str, indent: str = "\t\t\t") -> str:
+    """The MAC request's checks and its allow-list decision. Accepted PAP requests end here (Auth-Type Accept); EAP-MD5
+    continues in eapmd5_<t>. The VLAN is put on the final Access-Accept in post-auth, never on a challenge."""
+    i = indent
+    lookup = ("%{authz:SELECT a.outcome || '|' || COALESCE(a.reason, '') || '|' || a.vlan || '|' || "
+              "CASE WHEN a.expires_at IS NOT NULL AND a.expires_at <= %l THEN 'expired' ELSE 'current' END || '|' || "
+              "COALESCE(a.device_id, '') || '|' || COALESCE(a.group_id, '') FROM authz_mac a JOIN meta_mac m ON m.tenant = a.tenant "
+              f"AND m.version = a.version WHERE a.tenant = '{tid}' AND a.mac = '%{{control:EasyEAP-Mac}}'}}")
+    return f"""{i}# Cisco: the device address the switch reports must be the one it asks about (Nexus, Meraki: when they report one).
+{i}if (("%{{client:easyeap_mab}}" == "pap-wired") && &Calling-Station-Id && !(&Calling-Station-Id =~ /{MAC_CAPTURE}/)) {{
+{_reject("mab_mismatch", i + chr(9))}
+{i}}}
+{i}if (("%{{client:easyeap_mab}}" == "pap") || (("%{{client:easyeap_mab}}" == "pap-wired") && &Calling-Station-Id)) {{
+{i}	if (&Calling-Station-Id && (&Calling-Station-Id =~ /{MAC_CAPTURE}/)) {{
+{i}		if ("{MAC_JOINED}" != "%{{control:EasyEAP-Mac}}") {{
+{_reject("mab_mismatch", i + chr(9) * 3)}
+{i}		}}
+{i}	}}
+{i}	else {{
+{_reject("mab_mismatch", i + chr(9) * 2)}
+{i}	}}
+{i}}}
+{i}# PAP: the password of a MAC request is the MAC itself.
+{i}if (&control:EasyEAP-Method == "mab") {{
+{i}	if (&User-Password && (&User-Password =~ /{MAC_CAPTURE}/)) {{
+{i}		if ("{MAC_JOINED}" != "%{{control:EasyEAP-Mac}}") {{
+{_reject("mab_password", i + chr(9) * 3)}
+{i}		}}
+{i}	}}
+{i}	else {{
+{_reject("mab_password", i + chr(9) * 2)}
+{i}	}}
+{i}}}
+{i}# Fail closed when the snapshot is missing or older than the tenant's limit.
+{i}update control {{
+{i}	&EasyEAP-Lookup := "%{{authz:SELECT CASE WHEN valid_until > %l THEN 'fresh' ELSE 'stale' END FROM meta WHERE tenant = '{tid}'}}"
+{i}}}
+{i}if (&control:EasyEAP-Lookup != "fresh") {{
+{_refuse("snapshot_stale", i + chr(9))}
+{i}}}
+{i}# The allow list: outcome|reason|vlan|expiry|device|group, rows of the current MAC version only.
+{i}update control {{
+{i}	&EasyEAP-Lookup := "{lookup}"
+{i}}}
+{i}if (&control:EasyEAP-Lookup =~ /^allow\\|[^|]*\\|([0-9]*)\\|current\\|([^|]*)\\|(.*)$/) {{
+{i}	update control {{
+{i}		&EasyEAP-Vlan := "%{{1}}"
+{i}		&EasyEAP-MacDevice := "%{{2}}"
+{i}		&EasyEAP-MacGroup := "%{{3}}"
+{i}	}}
+{i}}}
+{i}elsif (&control:EasyEAP-Lookup =~ /^[a-z]+\\|[^|]*\\|[0-9]*\\|expired\\|([^|]*)\\|(.*)$/) {{
+{i}	update control {{
+{i}		&EasyEAP-MacDevice := "%{{1}}"
+{i}		&EasyEAP-MacGroup := "%{{2}}"
+{i}	}}
+{_refuse("mac_expired", i + chr(9))}
+{i}}}
+{i}elsif (&control:EasyEAP-Lookup =~ /^deny\\|([a-z_]+)\\|[0-9]*\\|current\\|([^|]*)\\|(.*)$/) {{
+{i}	update control {{
+{i}		&EasyEAP-Reason := "%{{1}}"
+{i}		&EasyEAP-MacDevice := "%{{2}}"
+{i}		&EasyEAP-MacGroup := "%{{3}}"
+{i}	}}
+{_refuse(None, i + chr(9))}
+{i}}}
+{i}else {{
+{_refuse("mac_unknown", i + chr(9))}
+{i}}}
+{i}if (&control:EasyEAP-Method == "mab") {{
+{i}	update control {{
+{i}		&Auth-Type := Accept
+{i}	}}
+{i}}}
+{i}else {{
+{i}	update control {{
+{i}		&Cleartext-Password := "%{{User-Name}}"
+{i}	}}
+{i}	eapmd5_{s} {{
+{i}		ok = return
+{i}		updated = return
+{i}	}}
+{i}}}"""
+
+
 def tenant_sites(t: dict) -> tuple[str, str]:
     s = short(t["id"])
     tid = t["id"]
@@ -247,11 +504,11 @@ def tenant_sites(t: dict) -> tuple[str, str]:
 	}}
 """
     extra_rules = "\n".join(
-        f"""			if (&control:EasyEAP-Extra =~ /(^|;){re.escape(a)}=([^;]+)(;|$)/) {{
-				update outer.reply {{
-					&{a} := "%{{2}}"
-				}}
-			}}""" for a in ALLOWED_EXTRA)
+        f"""				if (&control:EasyEAP-Extra =~ /(^|;){re.escape(a)}=([^;]+)(;|$)/) {{
+					update outer.reply {{
+						&{a} := "%{{2}}"
+					}}
+				}}""" for a in ALLOWED_EXTRA)
     main = f"""# Tenant {t.get('slug', '')} — {t.get('name', '')}
 server t_{s} {{{listen}
 	authorize {{
@@ -259,26 +516,38 @@ server t_{s} {{{listen}
 			&EasyEAP-Tenant := "{tid}"
 			&EasyEAP-Source := "%{{%{{Packet-Src-IP-Address}}:-%{{Packet-Src-IPv6-Address}}}}"
 		}}
-		# EAP-TLS only: anything else is rejected.
-		if (!&EAP-Message) {{
-			update control {{
-				&EasyEAP-Reason := "tls_handshake"
-			}}
-			reject
+{network_block()}
+{mab_detect()}
+		if (&control:EasyEAP-Method) {{
+			# MAC authentication: the MAC allow list decides.
+{network_gate(chr(9) * 3)}
+{mab_decide(tid, s)}
 		}}
-		eap_{s} {{
-			ok = return
-			updated = return
+		else {{
+			# EAP-TLS. Anything without EAP is a failed handshake.
+			if (!&EAP-Message) {{
+				update control {{
+					&EasyEAP-Reason := "tls_handshake"
+				}}
+				reject
+			}}
+{network_gate(chr(9) * 3)}
+			eap_{s} {{
+				ok = return
+				updated = return
+			}}
 		}}
 	}}
 	authenticate {{
 		eap_{s}
+		eapmd5_{s}
 	}}
 	preacct {{
 		update control {{
 			&EasyEAP-Tenant := "{tid}"
 			&EasyEAP-Source := "%{{%{{Packet-Src-IP-Address}}:-%{{Packet-Src-IPv6-Address}}}}"
 		}}
+{network_block()}
 	}}
 	accounting {{
 		linelog_acct
@@ -288,6 +557,23 @@ server t_{s} {{{listen}
 		update control {{
 			&EasyEAP-Tenant := "{tid}"
 			&EasyEAP-Source := "%{{%{{Packet-Src-IP-Address}}:-%{{Packet-Src-IPv6-Address}}}}"
+		}}
+		# MAC authentication: the group's VLAN, on the Access-Accept only, and not in monitor mode.
+		if (&control:EasyEAP-Method && (&control:EasyEAP-Method =~ /^mab/) && !&control:EasyEAP-Monitor && (&control:EasyEAP-Vlan != "")) {{
+			update reply {{
+				&Tunnel-Type := VLAN
+				&Tunnel-Medium-Type := IEEE-802
+				&Tunnel-Private-Group-Id := "%{{control:EasyEAP-Vlan}}"
+			}}
+		}}
+		# A switch that can't apply a VLAN from RADIUS (Nexus 3000/7000, some Cisco Business models) fails the port when
+		# it receives one: no VLAN to it, whatever the method (the EAP-TLS check above writes the outer reply directly).
+		if ("%{{client:easyeap_send_vlan}}" == "no") {{
+			update reply {{
+				&Tunnel-Type !* ANY
+				&Tunnel-Medium-Type !* ANY
+				&Tunnel-Private-Group-Id !* ANY
+			}}
 		}}
 		if (!&reply:Session-Timeout) {{
 			update reply {{
@@ -302,7 +588,12 @@ server t_{s} {{{listen}
 				&EasyEAP-Source := "%{{%{{Packet-Src-IP-Address}}:-%{{Packet-Src-IPv6-Address}}}}"
 			}}
 			linelog_auth
-			eap_{s}
+			if (&control:EasyEAP-Method == "mab-eap") {{
+				eapmd5_{s}
+			}}
+			else {{
+				eap_{s}
+			}}
 			update reply {{
 				&Reply-Message !* ANY
 			}}
@@ -348,8 +639,29 @@ server t_{s}_check {{
 			}}
 			reject
 		}}
+		# One decision per certificate. On switch ports the VLAN comes from authz_wired when this snapshot has a row
+		# for the certificate ('' = assign none); an API from before wired 802.1X writes none, so wired keeps the
+		# Wi-Fi VLAN as before. Rows left from an older snapshot version are ignored.
+		if (&outer.control:EasyEAP-Network == "wired") {{
+			update control {{
+				&EasyEAP-Lookup := "%{{authz:SELECT a.outcome || '|' || COALESCE(a.reason, '') || '|' || COALESCE((SELECT w.vlan FROM authz_wired w JOIN meta m ON m.tenant = w.tenant AND m.version = w.version WHERE w.tenant = a.tenant AND w.serial = a.serial), a.vlan, '') || '|' || COALESCE(a.rule_id, '') FROM authz a WHERE a.tenant = '{tid}' AND a.serial = '%{{control:EasyEAP-Serial}}'}}"
+			}}
+		}}
+		elsif (&outer.control:EasyEAP-Network == "wireless") {{
+			update control {{
+				&EasyEAP-Lookup := "%{{authz:SELECT outcome || '|' || COALESCE(reason, '') || '|' || COALESCE(vlan, '') || '|' || COALESCE(rule_id, '') FROM authz WHERE tenant = '{tid}' AND serial = '%{{control:EasyEAP-Serial}}'}}"
+			}}
+		}}
+		else {{
+			update outer.control {{
+				&EasyEAP-Reason := "network_unknown"
+			}}
+			update config {{
+				&Auth-Type := Reject
+			}}
+			reject
+		}}
 		update control {{
-			&EasyEAP-Lookup := "%{{authz:SELECT outcome || '|' || COALESCE(reason, '') || '|' || COALESCE(vlan, '') || '|' || COALESCE(rule_id, '') FROM authz WHERE tenant = '{tid}' AND serial = '%{{control:EasyEAP-Serial}}'}}"
 			&EasyEAP-Extra := "%{{authz:SELECT COALESCE(extra, '') FROM authz WHERE tenant = '{tid}' AND serial = '%{{control:EasyEAP-Serial}}'}}"
 		}}
 		if (&control:EasyEAP-Lookup =~ /^allow\\|[^|]*\\|([0-9]*)\\|(.*)$/) {{
@@ -357,14 +669,19 @@ server t_{s}_check {{
 				&EasyEAP-Vlan := "%{{1}}"
 				&EasyEAP-Rule := "%{{2}}"
 			}}
-			if (&outer.control:EasyEAP-Vlan != "") {{
-				update outer.reply {{
-					&Tunnel-Type := VLAN
-					&Tunnel-Medium-Type := IEEE-802
-					&Tunnel-Private-Group-Id := "%{{outer.control:EasyEAP-Vlan}}"
+			# Monitor mode (a switch not enforcing yet): decide and log, but send nothing that changes the port.
+			# EasyEAP-Vlan still records the VLAN that would have been assigned. (Set only to "yes"; a comparison
+			# with an absent attribute is false in FreeRADIUS 3, hence the existence test.)
+			if (!&outer.control:EasyEAP-Monitor) {{
+				if (&outer.control:EasyEAP-Vlan != "") {{
+					update outer.reply {{
+						&Tunnel-Type := VLAN
+						&Tunnel-Medium-Type := IEEE-802
+						&Tunnel-Private-Group-Id := "%{{outer.control:EasyEAP-Vlan}}"
+					}}
 				}}
-			}}
 {extra_rules}
+			}}
 			update config {{
 				&Auth-Type := Accept
 			}}
@@ -403,12 +720,27 @@ def clients_conf(tenants: list[dict]) -> str:
         blocks = []
         for c in t["clients"]:
             name = re.sub(r"[^A-Za-z0-9_-]", "_", c["name"])[:40] or "client"
+            # A desired state without networks (an older API) keeps today's behaviour: both.
+            networks = ",".join(n for n in NETWORKS if n in (c.get("networks") or NETWORKS)) or "wireless"
             blocks.append(f"""client c_{c['id'].replace('-', '')[:12]} {{
 	ipaddr = {c['address']}
 	secret = {q(c['secret'])}
 	shortname = {name}
 	nas_type = other
-	require_message_authenticator = yes
+	# Networks this client may authenticate, and whether its wired ports are in monitor mode (VLANs withheld);
+	# read by the tenant server as %{{client:easyeap_networks}} and %{{client:easyeap_monitor}}.
+	easyeap_networks = "{networks}"
+	easyeap_monitor = "{'yes' if c.get('monitor') else 'no'}"
+	# MAC authentication: "pap" (Catalyst, Cisco Business), "pap-wired" (Nexus, Meraki), "eap" (UniFi MAC-Based, SG300)
+	# or "no"; %{{client:easyeap_mab}}.
+	easyeap_mab = "{c.get('mab') if c.get('mab') in MAB_MODES else 'no'}"
+	# Server-side monitor: MAC refusals become Accepts without VLAN while the switch is in monitor mode.
+	easyeap_monitor_accept = "{'yes' if c.get('monitor_accept') else 'no'}"
+	# "no" for a switch that can't apply a VLAN from RADIUS; %{{client:easyeap_send_vlan}}.
+	easyeap_send_vlan = "{'no' if c.get('send_vlan') is False else 'yes'}"
+	# "no" only for switches whose MAC requests come without Message-Authenticator (Cisco Business, Nexus, Meraki, old
+	# IOS); limit_proxy_state still drops a request with Proxy-State and no Message-Authenticator (Blast-RADIUS).
+	require_message_authenticator = {'no' if c.get('message_authenticator') == 'no' else 'yes'}
 	limit_proxy_state = yes
 	virtual_server = t_{s}
 }}""")
@@ -474,6 +806,7 @@ def render(desired: dict, raddb: Path, state: str) -> None:
         _write(tdir / "server.key", t["server_key_pem"], private=True)
         _write(tdir / "ca.pem", t["ca_pem"].strip() + "\n" + t["crl_pem"].strip() + "\n")
         _write(raddb / "mods-enabled" / f"eap_{s}", eap_module(t, str(raddb)))
+        _write(raddb / "mods-enabled" / f"eapmd5_{s}", eapmd5_module(t))
         main, check = tenant_sites(t)
         _write(raddb / "sites-enabled" / f"t_{s}", main)
         _write(raddb / "sites-enabled" / f"t_{s}_check", check)

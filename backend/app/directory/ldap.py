@@ -208,19 +208,90 @@ def fetch_groups(conn: Connection, p: DirectoryParams) -> list[DirGroup]:
     return out
 
 
-def token_group_sids(conn: Connection, dn: str) -> list[str]:
+def token_group_sids(conn: Connection, dn: str, *, strict: bool = False) -> list[str] | None:
+    """The SIDs of every group the object is in, nested ones included. If they can't be read: [] or, with `strict`,
+    None, so a caller can keep what it knew instead of taking away every group."""
     conn.search(dn, "(objectClass=*)", search_scope=BASE, attributes=["tokenGroups"])
-    if not conn.entries and not conn.response:
-        return []
     for e in conn.response or []:
         if e.get("type") == "searchResEntry":
-            return [s for s in (_sid(v) for v in e["raw_attributes"].get("tokenGroups", [])) if s]
-    return []
+            raw = e["raw_attributes"].get("tokenGroups")
+            if not raw and strict:
+                return None
+            return [s for s in (_sid(v) for v in raw or []) if s]
+    return None if strict else []
+
+
+def _searched(conn: Connection) -> None:
+    """Raise if the last search failed, rather than reading the failure as "nothing found" (0: success; 4: more than
+    the size limit, which the callers treat as ambiguous)."""
+    result = conn.result or {}
+    if result.get("result", 0) not in (0, 4):
+        raise DirectoryError(f"The directory refused the search: {result.get('description') or result.get('result')} "
+                             f"{result.get('message') or ''}".strip())
+
+
+def _domain_root(conn: Connection, base_dn: str) -> str:
+    """The domain's own entry, where the default password policy lives: RootDSE defaultNamingContext, else the DC=
+    components of the base DN (a sync base can be an OU)."""
+    try:
+        conn.search("", "(objectClass=*)", search_scope=BASE, attributes=["defaultNamingContext"])
+        for e in conn.response or []:
+            if e.get("type") == "searchResEntry":
+                v = (e.get("attributes") or {}).get("defaultNamingContext")
+                v = v[0] if isinstance(v, list) and v else v
+                if v:
+                    return str(v)
+    except (LDAPException, TypeError, ValueError):
+        pass
+    return ",".join(p.strip() for p in base_dn.split(",") if p.strip().upper().startswith("DC="))
+
+
+def _seconds(v) -> int | None:
+    """lockOutObservationWindow: a negative count of 100-ns intervals (ldap3 may already give a timedelta)."""
+    if v in (None, "", []):
+        return None
+    if isinstance(v, list):
+        v = v[0] if v else None
+    if hasattr(v, "total_seconds"):
+        return int(abs(v.total_seconds()))
+    try:
+        return int(abs(int(v)) // 10_000_000)
+    except (TypeError, ValueError):
+        return None
+
+
+def lockout_policy(conn: Connection, base_dn: str) -> tuple[int | None, int | None]:
+    """The domain's (lockoutThreshold, lockOutObservationWindow in seconds); threshold 0 = accounts never lock, None =
+    it couldn't be read. Fine-grained password policies (PSOs) aren't readable with a read-only account and aren't
+    considered."""
+    root = _domain_root(conn, base_dn)
+    if not root:
+        return None, None
+    try:
+        conn.search(root, "(objectClass=*)", search_scope=BASE, attributes=["lockoutThreshold", "lockOutObservationWindow"])
+        for e in conn.response or []:
+            if e.get("type") == "searchResEntry":
+                attrs = e.get("attributes") or {}
+                v = attrs.get("lockoutThreshold")
+                v = v[0] if isinstance(v, list) and v else v
+                threshold = int(v) if v not in (None, "", []) else None
+                raw = (e.get("raw_attributes") or {}).get("lockOutObservationWindow")
+                window = _seconds(raw[0].decode() if isinstance(raw, list) and raw and isinstance(raw[0], bytes) else attrs.get("lockOutObservationWindow"))
+                return threshold, window
+    except (LDAPException, TypeError, ValueError):
+        return None, None
+    return None, None
+
+
+def _users_only(user_filter: str) -> str:
+    """The user filter without computer accounts, which are identities of their own (Group Policy autoenrollment):
+    computer derives from user, so a filter like (objectClass=user) matches them."""
+    return f"(&{user_filter}(!(objectClass=computer)))"
 
 
 def fetch_users(conn: Connection, p: DirectoryParams, with_groups: bool = True) -> list[DirUser]:
     users = []
-    for e in _paged(conn, p.user_search_base or p.base_dn, p.user_filter, USER_ATTRS):
+    for e in _paged(conn, p.user_search_base or p.base_dn, _users_only(p.user_filter), USER_ATTRS):
         if e.get("type") != "searchResEntry":
             continue
         attrs = dict(e["attributes"])
@@ -235,7 +306,7 @@ def fetch_users(conn: Connection, p: DirectoryParams, with_groups: bool = True) 
 
 def search_live(conn: Connection, p: DirectoryParams, query: str, limit: int = 25) -> list[DirUser]:
     q = escape_filter_chars(query.strip())
-    flt = f"(&{p.user_filter}(|(sAMAccountName={q}*)(displayName=*{q}*)(mail={q}*)(userPrincipalName={q}*)))"
+    flt = f"(&{_users_only(p.user_filter)}(|(sAMAccountName={q}*)(displayName=*{q}*)(mail={q}*)(userPrincipalName={q}*)))"
     conn.search(p.user_search_base or p.base_dn, flt, search_scope=SUBTREE, attributes=USER_ATTRS, size_limit=limit)
     out = []
     for e in conn.response or []:
@@ -325,3 +396,112 @@ def test(p: DirectoryParams) -> dict[str, Any]:
         return {"ok": ok, "steps": steps, "discovered": discovered, "base_dn_outside": outside}
     finally:
         conn.unbind()
+
+
+# ── Computers (Group Policy autoenrollment, docs/plans/gpo-autoenrollment.md §2.3) ──────────────────────────────────
+
+COMPUTER_ATTRS = ["objectGUID", "objectSid", "sAMAccountName", "dNSHostName", "cn", "userAccountControl", "distinguishedName",
+                  "ms-DS-CreatorSID"]
+UF_WORKSTATION_TRUST_ACCOUNT = 0x1000
+UF_PARTIAL_SECRETS_ACCOUNT = 0x04000000  # a read-only domain controller (it has the workstation flag too)
+COMPUTER_FILTER = "(objectCategory=computer)"
+
+
+@dataclass
+class DirComputer:
+    object_guid: str
+    sid: str | None
+    username: str          # sAMAccountName, PC01$
+    name: str              # cn, PC01
+    dns_name: str | None   # dNSHostName, pc01.corp.example.com
+    dn: str
+    account_state: str     # enabled | disabled
+    workstation: bool      # userAccountControl has WORKSTATION_TRUST_ACCOUNT (workstations and member servers)
+    added_by_user: bool    # ms-DS-CreatorSID is set: a non-admin user added it with their machine account quota
+    group_sids: list[str] | None = field(default_factory=list)  # None: couldn't be read
+
+
+def _to_computer(e: dict) -> DirComputer:
+    a, raw = e["attributes"], e["raw_attributes"]
+    uac = int(_first(a, "userAccountControl") or 0)
+    sam = str(_first(a, "sAMAccountName") or "")
+    return DirComputer(
+        object_guid=_guid(raw["objectGUID"][0]), sid=_sid((raw.get("objectSid") or [None])[0]), username=sam,
+        name=str(_first(a, "cn") or sam.rstrip("$")), dns_name=(str(_first(a, "dNSHostName")).lower() if _first(a, "dNSHostName") else None),
+        dn=e["dn"], account_state="disabled" if uac & UF_ACCOUNTDISABLE else "enabled",
+        workstation=bool(uac & UF_WORKSTATION_TRUST_ACCOUNT) and not uac & UF_PARTIAL_SECRETS_ACCOUNT, added_by_user=bool((raw.get("ms-DS-CreatorSID") or [b""])[0]),
+    )
+
+
+def lookup_computer(conn: Connection, p: DirectoryParams, sam_account_name: str) -> DirComputer | None:
+    """The computer account a Kerberos principal NAME$ belongs to, with its transitive groups; None if there's no
+    computer with that name (a user account whose name ends in $ isn't one)."""
+    return _one_computer(conn, p, f"(sAMAccountName={escape_filter_chars(sam_account_name)})")
+
+
+def lookup_computer_by_guid(conn: Connection, p: DirectoryParams, object_guid: str) -> DirComputer | None:
+    """The computer account with this objectGUID, whatever it's called now; None if it's gone."""
+    raw = uuid.UUID(object_guid).bytes_le
+    return _one_computer(conn, p, "(objectGUID=" + "".join(f"\\{b:02x}" for b in raw) + ")")
+
+
+def _one_computer(conn: Connection, p: DirectoryParams, flt: str) -> DirComputer | None:
+    """Raises DirectoryError if the directory fails, so a failure never reads as "not a computer"."""
+    conn.search(p.base_dn, f"(&{COMPUTER_FILTER}{flt})", search_scope=SUBTREE, attributes=COMPUTER_ATTRS, size_limit=2)
+    _searched(conn)
+    found = [e for e in conn.response or [] if e.get("type") == "searchResEntry"]
+    if len(found) != 1:
+        return None
+    c = _to_computer(found[0])
+    c.group_sids = token_group_sids(conn, c.dn, strict=True)
+    return c
+
+
+def fetch_computers(conn: Connection, p: DirectoryParams, guids: set[str]) -> list[DirComputer]:
+    """Every computer in the domain (cheap attributes), with the groups of those whose objectGUID is in `guids` (the
+    computers EasyEAP knows; reading groups is one request per computer)."""
+    out = []
+    for e in _paged(conn, p.base_dn, COMPUTER_FILTER, COMPUTER_ATTRS):
+        if e.get("type") != "searchResEntry":
+            continue
+        c = _to_computer(e)
+        if c.object_guid in guids:
+            c.group_sids = token_group_sids(conn, c.dn, strict=True)
+        out.append(c)
+    return out
+
+
+def machine_account_quota(conn: Connection, base_dn: str) -> int | None:
+    """ms-DS-MachineAccountQuota on the domain: how many computers any user may add (AD's default is 10)."""
+    root = _domain_root(conn, base_dn)
+    if not root:
+        return None
+    try:
+        conn.search(root, "(objectClass=*)", search_scope=BASE, attributes=["ms-DS-MachineAccountQuota"])
+        for e in conn.response or []:
+            if e.get("type") == "searchResEntry":
+                v = (e.get("attributes") or {}).get("ms-DS-MachineAccountQuota")
+                v = v[0] if isinstance(v, list) and v else v
+                return int(v) if v not in (None, "", []) else None
+    except (LDAPException, TypeError, ValueError):
+        return None
+    return None
+
+
+def bind_account_name(conn: Connection, p: DirectoryParams) -> str | None:
+    """The sAMAccountName of the directory's bind account (for the keytab test's Kerberos login), from a UPN or
+    DOMAIN\\name bind name, or by reading the bind DN."""
+    b = p.bind_dn.strip()
+    if "@" in b and "=" not in b:
+        return b.split("@", 1)[0]
+    if "\\" in b and "=" not in b:
+        return b.split("\\", 1)[1]
+    try:
+        conn.search(b, "(objectClass=*)", search_scope=BASE, attributes=["sAMAccountName"])
+        for e in conn.response or []:
+            if e.get("type") == "searchResEntry":
+                v = _first(e.get("attributes") or {}, "sAMAccountName")
+                return str(v) if v else None
+    except LDAPException:
+        return None
+    return None

@@ -28,7 +28,7 @@ export function ConnectStep({ platform, route, result, c, onBack }: { platform: 
 
       <section className="en-section en-section-gap" aria-labelledby="h-help">
         <h2 id="h-help" className="en-h2 mb-3">If it doesn’t connect</h2>
-        <Troubleshoot c={c} platform={platform} serial={csr ? fmtSerial(csr.serial) : null} />
+        <Troubleshoot c={c} platform={platform} route={route} serial={csr ? fmtSerial(csr.serial) : null} />
       </section>
 
       <section className="en-section" aria-labelledby="h-done">

@@ -23,16 +23,37 @@ export interface AuthEvent {
   ssid: string | null
   nas_ip: string | null
   nas_client_id: string | null
+  /** In monitor mode (`monitor`), the VLAN EasyEAP would have assigned; it sent none. */
   vlan_id: number | null
+  /** Which network the request came from; null for events from before wired 802.1X. */
+  network: Network | null
+  /** The switch port (NAS-Port-Id), e.g. GigabitEthernet1/0/5. */
+  nas_port_id: string | null
+  /** The switch is in monitor mode: EasyEAP decided but sent no VLAN or attributes. */
+  monitor: boolean
   rule_id: string | null
   raw_message: string | null
+  /** The device MAC, normalised (AABBCCDDEEFF); null for events from before MAC authentication. */
+  mac?: string | null
+  /** How it authenticated: eap-tls, mab (Cisco MAC authentication) or mab-eap (UniFi MAC-Based). */
+  method?: string | null
+  /** The MAC allow-list entry that decided a MAC authentication. */
+  mac_device_id?: string | null
 }
+
+/** A MAC authentication, not a certificate. */
+export const isMab = (e: Pick<AuthEvent, 'method'>) => e.method === 'mab' || e.method === 'mab-eap'
+
+export type Network = 'wireless' | 'wired'
+export const networkLabels: Record<Network, string> = { wireless: 'Wi-Fi', wired: 'Wired' }
 
 export interface EventDetail extends AuthEvent {
   /** Present only when the event carried a certificate serial. */
   certificate_id?: string | null
   /** The certificate's *current* policy decision (recomputed on every change), not the decision at the time of the attempt. */
   decision_steps?: DecisionStep[] | null
+  /** The MAC allow-list entry (MAC authentication), when it still exists. */
+  mac_device?: { id: string; name: string; group_id: string; group_name: string } | null
 }
 
 export interface EventsResponse {
@@ -42,13 +63,13 @@ export interface EventsResponse {
   reasons: Array<{ reason_code: string | null; count: number; title: string }>
 }
 
-export interface EventFilters { result: '' | 'accept' | 'reject'; reason: string; q: string; hours: number }
+export interface EventFilters { result: '' | 'accept' | 'reject'; reason: string; q: string; hours: number; network?: '' | Network }
 
 export const eventsUrl = (tid: string, f: EventFilters, beforeId?: number) =>
-  `/api/tenants/${tid}/events${qs({ result: f.result, reason: f.reason, q: f.q.trim(), hours: f.hours, before_id: beforeId })}`
+  `/api/tenants/${tid}/events${qs({ result: f.result, reason: f.reason, q: f.q.trim(), hours: f.hours, network: f.network ?? '', before_id: beforeId })}`
 
 export const eventsKey = (tid: string, f: EventFilters, beforeId?: number) =>
-  qk.events(tid, { result: f.result, reason: f.reason, q: f.q.trim(), hours: f.hours, before_id: beforeId ?? null })
+  qk.events(tid, { result: f.result, reason: f.reason, q: f.q.trim(), hours: f.hours, network: f.network ?? '', before_id: beforeId ?? null })
 
 export function useEvent(tid: string, id: string | null) {
   return useQuery({
@@ -67,6 +88,9 @@ export interface AcctSession {
   nas_ip: string
   framed_ip: string | null
   vlan_id: number | null
+  network: Network | null
+  /** The switch port, for wired sessions. */
+  nas_port_id: string | null
   started_at: string | null
   updated_at: string
   stopped_at: string | null

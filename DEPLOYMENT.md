@@ -7,23 +7,44 @@ EasyEAP runs as one Docker Compose project (`easyeap`) on a Linux host. One depl
 - Linux host with Docker Engine 24+ and Docker Compose v2, 2 vCPU, 4 GB RAM, 20 GB disk (more for long event retention).
 - `openssl` on the host (the installer generates secrets with it).
 - A DNS name for the console, e.g. `easyeap.msp.example`, and a trusted TLS certificate for it.
-- Network reachability from every wireless controller to the RADIUS ports, and from the host to each customer's
-  domain controllers on LDAPS (TCP 636), normally over the site-to-site VPN you already run.
+- Network reachability from every controller and switch (Wi-Fi, wired 802.1X, MAC authentication) to the RADIUS
+  ports, and from the host to each customer's domain controllers on LDAPS (TCP 636), normally over the site-to-site
+  VPN you already run.
 
 ## Network
 
 | Port | Protocol | From | To | Purpose |
 |---|---|---|---|---|
-| 443 | TCP | Administrators, enrolling users | easyeap-proxy | Console, enrollment portal, API |
+| 443 | TCP | Administrators, enrolling users, domain PCs, computers that renew by themselves | easyeap-proxy | Console, enrollment portal, API. Also Group Policy autoenrollment (`/cep`, `/ces`) and the Windows and Linux renewal tasks' daily check-ins: needed for as long as devices renew, not only at enrollment |
 | 80 | TCP | Wi-Fi clients, controllers, anyone validating certificates | easyeap-proxy | CRL and OCSP (plain HTTP by design); everything else redirects to HTTPS |
-| 1812 / 1813 | UDP | Wireless controllers | easyeap-radius | RADIUS authentication / accounting |
-| 1820–1839 | UDP | Wireless controllers | easyeap-radius | Dedicated per-tenant port pairs (only when two tenants' controllers share addresses) |
-| 3799 (1700 on Catalyst 9800) | UDP | easyeap-radius | Controllers | CoA Disconnect-Request (outbound) |
+| 1812 / 1813 | UDP | Controllers and switches | easyeap-radius | RADIUS authentication / accounting |
+| 1820–1839 | UDP | Controllers and switches | easyeap-radius | Dedicated per-tenant port pairs (only when two tenants' devices share addresses) |
+| 3799 (1700 on Catalyst 9800 and Cisco switches) | UDP | easyeap-radius | Controllers and switches | CoA and Disconnect-Request (outbound) |
 | 636 | TCP | easyeap-api, easyeap-worker | Customer domain controllers | LDAPS directory sync (outbound) |
+| 88 | TCP | easyeap-api | Customer domain controllers | Kerberos for [Group Policy autoenrollment](docs/autoenrollment.md): creating the service account and its **Test** (outbound; only with autoenrollment) |
+| 3269 | TCP | easyeap-api | Customer global catalog servers | Global catalog over TLS, to check the whole forest for a duplicate SPN when it answers (outbound; optional, only with autoenrollment) |
+| 49 | TCP | Switches and controllers (management addresses) | easyeap-radius | TACACS+ admin logins ([device administration](docs/device-administration.md)); published only when `EASYEAP_TACACS_BIND` is set to a reachable address |
+| 636 (389 StartTLS) | TCP | easyeap-radius | Customer domain controllers | AD admin logins: the administrator's own bind (outbound; only with device administration and directory access) |
+| 161 | UDP | easyeap-collector | Cisco switches (management addresses) | [Switch audit](docs/switch-audit.md) SNMP polling (outbound; only for switches with monitoring set up) |
+| 5514 | UDP | Switches and controllers (management addresses) | easyeap-syslog | [Device syslog](docs/switch-audit.md#syslog-what-the-switch-says); published only when `EASYEAP_SYSLOG_BIND` is set to a reachable address |
+| 514 | UDP | AireOS controllers, switches that send only to 514 | easyeap-syslog | The same, on the standard port: with `docker-compose.syslog514.yml` (below) |
 
 RADIUS over UDP must not cross the internet unprotected: route it through a VPN. Restrict the published ports to
 internal interfaces with `EASYEAP_HTTPS_BIND`, `EASYEAP_HTTP_BIND` and `EASYEAP_RADIUS_BIND` where possible, and
-firewall 1812/1813 to your controllers' addresses.
+firewall 1812/1813 to your controllers' and switches' addresses. TACACS+ only obfuscates its packets: keep TCP 49 on
+the management network.
+
+Device syslog is matched to a switch or controller by its source address, so that address must reach `easyeap-syslog` unchanged.
+Docker's default port publishing (iptables DNAT) keeps it; rootless Docker, the userland proxy (for example IPv6
+traffic to an IPv4-only network, or `"userland-proxy": true` without iptables) and NAT between the switches and the
+server replace it, and every message is then dropped as coming from an unknown address. Device syslog lists, for MSP
+operators, the addresses messages came from when that happens.
+
+AireOS controllers (and classic IOS before 15.2(1)E, the Nexus 5000 and 3548, NX-OS before 9.3(3)) send syslog to UDP
+514 only. `install.sh` publishes 514 as well when nothing on the host listens on it, by adding
+`COMPOSE_FILE=docker-compose.yml:docker-compose.syslog514.yml` to `.env`; add that line yourself on an existing install
+(then `docker compose up -d`), or remove it if the host needs 514 for something else: both ports belong to the
+`easyeap-syslog` container, so if another program takes UDP 514 first, the container doesn't start and 5514 stops too.
 
 ## Install
 
@@ -39,8 +60,10 @@ sudo ./install.sh --hostname easyeap.msp.example --radius-address 10.20.0.15
    RADIUS agent token, the session HMAC key, and the initial OpenBao seal key (copied into the PKI's own volume on
    first start; from then on the volume's copy is the one in use, and it travels inside every backup);
 2. writes `deploy/.env` from `.env.example`;
-3. creates a temporary self-signed TLS certificate if none exists;
-4. builds the images and starts the stack.
+3. adds `COMPOSE_FILE=docker-compose.yml:docker-compose.syslog514.yml` to `.env` when nothing on the host listens on
+   UDP 514 (see [Network](#network));
+4. creates a temporary self-signed TLS certificate if none exists;
+5. builds the images and starts the stack.
 
 On first start the API initialises OpenBao (static seal, recovery keys written to the API's secrets volume), creates
 a policy-limited token for itself, revokes the OpenBao root token, runs database migrations and generates a one-time
@@ -49,7 +72,13 @@ setup token.
 ### Replace the TLS certificate
 
 Put your certificate chain and key at `deploy/secrets/tls.crt` and `deploy/secrets/tls.key` (PEM), then run
-`docker compose restart easyeap-proxy`.
+`docker compose restart easyeap-proxy easyeap-api`. The API reads the certificate too (Group Policy autoenrollment
+checks channel binding against it, and Linux setup scripts pin its public key). It's a single-file mount, so the API
+sees a replaced file only after a restart.
+
+A Linux computer that doesn't trust the certificate (the temporary self-signed one, for example) falls back on its
+setup script's pin, renewals included. If such computers won't trust the new certificate either, make it with the same
+key (`deploy/secrets/tls.key`), or their renewals fail.
 
 ### Settings (`deploy/.env`)
 
@@ -59,6 +88,9 @@ Put your certificate chain and key at `deploy/secrets/tls.crt` and `deploy/secre
 | `EASYEAP_PKI_HOSTNAME` | Host in the CRL and OCSP URLs embedded in every certificate (port 80). Defaults to `EASYEAP_HOSTNAME`. It must stay stable for the life of the certificates. |
 | `EASYEAP_RADIUS_ADDRESS` | The IP controllers use to reach RADIUS, shown in the controller guides and snippets. Loopback and unspecified addresses (`127.0.0.1`, `0.0.0.0`) are not shown to controllers; the console warns instead. |
 | `EASYEAP_*_BIND`, `EASYEAP_HTTP_PORT`, `EASYEAP_HTTPS_PORT` | Published interfaces and ports. Certificates assume CRLs are on port 80. |
+| `EASYEAP_TACACS_BIND`, `EASYEAP_TACACS_PORT` | Where TACACS+ for device administration is published (default `127.0.0.1:49`, which keeps it off the network). Set the bind to the address switches reach EasyEAP on to accept admin logins. |
+| `EASYEAP_SYSLOG_BIND`, `EASYEAP_SYSLOG_PORT` | Where `easyeap-syslog` receives syslog from switches and controllers (default `127.0.0.1:5514`, which keeps it off the network). Set the bind to the address devices reach EasyEAP on to receive it; the configuration EasyEAP generates then sends there. |
+| `COMPOSE_FILE` | `docker-compose.yml:docker-compose.syslog514.yml` also publishes UDP 514 for syslog (set by `install.sh` when 514 is free). |
 | `EASYEAP_RADIUS_NODE` | Agent identifier shown in System health. |
 | `EASYEAP_LAB_MODE` | `true` enables insecure test options (keeping a root CA online, plain LDAP). Never in production. |
 
@@ -88,11 +120,11 @@ Put your certificate chain and key at `deploy/secrets/tls.crt` and `deploy/secre
 ## Upgrades
 
 Make a backup first (System health → Backup and restore → Create backup, then Download). Then check out the
-release you want from [Releases](https://github.com/paulmataruso/EasyEAP/releases), here 1.0.1, and rebuild:
+release you want from [Releases](https://github.com/paulmataruso/EasyEAP/releases), here 1.1.0, and rebuild:
 
 ```sh
-cd /opt/easyeap && git fetch --tags && git checkout v1.0.1
-cd deploy && sed -i 's/^EASYEAP_VERSION=.*/EASYEAP_VERSION=1.0.1/' .env
+cd /opt/easyeap && git fetch --tags && git checkout v1.1.0
+cd deploy && sed -i 's/^EASYEAP_VERSION=.*/EASYEAP_VERSION=1.1.0/' .env
 docker compose build && docker compose up -d
 ```
 
@@ -100,6 +132,26 @@ docker compose build && docker compose up -d
 
 Migrations run automatically when the API starts (under an advisory lock). RADIUS keeps authenticating from its
 local snapshot while the API restarts.
+
+**Upgrading from 1.0.x to 1.1.0:**
+
+- Migrations 0004 to 0015 run by themselves when the API starts.
+- Migration 0014 turns automatic renewal on for every tenant, starting at 80 % of each certificate's life, and sets
+  each template's renewal period to a fifth of its validity. The default templates go from 30 to 73 days (User
+  Wi-Fi, 365 days), 45 to 146 (Device Wi-Fi, 730) and 30 to 80 (RADIUS Server, 397). A RADIUS server certificate
+  already past 80 % of its life is replaced soon after the upgrade; **Put the previous certificate back** on the
+  RADIUS page undoes it.
+- Wired 802.1X changes nothing that already works: every registered controller is allowed both Wi-Fi and wired
+  requests (so a switch registered as "Other" keeps working and keeps receiving VLANs), every VLAN is the same VLAN
+  on switch ports, and enrollment packages stay Wi-Fi only until you turn on "Wired settings in enrollment
+  packages". Restrict a controller to Wi-Fi in its Edit dialog if it should never send wired requests.
+- Two new containers, `easyeap-collector` (switch audit SNMP polling) and `easyeap-syslog` (device syslog), start
+  with `docker compose up -d`.
+- An existing `.env` has no `EASYEAP_TACACS_BIND` or `EASYEAP_SYSLOG_BIND`, so TACACS+ and syslog stay on
+  `127.0.0.1` until you set them (see [Settings](#settings-deployenv)). UDP 514 also needs the `COMPOSE_FILE` line
+  (see [Network](#network)).
+- There's no downgrade: a 1.0.x API can't start on a database migrated to 0015. To roll back, restore the backup you
+  made before upgrading into a fresh 1.0.x installation (its first-run page).
 
 ## Backup and restore
 
@@ -125,7 +177,8 @@ the token it carries is valid: restore it within 32 days of making it. The conso
 date. New installations keep recovery keys and have no such limit.
 
 **Disaster-recovery caveat:** certificates issued after the backup was made aren't in it. RADIUS rejects them as
-unknown (fail closed), so re-issue them.
+unknown (fail closed), so re-issue them. That includes certificates that renewed by themselves since the backup
+(Windows, Linux, Group Policy): the device may already have deleted the older certificate the backup knows.
 
 **What isn't in a backup:** the console's TLS certificate (`deploy/secrets/tls.*`) and `.env`, which are host
 configuration. Keep them with your host build.
@@ -145,8 +198,8 @@ Backups made by preview builds before 1.0.0 (`.tar.gz.enc` or `.tar.gz.gpg`) can
 ## Operations
 
 - **Health:** System health in the console; `docker compose ps`; `GET /api/health` (liveness).
-- **Logs:** the console's **System log** (System health → System log) holds messages from the API, worker, RADIUS
-  agent and FreeRADIUS warnings and errors for 30 days. `docker compose logs -f` still shows everything, including
+- **Logs:** the console's **System log** (System health → System log) holds messages from the API, worker, switch
+  collector, switch syslog receiver, RADIUS agent and FreeRADIUS warnings and errors for 30 days. `docker compose logs -f` still shows everything, including
   FreeRADIUS's full output. Secrets are redacted from logs.
 - **Remote syslog:** System health → Remote syslog sends the audit trail, every authentication and the system log
   to up to four syslog servers or SIEMs, over TLS (recommended; paste the CA if a private one signed the server),
@@ -158,5 +211,6 @@ Backups made by preview builds before 1.0.0 (`.tar.gz.enc` or `.tar.gz.gpg`) can
 - **RADIUS independence:** if the API, worker or database stops, RADIUS keeps authenticating from its local
   snapshot until the snapshot exceeds the tenant's maximum age (24 hours by default). After that it denies everyone
   in that tenant (fail closed). The dashboard shows the exact deadline.
-- **Lab:** `./install.sh --lab` adds a Samba AD domain controller and an `eapol_test` Wi-Fi client;
+- **Lab:** `./install.sh --lab` adds a Samba AD domain controller, an `eapol_test` Wi-Fi client and a pretend Cisco
+  switch for the switch audit (`easyeap-lab-switch`);
   `tests/e2e/run.sh` exercises the whole path. Never on production hosts.

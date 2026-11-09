@@ -34,6 +34,8 @@ export interface CertificateTemplate {
   san_patterns: string[]
   allow_client_keygen: boolean
   allow_server_keygen: boolean
+  /** Group Policy autoenrollment's templates (computer | user): their renewal period is set on the Autoenroll page. */
+  autoenroll_kind?: string | null
 }
 
 export interface PkiUrls { ca: string; crl: string; ocsp: string; root_ca: string; root_crl: string }
@@ -65,7 +67,6 @@ export interface TemplateIn {
   purpose: 'user' | 'device'
   key_algorithm: string
   validity_days: number
-  renew_before_days: number
   subject_pattern: string
   san_patterns: string[]
   allow_client_keygen: boolean
@@ -83,7 +84,7 @@ export const keyAlgorithmLabels: Record<string, string> = {
 }
 /** Fields a template pattern may use (routers/pki.py _check_patterns). */
 export const TEMPLATE_FIELDS = ['upn', 'username', 'email', 'display_name', 'device', 'domain', 'tenant'] as const
-export const purposeLabels: Record<string, string> = { user: 'User', device: 'Device', 'radius-server': 'RADIUS server' }
+export const purposeLabels: Record<string, string> = { user: 'User', device: 'Device', computer: 'Domain computer', 'radius-server': 'RADIUS server' }
 
 const base = (tid: string) => `/api/tenants/${tid}/pki`
 

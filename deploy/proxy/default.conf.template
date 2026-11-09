@@ -2,6 +2,8 @@
 limit_req_zone $binary_remote_addr zone=easyeap_login:10m rate=10r/m;
 limit_req_zone $binary_remote_addr zone=easyeap_enroll:10m rate=30r/m;
 limit_req_zone $binary_remote_addr zone=easyeap_api:10m rate=20r/s;
+# Group Policy autoenrollment: generous, since a whole site's PCs can share one address behind NAT.
+limit_req_zone $binary_remote_addr zone=easyeap_gpo:10m rate=30r/s;
 server_tokens off;
 
 upstream easyeap_api {
@@ -38,6 +40,9 @@ server {
     ssl_session_timeout 1d;
     ssl_session_cache shared:easyeap_tls:10m;
     ssl_session_tickets off;
+    # Group Policy autoenrollment sends a Kerberos ticket in the Authorization header; a user in many groups makes it
+    # large (Windows allows 48 KB, which is 64 KB in base64).
+    large_client_header_buffers 4 64k;
 
     root /usr/share/nginx/html;
     include /etc/nginx/snippets/security-headers.conf;
@@ -89,6 +94,25 @@ server {
     location /pki/ {
         proxy_pass http://easyeap_api;
         include /etc/nginx/snippets/proxy-params.conf;
+    }
+    # Group Policy autoenrollment (MS-XCEP policy, MS-WSTEP enrollment): Windows PCs, authenticated by Kerberos in the
+    # API. No per-address limit here: a whole office refreshes policy at once behind one NAT address; the API limits
+    # each authenticated account instead. TLS must end here, at the certificate the API checks channel binding against.
+    location ~ ^/(cep|ces)/[a-z0-9-]+$ {
+        limit_except POST { deny all; }
+        limit_req zone=easyeap_gpo burst=300 nodelay;
+        client_max_body_size 64k;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 60s;
+        proxy_hide_header X-Content-Type-Options;
+        proxy_hide_header Referrer-Policy;
+        proxy_hide_header X-Frame-Options;
+        proxy_pass http://easyeap_api;
     }
     location /assets/ {
         expires 30d;

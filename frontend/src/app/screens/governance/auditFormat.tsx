@@ -18,6 +18,11 @@ export const actionLabels: Record<string, string> = {
   'auth.mfa_reset_cli': 'Two-factor reset from the server command line',
   'auth.password_changed': 'Password changed',
   'auth.profile_updated': 'Own profile updated',
+  'certificate.renewal_conflict': 'Certificate renewed with two keys',
+  'certificate.renewal_refused': 'Certificate renewal refused',
+  'certificate.renewed': 'Certificate renewed by its device',
+  'certificate.superseded_retired': 'Renewed certificate retired',
+  'certificate.superseded_used': 'Renewed certificate still in use',
   'certificate.revoked': 'Certificate revoked',
   'directory.saved': 'Directory connection saved',
   'directory.sync_failed': 'Scheduled directory sync failed',
@@ -25,8 +30,12 @@ export const actionLabels: Record<string, string> = {
   'enrollment.cancelled': 'Enrollment cancelled',
   'enrollment.completed': 'Enrollment completed',
   'enrollment.link_created': 'Enrollment link created',
+  'enrollment.link_shown': 'Enrollment link shown again',
+  'enrollment.linux_script_downloaded': 'Linux setup script downloaded',
   'enrollment.package_downloaded': 'Certificate package downloaded',
   'enrollment.server_package_created': 'Server-generated certificate package created',
+  'enrollment.windows_setup_created': 'Windows setup file made',
+  'enrollment.windows_setup_downloaded_again': 'Windows setup file downloaded again',
   'group.created': 'Local group created',
   'identity.created': 'Local user created',
   'identity.disconnected': 'User’s sessions disconnected',
@@ -38,7 +47,11 @@ export const actionLabels: Record<string, string> = {
   'radius.client_created': 'Controller added',
   'radius.client_deleted': 'Controller removed',
   'radius.client_secret_rotated': 'Controller shared secret rotated',
+  'radius.client_secret_shown': 'Controller or switch shared secret shown',
+  'radius.monitoring_credentials_shown': 'Switch audit SNMP credentials shown',
+  'device_admin.key_shown': 'Device TACACS+ key shown',
   'radius.client_updated': 'Controller updated',
+  'radius.server_certificate_rolled_back': 'Previous RADIUS server certificate put back',
   'radius.server_certificate_rotated': 'RADIUS server certificate rotated',
   'radius.settings_saved': 'RADIUS settings saved',
   'rule.created': 'Access rule created',
@@ -55,6 +68,7 @@ export const actionLabels: Record<string, string> = {
   'system.syslog_added': 'Syslog destination added',
   'system.syslog_removed': 'Syslog destination removed',
   'system.syslog_updated': 'Syslog destination changed',
+  'renewal.settings_updated': 'Renewal settings changed',
   'template.created': 'Certificate template created',
   'template.updated': 'Certificate template changed',
   'tenant.created': 'Tenant created',
@@ -78,11 +92,13 @@ export function actionLabel(action: string, detail?: Record<string, unknown>): s
 export function actionTone(action: string, detail?: Record<string, unknown>): Tone | null {
   if (action === 'directory.synced' && detail?.ok === false) return 'crit'
   if (/(revoked|deleted|failed|disabled|mfa_reset)/.test(action)) return 'crit'
-  if (action === 'policy.published' || action === 'system.backup_restored' || action === 'system.restore_started' || /rotated|settings/.test(action)) return 'gold'
+  if (action.endsWith('_refused') || action === 'certificate.superseded_used') return 'warn'
+  if (action === 'certificate.renewal_conflict') return 'crit'
+  if (action === 'policy.published' || action === 'system.backup_restored' || action === 'system.restore_started' || /rotated|rolled_back|settings/.test(action)) return 'gold'
   return null
 }
 
-export const actorTypeLabel: Record<string, string> = { admin: 'Administrator', system: 'EasyEAP', enrollee: 'Enrollee', agent: 'RADIUS agent' }
+export const actorTypeLabel: Record<string, string> = { admin: 'Administrator', system: 'EasyEAP', enrollee: 'Enrollee', agent: 'RADIUS agent', certificate: 'Device (its certificate)' }
 
 // ── Detail rendering ─────────────────────────────────────────────────────
 

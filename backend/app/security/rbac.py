@@ -14,17 +14,21 @@ ROLE_LABELS = {
     "auditor": "Read-only Auditor",
 }
 
-READ = {"tenant:read", "identities:read", "certificates:read", "policy:read", "radius:read", "directory:read", "events:read", "audit:read"}
+READ = {"tenant:read", "identities:read", "certificates:read", "policy:read", "radius:read", "directory:read", "events:read", "audit:read",
+        "mac:read", "admin:read"}
 
 PERMISSIONS: dict[str, set[str]] = {
     # Issuing certificates is deliberately separate from managing certificate authorities.
-    "wifi_admin": READ | {"identities:write", "certificates:issue", "certificates:revoke", "enrollment:manage", "policy:write", "radius:write", "directory:sync"},
+    "wifi_admin": READ | {"identities:write", "certificates:issue", "certificates:revoke", "enrollment:manage", "policy:write", "radius:write", "directory:sync",
+                   "mac:write"},
     "pki_admin": READ | {"ca:manage", "templates:write", "certificates:issue", "certificates:revoke", "enrollment:manage"},
     "auditor": READ,
     "tenant_admin": READ | {
         "identities:write", "certificates:issue", "certificates:revoke", "enrollment:manage", "policy:write",
         "radius:write", "radius:secrets", "directory:write", "directory:sync", "ca:manage", "templates:write",
-        "tenant:write", "enrollment:server_keygen",
+        "tenant:write", "enrollment:server_keygen", "mac:write",
+        # Device administration grants privileged logins to network devices: tenant administrators only.
+        "admin:write",
     },
 }
 PERMISSIONS["platform_operator"] = PERMISSIONS["tenant_admin"] | {"tenants:create", "platform:read"}

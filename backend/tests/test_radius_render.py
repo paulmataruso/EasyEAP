@@ -26,6 +26,7 @@ def test_render_tree(tmp_path):
     s = render.short(TENANT["id"])
     clients = (tmp_path / "clients.conf").read_text()
     assert "require_message_authenticator = yes" in clients and "limit_proxy_state = yes" in clients and f"virtual_server = t_{s}" in clients
+    assert 'easyeap_send_vlan = "yes"' in clients, "an older API without send_vlan keeps sending VLANs"
     assert oct((tmp_path / "clients.conf").stat().st_mode)[-3:] == "600"
     assert oct((tmp_path / "tenants" / s / "server.key").stat().st_mode)[-3:] == "600"
     eap = (tmp_path / "mods-enabled" / f"eap_{s}").read_text()
@@ -42,6 +43,31 @@ def test_render_tree(tmp_path):
     main = (tmp_path / "sites-enabled" / f"t_{s}").read_text()
     assert main.count('&EasyEAP-Source := "%{%{Packet-Src-IP-Address}:-%{Packet-Src-IPv6-Address}}"') == 4
     assert "&control:EasyEAP-Source" in render.AUTH_ATTRS and "&control:EasyEAP-Source" in render.ACCT_ATTRS
+
+
+def test_wired_detection_gate_and_monitor(tmp_path):
+    """Wired 802.1X (docs/plans/wired-8021x.md §5): network detection, the per-client gate, the wired VLAN lookup and
+    monitor mode. tests/radius/run.sh exercises the same paths against a real FreeRADIUS."""
+    sw = {"id": "aaaaaaaa-0000-0000-0000-000000000002", "name": "Access 1", "vendor": "cisco-switch", "address": "10.0.1.5", "secret": "s",
+          "coa": False, "coa_port": 1700, "networks": ["wired"], "monitor": True}
+    legacy = dict(TENANT["clients"][0])  # a desired state from before wired 802.1X: no networks, no monitor
+    render.render({"version": "x", "tenants": [dict(TENANT, clients=[legacy, sw])]}, tmp_path, "/state")
+    s = render.short(TENANT["id"])
+    clients = (tmp_path / "clients.conf").read_text()
+    assert 'easyeap_networks = "wireless,wired"' in clients, "an older API's client keeps both networks"
+    assert 'easyeap_networks = "wired"' in clients and clients.count('easyeap_monitor = "yes"') == 1 and clients.count('easyeap_monitor = "no"') == 1
+    main = (tmp_path / "sites-enabled" / f"t_{s}").read_text()
+    # hostapd's empty-SSID form comes before NAS-Port-Type; MAB is named before the EAP check.
+    assert main.index(":$/)") < main.index("&NAS-Port-Type == Ethernet") < main.index("%{client:easyeap_networks}")
+    assert main.index("Service-Type == Call-Check") < main.index("!&EAP-Message") < main.index("network_not_enabled")
+    assert main.count("&EasyEAP-Network := ") == 14, "authorize and preacct both classify"
+    check = (tmp_path / "sites-enabled" / f"t_{s}_check").read_text()
+    assert "FROM authz_wired w JOIN meta m ON m.tenant = w.tenant AND m.version = w.version" in check
+    assert "network_unknown" in check and "if (!&outer.control:EasyEAP-Monitor) {" in check
+    # Monitor mode withholds the VLAN and every extra attribute; both sit inside the monitor test.
+    monitor_block = check[check.index("if (!&outer.control:EasyEAP-Monitor) {"):check.index("&Auth-Type := Accept")]
+    assert "Tunnel-Private-Group-Id" in monitor_block and "Session-Timeout" in monitor_block
+    assert "&control:EasyEAP-Monitor" in render.AUTH_ATTRS and "&control:EasyEAP-Network" in render.ACCT_ATTRS
 
 
 def test_dedicated_ports_scope_clients(tmp_path):

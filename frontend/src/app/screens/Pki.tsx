@@ -16,6 +16,8 @@ import {
   Btn, Callout, Chip, CopyButton, EDialog, ESelect, ESwitch, ErrorState, Field, LoadingBlock, PageHeader, Panel, SectionHeader, Seg,
   errorMessage, toast,
 } from '../ui'
+import { useRenewal, derivedDays } from '../api/renewal'
+import { RenewalPanel } from './pki/Renewal'
 import { CeremonyForm } from './setup/Ceremony'
 
 export default function Pki() {
@@ -54,6 +56,7 @@ function Initialized({ d }: { d: PkiOverview }) {
           <Distribution d={d} />
           <Crl root={root} crl={d.crl} crlUrl={d.urls.crl} />
         </div>
+        <RenewalPanel />
         <Templates templates={d.templates} />
       </div>
     </div>
@@ -231,7 +234,7 @@ function Templates({ templates }: { templates: CertificateTemplate[] }) {
     <Panel className="p-5 sm:p-6" aria-labelledby="pki-tpl-h">
       <SectionHeader id="pki-tpl-h" title="Certificate templates" meta={`${templates.length} templates`}
         actions={canWrite ? <Btn size="sm" onClick={() => setEditing('new')}><Plus aria-hidden />New template</Btn> : undefined} />
-      <p className="ee-small ee-ink-2 mb-4 max-w-[75ch]">Templates set the key type, lifetime and names of the certificates EasyEAP issues. Names come from directory data; a device can’t request a certificate for anyone else. Changes apply to certificates issued afterwards.</p>
+      <p className="ee-small ee-ink-2 mb-4 max-w-[75ch]">Templates set the key type, lifetime and names of the certificates EasyEAP issues. Names come from directory data; a device can’t request a certificate for anyone else. Changes apply to certificates issued afterwards. When renewal starts follows the Renewal setting above, except for Group Policy’s templates.</p>
       <div className="hidden lg:block">
         <table className="ee-table">
           <caption className="sr-only">Certificate templates</caption>
@@ -242,11 +245,12 @@ function Templates({ templates }: { templates: CertificateTemplate[] }) {
                 <td><span className="font-semibold">{t.name}</span><span className="ee-small ee-ink-3 block">{purposeLabels[t.purpose] ?? t.purpose}</span></td>
                 <td className="whitespace-nowrap">{keyAlgorithmLabels[t.key_algorithm] ?? t.key_algorithm}</td>
                 <td className="ee-num whitespace-nowrap text-right">{t.validity_days} days</td>
-                <td className="ee-num whitespace-nowrap text-right">{t.renew_before_days} days</td>
+                <td className="ee-num whitespace-nowrap text-right">{t.renew_before_days} days{t.autoenroll_kind && <span className="ee-small ee-ink-3 block">Group Policy</span>}</td>
                 <td className="ee-mono text-[12.5px]"><span className="block">{t.subject_pattern}</span><span className="ee-ink-3 block">{t.san_patterns.join(', ')}</span></td>
                 <td className="ee-ink-2">{keygen(t)}</td>
                 <td className="text-right">
                   {t.purpose === 'radius-server' ? <span className="ee-small ee-ink-3 whitespace-nowrap">Managed by EasyEAP</span>
+                    : t.autoenroll_kind ? <span className="ee-small ee-ink-3 whitespace-nowrap">Set on the Autoenroll page</span>
                     : canWrite ? <Btn size="sm" variant="ghost" onClick={() => setEditing(t)} aria-label={`Edit ${t.name}`}><Pencil aria-hidden />Edit</Btn> : null}
                 </td>
               </tr>
@@ -259,7 +263,7 @@ function Templates({ templates }: { templates: CertificateTemplate[] }) {
           <li key={t.id} className="py-3 text-[13px]">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0"><p className="font-semibold">{t.name}</p><p className="ee-small ee-ink-3">{purposeLabels[t.purpose] ?? t.purpose} · {keyAlgorithmLabels[t.key_algorithm] ?? t.key_algorithm}</p></div>
-              {t.purpose !== 'radius-server' && canWrite && <Btn size="sm" variant="ghost" onClick={() => setEditing(t)} aria-label={`Edit ${t.name}`}><Pencil aria-hidden />Edit</Btn>}
+              {t.purpose !== 'radius-server' && !t.autoenroll_kind && canWrite && <Btn size="sm" variant="ghost" onClick={() => setEditing(t)} aria-label={`Edit ${t.name}`}><Pencil aria-hidden />Edit</Btn>}
             </div>
             <p className="mt-1.5 ee-num">{t.validity_days} days · renew {t.renew_before_days} days before expiry</p>
             <p className="ee-mono text-[12.5px] ee-ink-2 break-all mt-1">{t.subject_pattern} · {t.san_patterns.join(', ')}</p>
@@ -273,7 +277,7 @@ function Templates({ templates }: { templates: CertificateTemplate[] }) {
 }
 
 const emptyTemplate: TemplateIn = {
-  name: '', purpose: 'user', key_algorithm: 'ecdsa-p256', validity_days: 365, renew_before_days: 30, subject_pattern: 'CN={upn}',
+  name: '', purpose: 'user', key_algorithm: 'ecdsa-p256', validity_days: 365, subject_pattern: 'CN={upn}',
   san_patterns: ['upn:{upn}', 'email:{email}'], allow_client_keygen: true, allow_server_keygen: false,
 }
 
@@ -284,8 +288,6 @@ function templateErrors(v: TemplateIn, sans: string) {
   return {
     name: v.name.trim().length < 2 ? 'Name the template, for example “Laptop Wi-Fi”.' : null,
     validity_days: !Number.isInteger(v.validity_days) || v.validity_days < 1 || v.validity_days > 825 ? 'Choose 1 to 825 days.' : null,
-    renew_before_days: !Number.isInteger(v.renew_before_days) || v.renew_before_days < 1 || v.renew_before_days > 180 ? 'Choose 1 to 180 days.'
-      : v.renew_before_days >= v.validity_days ? 'Renewal must start before the certificate expires.' : null,
     subject_pattern: !v.subject_pattern.startsWith('CN=') ? 'The subject must start with CN=, for example CN={upn}.' : badField ? `Unknown field {${badField}}. Use one of: ${TEMPLATE_FIELDS.join(', ')}.` : null,
     san_patterns: lines.some((l) => !/^(upn|email|dns):/.test(l)) ? 'Start each name with upn:, email: or dns:.' : null,
     keygen: !v.allow_client_keygen && !v.allow_server_keygen ? 'Allow at least one way to generate the key.' : null,
@@ -296,6 +298,8 @@ function TemplateDialog({ editing, onClose }: { editing: CertificateTemplate | '
   const { tid } = useTenant()
   const id = useId()
   const save = useSaveTemplate(tid)
+  const renewal = useRenewal(tid, !!editing)
+  const percent = renewal.data?.settings.renew_at_percent
   const [v, setV] = useState<TemplateIn>(emptyTemplate)
   const [sans, setSans] = useState('')
   const [touched, setTouched] = useState(false)
@@ -304,7 +308,7 @@ function TemplateDialog({ editing, onClose }: { editing: CertificateTemplate | '
     if (!editing) return
     const t: TemplateIn = editing === 'new' ? emptyTemplate : {
       name: editing.name, purpose: editing.purpose === 'device' ? 'device' : 'user', key_algorithm: editing.key_algorithm, validity_days: editing.validity_days,
-      renew_before_days: editing.renew_before_days, subject_pattern: editing.subject_pattern, san_patterns: editing.san_patterns,
+      subject_pattern: editing.subject_pattern, san_patterns: editing.san_patterns,
       allow_client_keygen: editing.allow_client_keygen, allow_server_keygen: editing.allow_server_keygen,
     }
     setV(t)
@@ -345,9 +349,13 @@ function TemplateDialog({ editing, onClose }: { editing: CertificateTemplate | '
             <Field label="Lifetime (days)" htmlFor={`${id}-v`} error={err('validity_days')}>
               <input id={`${id}-v`} className="ee-input ee-num" inputMode="numeric" value={Number.isNaN(v.validity_days) ? '' : v.validity_days} onChange={(e) => set('validity_days', num(e.target.value))} aria-invalid={!!err('validity_days') || undefined} />
             </Field>
-            <Field label="Renew before (days)" htmlFor={`${id}-r`} error={err('renew_before_days')}>
-              <input id={`${id}-r`} className="ee-input ee-num" inputMode="numeric" value={Number.isNaN(v.renew_before_days) ? '' : v.renew_before_days} onChange={(e) => set('renew_before_days', num(e.target.value))} aria-invalid={!!err('renew_before_days') || undefined} />
-            </Field>
+            <div className="flex flex-col gap-1.5">
+              <p className="text-[13px] font-semibold">Renews</p>
+              <p className="ee-num text-[13.5px] pt-1.5">
+                {percent === undefined || !Number.isInteger(v.validity_days) || v.validity_days < 1 ? '—' : `${derivedDays(v.validity_days, percent)} days before expiry`}
+              </p>
+              <p className="ee-small ee-ink-3">From the Renewal setting{percent !== undefined ? ` (${percent} % of its life)` : ''}.</p>
+            </div>
           </div>
         </div>
         <Field label="Subject" htmlFor={`${id}-s`} error={err('subject_pattern')} hint={<>Fields: {TEMPLATE_FIELDS.map((f) => `{${f}}`).join(' ')}</>}>

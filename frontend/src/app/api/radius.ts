@@ -1,25 +1,52 @@
-// RADIUS settings, server certificate, wireless controllers (NAS clients), vendor guides and the CoA queue.
+// RADIUS settings, server certificate, wireless controllers and switches (NAS clients), vendor guides, wired 802.1X
+// (port plans, Enforce, readiness) and the CoA queue.
 // Shapes mirror backend/app/routers/radius.py exactly. Shared secrets are returned once by create/rotate and are never
 // written to the query cache: callers keep them in component state and drop them when the dialog closes.
 import { useCallback } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import { useOneTimeCall } from './oneTime'
 import { qk } from './keys'
 import { agentPoll, type AgentStatus } from './types'
 
+/** Wireless controller types (Add controller). Switches are added with Add switch (SWITCH_VENDORS). */
 export const VENDORS = ['cisco-9800', 'cisco-aireos', 'unifi', 'other'] as const
-export type Vendor = (typeof VENDORS)[number]
+export type Vendor = (typeof VENDORS)[number] | 'cisco-switch'
+export const SWITCH_VENDORS = ['cisco-switch', 'meraki', 'unifi', 'other'] as const
 export const vendorLabels: Record<string, string> = {
   'cisco-9800': 'Cisco Catalyst 9800',
   'cisco-aireos': 'Cisco AireOS WLC',
+  'cisco-switch': 'Cisco switch',
+  meraki: 'Cisco Meraki MS',
   unifi: 'UniFi Network',
-  other: 'Other controller',
+  other: 'Other',
+}
+export const switchVendorLabels: Record<string, string> = {
+  'cisco-switch': 'Cisco',
+  meraki: 'Meraki MS',
+  unifi: 'UniFi',
+  other: 'Other',
 }
 /** CoA port the backend assigns when none is given (radius.py create_client). */
-export const defaultCoaPort = (v: string) => (v === 'cisco-9800' ? 1700 : 3799)
+export const defaultCoaPort = (v: string) => (v === 'cisco-9800' || v === 'cisco-switch' || v === 'meraki' ? 1700 : 3799)
+
+export type Network = 'wireless' | 'wired'
+export const networkLabels: Record<Network, string> = { wireless: 'Wi-Fi', wired: 'Wired' }
 
 export interface ServerCertificate { id: string; serial: string; common_name: string; not_after: string; fingerprint_sha256: string }
+
+/** When the server certificate rotates by itself, and the previous one while it can be put back (app/pki/renewal.py). */
+export interface ServerCertificateRenewal {
+  serial: string
+  not_before: string
+  not_after: string
+  /** null: automatic rotation is off */
+  rotates_at: string | null
+  /** The issuing CA expires too soon to give a new one 30 days: a due rotation waits for a new issuing CA. */
+  ca_too_short: boolean
+  rotated_at: string | null
+  previous: { serial: string; not_after: string; until: string } | null
+}
 
 export interface RadiusSettings {
   server_hostname: string
@@ -32,12 +59,98 @@ export interface RadiusSettings {
   tls_session_cache: boolean
   session_timeout_seconds: number
   server_certificate: ServerCertificate | null
+  server_certificate_renewal?: ServerCertificateRenewal | null
   snapshot_version: number | null
   snapshot_built_at: string | null
   /** Address controllers use to reach RADIUS (EASYEAP_RADIUS_ADDRESS in the deploy .env); empty when unset or unusable. */
   radius_address: string
   /** Why a configured address was withheld (loopback, unspecified); null when there's nothing wrong. */
   radius_address_problem: string | null
+  /** Include wired 802.1X settings in enrollment packages. */
+  wired_enabled: boolean
+}
+
+/** Cisco switch families (backend app/radius/cisco_platforms.py): IOS-XE (IBNS 2.0), classic IOS, NX-OS, Cisco Business. */
+export type CiscoPlatform = 'ibns2' | 'classic' | 'nxos' | 'cbs'
+export const ciscoPlatformLabels: Record<CiscoPlatform, string> = {
+  ibns2: 'IOS-XE',
+  classic: 'Classic IOS',
+  nxos: 'Nexus',
+  cbs: 'Cisco Business',
+}
+
+/** What a Cisco or Meraki switch can do (cisco_platforms.Caps): the port-plan form offers only these choices. */
+export interface SwitchCaps {
+  dialect: 'ibns2' | 'authmgr' | 'dot1x' | 'nxos' | 'sx' | 'cbs220' | 'web' | 'meraki'
+  /** switch: the switch's own open mode; server: EasyEAP accepts its MAC requests until enforced; none: start with a test port. */
+  monitor: 'switch' | 'server' | 'none'
+  mab: 'pap' | 'pap-wired' | 'eap' | null
+  host_modes: WiredProfile['host_mode'][]
+  radius_vlan: boolean
+  no_supplicant_vlan: boolean
+  server_down: WiredProfile['server_down'][]
+  coa: 'full' | 'no-bounce' | null
+  accounting: boolean
+  tacacs: string | null
+  /** caf: ports and 802.1X sessions; ports: ports only; null: no switch audit. */
+  audit: 'caf' | 'ports' | null
+  session_command: string | null
+  /** Err-disabled ports over SNMP (CISCO-ERR-DISABLE-MIB). */
+  errdisable: boolean
+  notes: string[]
+  warnings: string[]
+}
+
+/** POST /cisco/detect: what a pasted `show version` says the switch is. */
+export interface CiscoDetected {
+  platform: CiscoPlatform | null
+  series: string
+  version: string
+  lan_lite: boolean
+  model: string
+  family: string
+  evidence: string
+  /** Why EasyEAP can't configure 802.1X on it; empty when it can. */
+  unsupported: string
+}
+export interface CiscoPlatforms { platforms: CiscoPlatform[]; series: Record<string, string[]>; series_labels: Record<string, string>; capabilities: SwitchCaps }
+
+/** A switch's port plan (backend app/radius/wired.py WiredProfile). No secrets. */
+export interface WiredProfile {
+  platform: CiscoPlatform
+  /** Nexus and Cisco Business: the model family; Meraki: ms or ms-open. Empty otherwise. */
+  series?: string
+  /** The release as the switch shows it; empty when unknown. */
+  version?: string
+  /** Classic IOS LAN Lite image. */
+  lan_lite?: boolean
+  mode: 'monitor' | 'enforce'
+  interfaces: string
+  exclude: string
+  has_aaa: boolean
+  host_mode: 'multi-auth' | 'single-host' | 'multi-host'
+  no_supplicant: 'block' | 'vlan'
+  no_supplicant_vlan: number | null
+  server_down: 'wait' | 'open' | 'vlan'
+  server_down_vlan: number | null
+  access_vlan: number | null
+  source_interface: string
+  vrf: string
+  fallback_vlan: number | null
+  /** MAC authentication for devices without 802.1X (Cisco, Meraki and UniFi). Set when the switch is added, then
+   * changed only with its own change (POST …/mab) in monitor mode. */
+  mab?: boolean
+  mode_set_at?: string | null
+  mode_set_by?: string | null
+  /** IBNS 2.0: the control policy EasyEAP's latest change attached, and the one it replaced. */
+  policy?: string | null
+  policy_prev?: string | null
+  last_change?: 'created' | 'mab' | 'enforce' | 'monitor' | null
+}
+
+export const defaultWiredProfile: WiredProfile = {
+  platform: 'ibns2', series: '', version: '', lan_lite: false, mode: 'monitor', interfaces: '', exclude: '', has_aaa: false, host_mode: 'multi-auth', no_supplicant: 'block',
+  no_supplicant_vlan: null, server_down: 'wait', server_down_vlan: null, access_vlan: null, source_interface: '', vrf: '', fallback_vlan: null, mab: false,
 }
 
 export interface RadiusClient {
@@ -50,13 +163,38 @@ export interface RadiusClient {
   coa_port: number | null
   secret_set_at: string | null
   last_request_at: string | null
+  /** What it may authenticate. */
+  networks: Network[]
+  wired_profile: WiredProfile | null
+  /** Rollout mode EasyEAP was told (it can't read the switch); null when not registered for wired. Clients from
+   * before wired 802.1X have no port plan and are "enforce": EasyEAP sends VLANs on wired requests as it always did. */
+  wired_mode: 'monitor' | 'enforce' | null
+  /** Switch audit over SNMP (Cisco): credentials stored, and polling on. Absent from older API versions. */
+  monitoring?: { set_up: boolean; enabled: boolean }
+  /** Cisco and Meraki switches with a port plan: what the switch can do, and what it is in words. */
+  capabilities?: SwitchCaps | null
+  switch_family?: string | null
 }
+
+/** A switch or controller registered for wired 802.1X. */
+export const isSwitch = (c: RadiusClient) => c.vendor === 'cisco-switch' || c.vendor === 'meraki' || (c.networks.includes('wired') && !!c.wired_profile)
 
 export interface RadiusAgent extends AgentStatus {
   /** Present only once this tenant has RADIUS settings. */
   tenant_snapshot_applied?: number | null
   tenant_in_sync?: boolean
+  /** FreeRADIUS runs this tenant's latest configuration change. null: the agent is older and doesn't say. */
+  tenant_config_in_sync?: boolean | null
+  /** RADIUS runs the latest MAC allow list. null: the agent is older and doesn't say. */
+  tenant_mac_in_sync?: boolean | null
+  /** What the RADIUS agents in the last 10 minutes support, e.g. "mab". Older agents report none. */
+  features?: string[]
 }
+
+/** RADIUS answers MAC authentication (an agent from before it refuses every MAC request). */
+export const supportsMab = (a: RadiusAgent | null | undefined) => !!a?.features?.includes('mab')
+/** Switches that can admit devices by MAC address. */
+export const MAB_VENDORS = ['cisco-switch', 'meraki', 'unifi']
 
 /** Recent requests that couldn't be tied to a registered controller (their source and NAS address are in no range). */
 export interface Unattributed { count: number; last_at: string; nas_addresses: string[]; days: number }
@@ -72,11 +210,60 @@ export interface SettingsIn {
   tls_min_version: string
   tls_session_cache: boolean
   session_timeout_seconds: number
+  wired_enabled?: boolean
 }
 
-export interface ClientIn { name: string; vendor: string; address: string; site: string; coa_enabled: boolean; coa_port: number | null }
+export interface ClientIn {
+  name: string; vendor: string; address: string; site: string; coa_enabled: boolean; coa_port: number | null
+  networks?: Network[]
+  wired_profile?: Partial<WiredProfile> | null
+}
 
 export interface Guide { vendor: string; title: string; cli: string | null; steps: string[]; checks: string[]; coa_port: number }
+
+export interface PreflightCheck { command: string; look_for: string }
+/** GET /clients/{id}/wired-guide (and the guide returned by a mode change). */
+export interface WiredGuide extends Guide {
+  kind: 'wired'
+  mode: 'monitor' | 'enforce'
+  preflight: PreflightCheck[]
+  safe_paste: string[]
+  enforce_cli?: string
+  monitor_cli?: string
+  enforce_steps?: string[]
+  monitor_steps?: string[]
+  session_command: string | null
+  radius_address: string | null
+  mab?: boolean
+  /** Cisco: the change that turns MAC authentication on or off, shown after that change (monitor mode). */
+  mab_cli?: string | null
+  /** UniFi: the steps for the same. */
+  mab_steps?: string[] | null
+  /** Cisco and Meraki: what the switch can do, what it can't (notes) and what EasyEAP assumed (warnings). */
+  capabilities?: SwitchCaps
+  notes?: string[]
+  warnings?: string[]
+  monitor_style?: SwitchCaps['monitor']
+}
+
+export interface ReadinessDevice { mac: string | null; username: string | null; result: 'accept' | 'reject'; reason_code: string | null; vlan_id: number | null; monitor: boolean; at: string
+  /** How it authenticated: a certificate (802.1X) or its MAC address. */
+  method?: 'mac' | 'certificate' }
+/** MAC authentication on this switch in the readiness window. Unknown devices are logged once an hour each. */
+export interface MabHealth { enabled: boolean; answered: number; accepted: number; unknown: number; last_at: string | null; unknown_action: 'block' | 'vlan'; unknown_vlan: number | null }
+export interface ReadinessPort { port: string; devices: ReadinessDevice[]; accepted: number; rejected: number }
+export interface SwitchSession { interface: string; mac: string; method: string; domain: string; status: string; authorized: boolean }
+export interface SessionsCheck { sessions: number; authorized: number; would_lose_access: SwitchSession[]; parsed: boolean }
+export interface Readiness { hours: number; ports: ReadinessPort[]; events: number; would_assign_vlans: number[]; rejected_devices: number; session_command: string | null; mab?: MabHealth | null
+  /** The switch's own session list from the switch audit's latest poll (when monitoring is on and recent). */
+  switch_sessions?: (Omit<SessionsCheck, 'parsed'> & { at: string }) | null }
+
+export interface ActivityEvent { id: string; at: string; result: 'accept' | 'reject'; reason_code: string | null; username: string | null; calling_station_id: string | null;
+  network: Network | null; nas_port_id: string | null; vlan_id: number | null; monitor: boolean; explanation: { title: string; explanation: string; fix: string } | null }
+export interface Diagnostic { kind: 'unknown_client' | 'bad_secret'; address: string; at: string; message: string }
+export interface Activity { events: ActivityEvent[]; last_request_at: string | null; diagnostics: Diagnostic[] }
+
+export interface WiredKit { server_name: string; files: Array<{ name: string; type: string; content: string }>; gpo_steps: string[]; notes: string[] }
 
 export interface CoaRequest {
   id: string
@@ -91,6 +278,8 @@ export interface CoaRequest {
 }
 
 const base = (tid: string) => `/api/tenants/${tid}/radius`
+/** The shared secret again, to fill a configuration (needs radius:secrets; audited). */
+export const showClientSecret = (tid: string, id: string) => api.post<{ shared_secret: string }>(`${base(tid)}/clients/${id}/secret`)
 export const guideKey = (tid: string, vendor: string) => [...qk.radius(tid), 'guide', vendor] as const
 export const coaKey = (tid: string) => [...qk.radius(tid), 'coa'] as const
 
@@ -132,7 +321,17 @@ export function useRotateServerCert(tid: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: () => api.post<{ settings: RadiusSettings }>(`${base(tid)}/server-certificate/rotate`),
-    onSuccess: () => Promise.all([inv(), qc.invalidateQueries({ queryKey: ['t', tid, 'certificates'] })]),
+    onSuccess: () => Promise.all([inv(), qc.invalidateQueries({ queryKey: ['t', tid, 'certificates'] }), qc.invalidateQueries({ queryKey: qk.renewal(tid) })]),
+  })
+}
+
+/** Put the previous server certificate back (within 14 days of a rotation). Pauses automatic rotation. */
+export function useRollbackServerCert(tid: string) {
+  const inv = useInvalidateRadius(tid)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.post<{ settings: RadiusSettings }>(`${base(tid)}/server-certificate/rollback`),
+    onSuccess: () => Promise.all([inv(), qc.invalidateQueries({ queryKey: ['t', tid, 'certificates'] }), qc.invalidateQueries({ queryKey: qk.renewal(tid) })]),
   })
 }
 
@@ -143,9 +342,103 @@ export function useCreateClient(tid: string) {
   return useOneTimeCall(fn, inv)
 }
 
+/** Partial update: omitted fields keep their values (networks and the port plan included). */
 export function useUpdateClient(tid: string) {
   const inv = useInvalidateRadius(tid)
-  return useMutation({ mutationFn: ({ id, body }: { id: string; body: ClientIn }) => api.put<{ client: RadiusClient }>(`${base(tid)}/clients/${id}`, body), onSuccess: inv })
+  return useMutation({ mutationFn: ({ id, body }: { id: string; body: Partial<ClientIn> }) => api.put<{ client: RadiusClient }>(`${base(tid)}/clients/${id}`, body), onSuccess: inv })
+}
+
+export const wiredGuideKey = (tid: string, id: string) => [...qk.radius(tid), 'wired-guide', id] as const
+
+/** What a pasted `show version` says the switch is. Nothing is stored. */
+export function useCiscoDetect(tid: string) {
+  return useMutation({ mutationFn: (text: string) => api.post<{ detected: CiscoDetected; capabilities: SwitchCaps | null }>(`${base(tid)}/cisco/detect`, { text }) })
+}
+
+/** The families and series, and what this switch can do. */
+export function useCiscoPlatforms(tid: string, vendor: string, p: Pick<WiredProfile, 'platform' | 'series' | 'version' | 'lan_lite'>, enabled = true) {
+  const q = new URLSearchParams({ vendor, platform: p.platform, series: p.series ?? '', version: p.version ?? '', lan_lite: String(!!p.lan_lite) })
+  return useQuery({
+    queryKey: [...qk.radius(tid), 'cisco-platforms', q.toString()] as const,
+    queryFn: ({ signal }) => api.get<CiscoPlatforms>(`${base(tid)}/cisco/platforms?${q}`, signal),
+    enabled,
+    staleTime: 5 * 60_000,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useWiredGuide(tid: string, clientId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: wiredGuideKey(tid, clientId ?? ''),
+    queryFn: ({ signal }) => api.get<WiredGuide>(`${base(tid)}/clients/${clientId}/wired-guide`, signal),
+    enabled: enabled && !!clientId,
+    staleTime: 30_000,
+  })
+}
+
+export function useSetWiredMode(tid: string) {
+  const inv = useInvalidateRadius(tid)
+  return useMutation({
+    mutationFn: ({ id, mode, confirmed }: { id: string; mode: 'monitor' | 'enforce'; confirmed?: boolean }) =>
+      api.post<{ client: RadiusClient; guide: WiredGuide }>(`${base(tid)}/clients/${id}/wired-mode`, { mode, confirmed: !!confirmed }),
+    onSuccess: inv,
+  })
+}
+
+/** Turn MAC authentication on or off (monitor mode only). Returns the guide with the change to paste. */
+export function useSetMab(tid: string) {
+  const inv = useInvalidateRadius(tid)
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.post<{ client: RadiusClient; guide: WiredGuide }>(`${base(tid)}/clients/${id}/mab`, { enabled }),
+    onSuccess: () => Promise.all([inv(), qc.invalidateQueries({ queryKey: qk.mac(tid) })]),
+  })
+}
+
+/** After a configuration-only change (a switch's Enforce): whether FreeRADIUS runs it yet. Polls every 2 s from
+ * `since` (ms) until it does. An older agent doesn't report it, so 20 s after the change counts as live. */
+export type ConfigApplied = 'waiting' | 'live' | 'rejected' | 'slow'
+export function useConfigApplied(tid: string, since: number | null): { state: ConfigApplied; error: string | null } {
+  const q = useQuery({
+    queryKey: [...qk.radius(tid), 'config-applied'] as const,
+    queryFn: ({ signal }) => api.get<RadiusResponse>(base(tid), signal),
+    enabled: since !== null,
+    refetchInterval: (query) => (query.state.data?.agent?.tenant_config_in_sync ? false : 2000),
+  })
+  return since === null ? { state: 'waiting', error: null } : configAppliedState(q.data?.agent ?? null, Date.now() - since)
+}
+
+export function configAppliedState(a: RadiusAgent | null, elapsedMs: number): { state: ConfigApplied; error: string | null } {
+  if (a?.config_ok === false && a.config_error) return { state: 'rejected', error: a.config_error }
+  if (a?.tenant_config_in_sync) return { state: 'live', error: null }
+  if (a && a.tenant_config_in_sync == null && elapsedMs > 20_000) return { state: 'live', error: null }
+  return { state: elapsedMs > 90_000 ? 'slow' : 'waiting', error: null }
+}
+
+export function useReadiness(tid: string, clientId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...qk.radius(tid), 'readiness', clientId ?? ''] as const,
+    queryFn: ({ signal }) => api.get<Readiness>(`${base(tid)}/clients/${clientId}/readiness?hours=24`, signal),
+    enabled: enabled && !!clientId,
+  })
+}
+
+export function useCheckSessions(tid: string) {
+  return useMutation({ mutationFn: ({ id, text }: { id: string; text: string }) => api.post<SessionsCheck>(`${base(tid)}/clients/${id}/readiness/sessions`, { text }) })
+}
+
+/** "Waiting for the first request": polls while `enabled`. */
+export function useActivity(tid: string, clientId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: [...qk.radius(tid), 'activity', clientId ?? ''] as const,
+    queryFn: ({ signal }) => api.get<Activity>(`${base(tid)}/clients/${clientId}/activity?minutes=60`, signal),
+    enabled: enabled && !!clientId,
+    refetchInterval: 5000,
+  })
+}
+
+export function useWiredKit(tid: string, enabled = true) {
+  return useQuery({ queryKey: [...qk.radius(tid), 'wired-kit'] as const, queryFn: ({ signal }) => api.get<WiredKit>(`${base(tid)}/wired-kit`, signal), enabled, staleTime: 60_000 })
 }
 
 /** Returns the new shared secret once: kept out of the mutation cache (see oneTime.ts). */

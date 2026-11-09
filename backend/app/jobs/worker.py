@@ -5,8 +5,11 @@ Schedule (per tenant unless noted):
 * decision refresh hourly while the directory is healthy (so RADIUS data stays inside its staleness limit; if the
   directory has been failing longer than the limit, the refresh stops and RADIUS fails closed);
 * CRL rotation daily (OpenBao CRLs are issued with a 72h lifetime);
+* the RADIUS server certificate's rotation, checked every 6 hours, and superseded client certificates (flagged when
+  still used, retired once their device uses the successor), daily (app/pki/renewal.py);
 * expiry of enrollment links, purge of undelivered server-generated keys (and revocation of their certificates);
-* OpenBao token renewal, job pruning, event and system log retention (platform).
+* OpenBao token renewal, job pruning, event and system log retention (platform);
+* MAC allow list: devices whose entry expired are disconnected (CoA) every 10 minutes; sightings kept 90 days.
 
 A second thread forwards the audit trail, authentication events and the system log to remote syslog (app.logs.syslog).
 """
@@ -61,7 +64,25 @@ def _handle(job: m.Job) -> None:
             s.execute(text("DELETE FROM auth_events WHERE at < now() - make_interval(days => :d)"), {"d": EVENT_RETENTION_DAYS})
             s.execute(text("DELETE FROM accounting_sessions WHERE updated_at < now() - make_interval(days => :d)"), {"d": EVENT_RETENTION_DAYS})
             s.execute(text("DELETE FROM system_logs WHERE at < now() - make_interval(days => :d)"), {"d": SYSTEM_LOG_RETENTION_DAYS})
+            # Device-administration log: each tenant's own retention (180 days unless set; 30 to 730).
+            s.execute(text("DELETE FROM admin_events e WHERE e.at < now() - make_interval(days => coalesce("
+                           "(SELECT a.retention_days FROM admin_settings a WHERE a.tenant_id = e.tenant_id), 180))"))
+            from app.radius.mab import prune_sightings
+            prune_sightings(s)
             queue.prune(s)
+        elif job.kind == "mac.sweep":
+            # RADIUS refuses an expired entry by itself; this ends the sessions it admitted before the expiry.
+            from app.radius.mab import sweep_expired
+            mark = s.get(m.PlatformSetting, "mac_sweep") or m.PlatformSetting(key="mac_sweep", value={})
+            now = datetime.now(UTC)
+            since = datetime.fromisoformat(mark.value["at"]) if (mark.value or {}).get("at") else now - timedelta(minutes=15)
+            sweep_expired(s, since, now)
+            mark.value = {"at": now.isoformat()}
+            s.add(mark)
+        elif job.kind == "renewal.server_cert":
+            _rotate_server_cert(s, tid)
+        elif job.kind == "renewal.retire":
+            _tend_superseded(s, tid)
         elif job.kind == "openbao.renew":
             from app.pki.openbao import renew_token
             renew_token()
@@ -73,6 +94,47 @@ def _handle(job: m.Job) -> None:
         raise
     finally:
         s.close()
+
+
+def _rotate_server_cert(s, tid: uuid.UUID) -> None:
+    """The RADIUS server certificate rotates by itself once due (docs/plans/cert-renewal.md §5); the previous one is kept
+    14 days so it can be put back."""
+    from app.pki.openbao import OpenBao
+    from app.pki.renewal import rotate_server_cert_if_due
+    tenant = s.get(m.Tenant, tid)
+    if tenant is None:
+        return
+    cert = rotate_server_cert_if_due(s, OpenBao(), tenant)
+    if cert is None:
+        return
+    rs = s.get(m.RadiusSettings, tid)
+    prev = s.get(m.Certificate, rs.previous_server_certificate_id) if rs and rs.previous_server_certificate_id else None
+    audit.record(s, audit.Actor.system("Certificate renewal"), "radius.server_certificate_rotated", tenant_id=tid, target_type="certificate",
+                 target_id=cert.id, target_label=cert.common_name,
+                 detail={"serial": cert.serial, "automatic": True, "previous_serial": prev.serial if prev else None,
+                         "not_after": cert.not_after.isoformat()})
+
+
+def _tend_superseded(s, tid: uuid.UUID) -> None:
+    """Superseded certificates: flag one still used after its successor, retire (revoke) one its device no longer uses
+    (docs/plans/cert-renewal.md §15b items 5, 6)."""
+    from app.pki.openbao import OpenBao
+    from app.pki.renewal import tend_superseded
+    from app.policy.service import recompute_tenant
+    from app.radius.state import bump
+    res = tend_superseded(s, OpenBao(), tid)
+    if res["retired"]:  # before the audit rows: auditing holds a lock that every tenant's audit writes wait on
+        recompute_tenant(s, tid)
+        bump(s, tid)  # pushes the new CRL to RADIUS
+    if res["failed"]:
+        log.warning("Retirement: %d superseded certificates couldn't be revoked in tenant %s; retried tomorrow", res["failed"], tid)
+    actor = audit.Actor.system("Certificate renewal")
+    for cert, succ_serial, last in res["used"]:
+        audit.record(s, actor, "certificate.superseded_used", tenant_id=tid, target_type="certificate", target_id=cert.id,
+                     target_label=f"{cert.common_name} ({cert.serial})", detail={"successor_serial": succ_serial, "last_used": last.isoformat()})
+    for cert, succ_serial in res["retired"]:
+        audit.record(s, actor, "certificate.superseded_retired", tenant_id=tid, target_type="certificate", target_id=cert.id,
+                     target_label=f"{cert.common_name} ({cert.serial})", detail={"successor_serial": succ_serial})
 
 
 def _purge_escrow(s) -> None:
@@ -89,10 +151,10 @@ def _purge_escrow(s) -> None:
                 revoke(s, OpenBao(), cert, "cessationOfOperation", "EasyEAP (undelivered package expired)")
                 touched.add(cert.tenant_id)
         if e:
-            e.status, e.token_hash = "expired", None
+            e.status, e.token_hash, e.token_ct = "expired", None, None
         s.delete(esc)
     for e in s.scalars(select(m.Enrollment).where(m.Enrollment.status == "pending", m.Enrollment.expires_at <= now)):
-        e.status, e.token_hash = "expired", None
+        e.status, e.token_hash, e.token_ct = "expired", None, None
     for tid in touched:
         recompute_tenant(s, tid)
 
@@ -119,6 +181,8 @@ def schedule() -> None:
             queue.enqueue(s, "events.retention", dedupe_key="events.retention")
         if due("platform:renew", timedelta(hours=12)):
             queue.enqueue(s, "openbao.renew", dedupe_key="openbao.renew")
+        if due("platform:mac-sweep", timedelta(minutes=10)):
+            queue.enqueue(s, "mac.sweep", dedupe_key="mac.sweep")
         queue.recover_stuck(s)
         for t in s.scalars(select(m.Tenant).where(m.Tenant.status.in_(("active", "setup")))):
             dc = s.get(m.DirectoryConfig, t.id)
@@ -134,6 +198,10 @@ def schedule() -> None:
             unrecorded = issuing is not None and issuing.crl_next_update is None
             if due(f"crl:{t.id}", timedelta(hours=24)) or (unrecorded and due(f"crl-record:{t.id}", timedelta(hours=1))):
                 queue.enqueue(s, "crl.rotate", tenant_id=t.id, dedupe_key=f"crl.rotate:{t.id}")
+            if issuing is not None and due(f"server-cert:{t.id}", timedelta(hours=6)):
+                queue.enqueue(s, "renewal.server_cert", tenant_id=t.id, dedupe_key=f"renewal.server_cert:{t.id}")
+            if issuing is not None and due(f"retire:{t.id}", timedelta(hours=24)):
+                queue.enqueue(s, "renewal.retire", tenant_id=t.id, dedupe_key=f"renewal.retire:{t.id}")
 
 
 def run_once() -> bool:

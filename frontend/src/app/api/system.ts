@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from './client'
 import { qk } from './keys'
 
-export type ServiceName = 'database' | 'pki' | 'radius' | 'worker' | 'syslog'
+export type ServiceName = 'database' | 'pki' | 'radius' | 'worker' | 'collector' | 'switch_syslog' | 'syslog'
 
 export interface HealthCheck {
   service: ServiceName | string

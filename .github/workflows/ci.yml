@@ -74,3 +74,13 @@ jobs:
       - name: Build the API, RADIUS and proxy images
         working-directory: deploy
         run: docker compose --env-file .env.example build easyeap-api easyeap-radius easyeap-proxy
+
+  radius:
+    name: RADIUS (FreeRADIUS, EAP-TLS, wired 802.1X)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # the version-skew checks read the 1.0.1 agent and renderer from its tag
+      - name: Real FreeRADIUS with the rendered configuration, real EAP-TLS
+        run: tests/radius/run.sh

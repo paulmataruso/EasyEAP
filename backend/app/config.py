@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     public_url: str = "https://easyeap.localhost"  # console/enrollment base URL
     pki_public_url: str = "http://easyeap.localhost"  # CRL/OCSP base URL (plain HTTP)
     radius_public_address: str = ""  # address controllers use to reach RADIUS (shown in guides)
+    syslog_bind: str = ""  # where easyeap-syslog's port is published (empty or loopback: not reachable by switches)
+    syslog_port: int = 5514
+    syslog_std_port: int = 0  # 514 when deploy/docker-compose.syslog514.yml also publishes UDP 514 (AireOS can't send elsewhere)
+
+    @property
+    def syslog_receiving(self) -> bool:
+        """Switches can reach the collector's syslog port (docs/switch-audit.md)."""
+        return self.syslog_bind.strip() not in ("", "127.0.0.1", "::1", "localhost")
 
     session_ttl_minutes: int = 12 * 60
     session_idle_minutes: int = 60

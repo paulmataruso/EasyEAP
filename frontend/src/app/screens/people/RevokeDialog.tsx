@@ -3,6 +3,8 @@
 // rebuilt), recomputes every decision, bumps the RADIUS snapshot, and, when `disconnect` is true, queues a CoA
 // Disconnect-Request (radius/coa.py) for sessions that authenticated with this serial in the last two days, but only
 // to controllers with CoA enabled. Sessions on other controllers last until the controller re-authenticates them.
+// A renewed certificate's successors (renewed with its key) are revoked with it unless the admin unticks that
+// (docs/plans/cert-renewal.md §15b item 4).
 import { useEffect, useState, type RefObject } from 'react'
 import { Link } from 'react-router'
 import { RadioGroup } from 'radix-ui'
@@ -10,7 +12,7 @@ import { CircleAlert, RadioTower, ShieldX, TimerReset, Undo2 } from 'lucide-reac
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/ui/lib'
 import { useTenant } from '../../api/tenant'
-import { invalidatePeople, REVOCATION_REASONS, revokeCertificate, useRadius, type Certificate, type RevocationReason, type RevokeResult } from '../../api/people'
+import { invalidatePeople, REVOCATION_REASONS, revokeCertificate, useCertificate, useRadius, type Certificate, type RevocationReason, type RevokeResult } from '../../api/people'
 import { Btn, Callout, EDialog, errorMessage, PlatformIcon, toast } from '../../ui'
 import { duration, fmtSerial, plural } from '../../lib/format'
 import { paths } from '../../routes'
@@ -43,6 +45,7 @@ export function RevokeDialog({ cert, open, onOpenChange, returnFocus, onRevoked 
   const radius = useRadius(tid, open)
   const [reason, setReason] = useState<RevocationReason | ''>('')
   const [disconnect, setDisconnect] = useState(true)
+  const [withSuccessors, setWithSuccessors] = useState(true)
   const [touched, setTouched] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -50,8 +53,13 @@ export function RevokeDialog({ cert, open, onOpenChange, returnFocus, onRevoked 
 
   // Fresh form each time it opens.
   useEffect(() => {
-    if (open) { setReason(''); setDisconnect(true); setTouched(false); setError(null); setBusy(false); setDone(false) }
+    if (open) { setReason(''); setDisconnect(true); setWithSuccessors(true); setTouched(false); setError(null); setBusy(false); setDone(false) }
   }, [open, cert?.id])
+  // What revoking it would revoke too (the chain renewed from it), whatever its status: an expired certificate can have
+  // a valid renewal. Cached when opened from the certificate's own page. Nothing cascades unless it was shown here.
+  const detail = useCertificate(tid, open && cert && cert.status !== 'revoked' ? cert.id : null)
+  const successors = detail.data?.revoke_also ?? []
+  const checking = detail.isLoading
 
   const clients = radius.data?.clients ?? []
   const coa = clients.filter((c) => c.coa_enabled)
@@ -69,10 +77,11 @@ export function RevokeDialog({ cert, open, onOpenChange, returnFocus, onRevoked 
     setBusy(true)
     setError(null)
     try {
-      const res = await revokeCertificate(tid, cert.id, reason, sendDisconnect)
+      const res = await revokeCertificate(tid, cert.id, reason, sendDisconnect, withSuccessors && successors.length > 0)
       setDone(true)
-      toast(`Certificate ${fmtSerial(cert.serial).slice(0, 14)}… revoked`,
-        `${REASON_META[reason].label}. RADIUS rejects new connections with it once the update is applied, normally within seconds. ${sendDisconnect ? disconnectSummary(res.disconnect, res.session_timeout_seconds ?? timeout) : canCoa ? 'No disconnect was sent; connected devices stay online until the session timeout.' : 'No controller has CoA, so connected devices stay online until the session timeout.'}`,
+      const also = res.successors?.length ? ` The ${plural(res.successors.length, 'certificate')} renewed from it ${res.successors.length === 1 ? 'was' : 'were'} revoked too.` : ''
+      toast(`Certificate ${fmtSerial(cert.serial).slice(0, 14)}… revoked${also ? ' with its renewals' : ''}`,
+        `${REASON_META[reason].label}.${also} RADIUS rejects new connections with it once the update is applied, normally within seconds. ${sendDisconnect ? disconnectSummary(res.disconnect, res.session_timeout_seconds ?? timeout) : canCoa ? 'No disconnect was sent; connected devices stay online until the session timeout.' : 'No controller has CoA, so connected devices stay online until the session timeout.'}`,
         'valid')
       onRevoked?.(res)
       onOpenChange(false)
@@ -95,7 +104,7 @@ export function RevokeDialog({ cert, open, onOpenChange, returnFocus, onRevoked 
       footer={
         <>
           <Btn variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>Keep certificate</Btn>
-          <Btn variant="danger-solid" onClick={confirm} busy={busy}><ShieldX aria-hidden />Revoke certificate</Btn>
+          <Btn variant="danger-solid" onClick={confirm} busy={busy} disabled={checking}><ShieldX aria-hidden />Revoke certificate</Btn>
         </>
       }
     >
@@ -168,6 +177,22 @@ export function RevokeDialog({ cert, open, onOpenChange, returnFocus, onRevoked 
               </span>
             </label>
           </div>
+
+          {successors.length > 0 && (
+            <label className="flex items-start gap-2.5 rounded-[8px] border border-[var(--ee-line)] px-4 py-3 text-[13px]">
+              <input type="checkbox" className="ee-check mt-0.5" checked={withSuccessors} aria-describedby="revoke-succ-hint" onChange={(e) => setWithSuccessors(e.target.checked)} />
+              <span>
+                <span className="text-[var(--ee-ink)]">
+                  Also revoke the {successors.length === 1 ? 'newer certificate' : `${successors.length} newer certificates`} renewed from it
+                  {' '}(<span className="ee-mono">{successors.map((n) => fmtSerial(n.serial).slice(0, 14) + '…').join(', ')}</span>)
+                </span>
+                <span id="revoke-succ-hint" className="ee-small ee-ink-3 block">
+                  {successors.length === 1 ? 'It was' : 'They were'} renewed from this certificate, with its key. Leave this on when the device is gone or the key may
+                  have been copied. Turn it off to revoke only this older certificate: the device keeps connecting with the newer one.
+                </span>
+              </span>
+            </label>
+          )}
 
           {(cert.status === 'expired') && (
             <Callout tone="neutral" icon={<TimerReset aria-hidden />}>This certificate has already expired, so RADIUS rejects it anyway. Revoking it records the reason in the CRL.</Callout>

@@ -18,3 +18,14 @@ export function useOneTimeCall<A, R>(fn: (arg: A) => Promise<R>, afterSuccess?: 
   }, [fn, afterSuccess])
   return { mutate, isPending }
 }
+
+/** A secret EasyEAP keeps (a shared secret, a TACACS+ key, SNMP credentials), fetched only when the admin asks
+ * (each fetch is in the audit log) and held only in the calling component's state, to fill a configuration. */
+export function useReveal<R>(fn: () => Promise<R>) {
+  const [value, setValue] = useState<R | null>(null)
+  // Another device or switch (fn changes with its id): never show the previous one's secret in its configuration.
+  useEffect(() => { setValue(null) }, [fn])
+  const call = useOneTimeCall<void, R>(fn)
+  const reveal = (onError?: (e: unknown) => void) => call.mutate(undefined, { onSuccess: setValue, onError })
+  return { value, reveal, busy: call.isPending, clear: () => setValue(null) }
+}

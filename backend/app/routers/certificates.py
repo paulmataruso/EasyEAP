@@ -12,6 +12,8 @@ from sqlalchemy import func, or_, select
 from app import audit
 from app import models as m
 from app.deps import TenantCtx, require
+from app.enrollment import service as enr
+from app.pki import renewal
 from app.pki import service as pki
 from app.pki.openbao import OpenBao
 from app.policy.service import policy_settings, recompute_tenant
@@ -21,7 +23,8 @@ router = APIRouter(prefix="/api/tenants/{tenant_id}/certificates", tags=["certif
 REASONS = ("unspecified", "keyCompromise", "affiliationChanged", "superseded", "cessationOfOperation")
 
 
-def cert_out(c: m.Certificate, warn_days: int, identity: m.Identity | None = None, device: m.Device | None = None) -> dict:
+def cert_out(c: m.Certificate, warn_days: int, identity: m.Identity | None = None, device: m.Device | None = None,
+             renewer: str | None = None) -> dict:
     return {
         "id": str(c.id), "serial": c.serial, "common_name": c.common_name, "subject": c.subject, "sans": c.sans, "purpose": c.purpose,
         "not_before": c.not_before.isoformat(), "not_after": c.not_after.isoformat(), "key_algorithm": c.key_algorithm,
@@ -31,6 +34,14 @@ def cert_out(c: m.Certificate, warn_days: int, identity: m.Identity | None = Non
         "identity": {"id": str(identity.id), "username": identity.username, "display_name": identity.display_name} if identity else None,
         "device": {"id": str(device.id), "name": device.name, "platform": device.platform} if device else None,
         "created_at": c.created_at.isoformat() if c.created_at else None,
+        # Where Windows keeps the key (tpm | software | None: not reported), and the renewal chain.
+        "key_storage": c.key_storage, "renewal_of": str(c.renewal_of) if c.renewal_of else None,
+        "renewed_at": c.renewed_at.isoformat() if c.renewed_at else None,
+        # What renews it (windows-setup | windows-helper | linux | gpo | renewed | None: a new link), as recorded or
+        # read from how it was issued, the renewer's last signed check-in (v2), and when it was retired.
+        "renewer": renewer, "renewer_version": c.renewer_version,
+        "renewal_checked_at": c.renewal_checked_at.isoformat() if c.renewal_checked_at else None,
+        "retired_at": c.retired_at.isoformat() if c.retired_at else None,
     }
 
 
@@ -45,7 +56,7 @@ def list_certs(ctx: TenantCtx = Depends(require("certificates:read")), q: str = 
     if purpose:
         stmt = stmt.where(m.Certificate.purpose == purpose)
     else:
-        stmt = stmt.where(m.Certificate.purpose.in_(("user", "device")))
+        stmt = stmt.where(m.Certificate.purpose.in_(m.CLIENT_PURPOSES))
     if identity_id:
         stmt = stmt.where(m.Certificate.identity_id == identity_id)
     if q:
@@ -62,9 +73,12 @@ def list_certs(ctx: TenantCtx = Depends(require("certificates:read")), q: str = 
         stmt = stmt.where(m.Certificate.status == "active", m.Certificate.not_after > now + timedelta(days=warn))
     elif status_filter == "superseded":
         stmt = stmt.where(m.Certificate.status == "superseded", m.Certificate.not_after > now)
+    elif status_filter == "renewal":  # the dashboard's: automatic renewals that are overdue or whose renewer went silent
+        cr = renewal.client_renewal(s, ctx.id, warn, now)
+        stmt = stmt.where(m.Certificate.id.in_([r.id for r in cr["overdue"] + cr["silent"]]))
     total = s.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = s.execute(stmt.order_by(m.Certificate.not_after.asc()).offset((page - 1) * page_size).limit(page_size)).all()
-    base = select(func.count()).select_from(m.Certificate).where(m.Certificate.tenant_id == ctx.id, m.Certificate.purpose.in_(("user", "device")))
+    base = select(func.count()).select_from(m.Certificate).where(m.Certificate.tenant_id == ctx.id, m.Certificate.purpose.in_(m.CLIENT_PURPOSES))
     counts = {
         "revoked": s.scalar(base.where(m.Certificate.status == "revoked")) or 0,
         "expired": s.scalar(base.where(m.Certificate.status != "revoked", m.Certificate.not_after <= now)) or 0,
@@ -74,7 +88,14 @@ def list_certs(ctx: TenantCtx = Depends(require("certificates:read")), q: str = 
         "superseded": s.scalar(base.where(m.Certificate.status == "superseded", m.Certificate.not_after > now)) or 0,
     }
     return {"total": total, "page": page, "page_size": page_size, "counts": counts, "warning_days": warn,
-            "items": [cert_out(c, warn, i, d) for c, i, d in rows]}
+            "items": [cert_out(c, warn, i, d, _renewer(c)) for c, i, d in rows]}
+
+
+def _renewer(c: m.Certificate) -> str | None:
+    """Recorded since 0015 for everything that renews by itself (renewal.renewer() reads the rest from how it was issued)."""
+    if c.renewer or c.purpose not in m.CLIENT_PURPOSES:
+        return c.renewer
+    return "renewed" if c.renewal_of else None
 
 
 def _get(ctx: TenantCtx, cert_id: uuid.UUID) -> m.Certificate:
@@ -91,8 +112,20 @@ def get_cert(cert_id: uuid.UUID, ctx: TenantCtx = Depends(require("certificates:
     ident = ctx.session.get(m.Identity, c.identity_id) if c.identity_id else None
     dev = ctx.session.get(m.Device, c.device_id) if c.device_id else None
     dec = ctx.session.get(m.Decision, c.id)
-    out = cert_out(c, warn, ident, dev)
-    out["decision"] = {"outcome": dec.outcome, "reason_code": dec.reason_code, "vlan_id": dec.vlan_id, "deciding_rule_id": str(dec.deciding_rule_id) if dec.deciding_rule_id else None,
+    out = cert_out(c, warn, ident, dev, _renewer(c))
+    st = renewal.settings(ctx.session, ctx.id)
+    out["renewal"] = {"renew_from": renewal.renew_from(c, st.renew_at_percent).isoformat(),
+                      "enabled": renewal.enabled_for(st, c.purpose) or out["renewer"] == "gpo",
+                      "state": renewal.classify(c, st, datetime.now(UTC), who=out["renewer"]) if c.status == "active" else None} \
+        if c.purpose in m.CLIENT_PURPOSES else None
+    nxt = ctx.session.scalars(select(m.Certificate).where(m.Certificate.tenant_id == ctx.id, m.Certificate.renewal_of == c.id)
+                              .order_by(m.Certificate.created_at.desc())).all()
+    out["successors"] = [{"id": str(n.id), "serial": n.serial, "status": pki.effective_status(n, warn), "not_after": n.not_after.isoformat(),
+                          "revoked_by": n.revoked_by, "replaced": n.revoked_by == enr.REPLACED_BY,
+                          "renewal": renewal.is_key_renewal(n, c)} for n in nxt]
+    # What revoking it would revoke too (its renewals' whole chain, unrevoked): the revoke dialog lists them.
+    out["revoke_also"] = [{"id": str(n.id), "serial": n.serial} for n in renewal.successors(ctx.session, c)] if c.status != "revoked" else []
+    out["decision"] = {"outcome": dec.outcome, "reason_code": dec.reason_code, "vlan_id": dec.vlan_id, "wired_vlan_id": dec.wired_vlan_id, "deciding_rule_id": str(dec.deciding_rule_id) if dec.deciding_rule_id else None,
                        "attributes": dec.attributes, "steps": dec.steps, "computed_at": dec.computed_at.isoformat()} if dec else None
     out["issuer"] = ctx.session.get(m.CertificateAuthority, c.issuer_ca_id).common_name if c.issuer_ca_id else None
     # The holder's current groups, so the decision ledger can say which membership matched.
@@ -108,6 +141,7 @@ def get_pem(cert_id: uuid.UUID, ctx: TenantCtx = Depends(require("certificates:r
 class RevokeIn(BaseModel):
     reason: str = "unspecified"
     disconnect: bool = True
+    successors: bool = True  # also revoke the certificates renewed from it (§15b item 4)
 
 
 @router.post("/{cert_id}/revoke")
@@ -119,15 +153,21 @@ def revoke(cert_id: uuid.UUID, body: RevokeIn, ctx: TenantCtx = Depends(require(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Rotate the RADIUS server certificate from RADIUS settings instead.")
     if c.status == "revoked":
         raise HTTPException(status.HTTP_409_CONFLICT, "This certificate is already revoked.")
-    pki.revoke(ctx.session, OpenBao(), c, body.reason, ctx.principal.admin.email)
+    later = renewal.successors(ctx.session, c) if body.successors else []
+    bao = OpenBao()
+    pki.revoke(ctx.session, bao, c, body.reason, ctx.principal.admin.email)
+    for n in later:
+        pki.revoke(ctx.session, bao, n, body.reason, f"{ctx.principal.admin.email} (renewed from {c.serial})")
     recompute_tenant(ctx.session, ctx.id)
     from app.radius.state import bump
     bump(ctx.session, ctx.id)  # pushes the new CRL to RADIUS
-    result = coa.disconnect_for_certificate(ctx.session, c, f"Certificate {c.serial} revoked") if body.disconnect else {"sessions": 0, "queued": 0, "without_coa": 0}
+    result = coa.disconnect_for_certificate(ctx.session, c, f"Certificate {c.serial} revoked", also=later) if body.disconnect \
+        else {"sessions": 0, "queued": 0, "without_coa": 0}
     audit.record(ctx.session, ctx.actor, "certificate.revoked", tenant_id=ctx.id, target_type="certificate", target_id=c.id,
-                 target_label=f"{c.common_name} ({c.serial})", detail={"reason": body.reason, "disconnect": result})
+                 target_label=f"{c.common_name} ({c.serial})",
+                 detail={"reason": body.reason, "disconnect": result, "successors": [n.serial for n in later]})
     rs = ctx.session.get(m.RadiusSettings, ctx.id)
-    return {"ok": True, "disconnect": result, "session_timeout_seconds": rs.session_timeout_seconds if rs else None,
+    return {"ok": True, "disconnect": result, "successors": [n.serial for n in later], "session_timeout_seconds": rs.session_timeout_seconds if rs else None,
             "note": "New connections are refused as soon as RADIUS receives the update (normally within seconds). "
                     + ("A disconnect was sent to the controller for active sessions." if result["queued"] else
                        "Devices already connected stay online until the controller re-authenticates them (Session-Timeout) unless CoA is enabled.")}

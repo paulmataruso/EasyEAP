@@ -3,7 +3,7 @@ Business Source License 1.1
 Parameters
 
 Licensor:             Paul Mataruso
-Licensed Work:        EasyEAP 1.0.1
+Licensed Work:        EasyEAP 1.1.0
                       The Licensed Work is (c) 2026 Paul Mataruso.
 Additional Use Grant: You may make production use of the Licensed Work to
                       authenticate and authorize access to networks owned or
@@ -17,7 +17,7 @@ Additional Use Grant: You may make production use of the Licensed Work to
                       service provider (MSP), and selling, reselling or
                       bundling it with a product or service.
 
-Change Date:          2030-11-06
+Change Date:          2030-11-09
 
 Change License:       Apache License, Version 2.0
 

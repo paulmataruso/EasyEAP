@@ -133,6 +133,8 @@ def save(body: DirectoryIn, ctx: TenantCtx = Depends(require("directory:write"))
     audit.record(s, ctx.actor, "directory.saved", tenant_id=ctx.id, target_type="directory", target_label=body.domain,
                  detail={"hosts": p.hosts, "transport": body.transport, "verify_certificate": body.verify_certificate, "bind_dn": body.bind_dn,
                          "password_changed": bool(body.bind_password)})
+    from app.admin.service import bump as admin_bump
+    admin_bump(s, ctx.id)  # device-admin logins use the same domain controllers and CA bundle
     enqueue(s, "directory.sync", tenant_id=ctx.id, dedupe_key=f"directory.sync:{ctx.id}")
     return {"config": config_out(c)}
 

@@ -89,7 +89,8 @@ def principal(request: Request, s: Session = Depends(db), x_csrf_token: str | No
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Two-factor verification is required.")
     if request.method in UNSAFE and not (x_csrf_token and constant_eq(x_csrf_token, csrf_for(th))):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Security token missing or invalid. Reload the page and try again.")
-    if now - sess.last_seen_at > timedelta(seconds=30):
+    # A page that refreshes itself (the live syslog view) says so: it mustn't keep an unattended console signed in.
+    if now - sess.last_seen_at > timedelta(seconds=30) and request.headers.get("x-easyeap-passive") != "1":
         sess.last_seen_at = now
     return Principal(admin=admin, session=sess, ip=client_ip(request))
 

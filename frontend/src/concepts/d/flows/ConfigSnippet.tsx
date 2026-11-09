@@ -66,7 +66,7 @@ function unifiSteps(t: Tenant, s: RadiusSettings): string[] {
 
 /** Copy-ready configuration for the selected controller's vendor. Secrets are never printed. */
 export function ConfigSnippet({ tenant, settings, nas, all, vendor, onVendor }: { tenant: Tenant; settings: RadiusSettings; nas: RadiusClient | null; all: RadiusClient[]; vendor: NasVendor; onVendor: (v: SnippetVendor) => void }) {
-  const tab: SnippetVendor = vendor === 'other' ? 'cisco-9800' : vendor
+  const tab: SnippetVendor = vendor === 'other' || vendor === 'cisco-switch' ? 'cisco-9800' : vendor
   const label = nas ? codeText(nasCode(nas, all)) : ''
   const text = tab === 'cisco-9800' ? cat9800(tenant, settings, nas, label) : tab === 'cisco-aireos' ? aireos(tenant, settings, nas, label) : unifiSteps(tenant, settings).map((s, i) => `${i + 1}. ${s}`).join('\n')
   return (

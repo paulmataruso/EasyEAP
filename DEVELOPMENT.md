@@ -5,11 +5,15 @@
 | Path | What |
 |---|---|
 | `backend/` | FastAPI API and worker (`app/`), Alembic migrations, pytest suite (`tests/`) |
-| `services/radius/` | FreeRADIUS image and the radius-agent (`agent/easyeap_agent.py`, config renderer `agent/render.py`) |
+| `services/radius/` | FreeRADIUS image and the radius-agent (`agent/easyeap_agent.py`, config renderer `agent/render.py`, the TACACS+ service `agent/tacacs.py`) |
 | `services/lab-client/` | `eapol_test` image used by the lab and the end-to-end test |
 | `frontend/` | React console (`src/app/`), enrollment portal (`src/enroll/`), shared domain code (`src/domain/`), design prototypes (`src/concepts/`, `src/prototype/`, `src/compare/`) |
 | `deploy/` | Compose files, installer, backup and restore, proxy, OpenBao and lab configuration |
+| `deploy/lab/switch/` | A pretend Cisco Catalyst (net-snmp) for the switch audit, used by the lab and the end-to-end test |
 | `tests/e2e/` | End-to-end EAP-TLS test against the full stack |
+| `tests/radius/` | FreeRADIUS integration test: the rendered configuration and agent store, real EAP-TLS, no API |
+| `tests/windows/` | Windows setup checks without Windows: the generated files and `renew.ps1`'s decisions, under PowerShell 7 |
+| `tests/autoenroll/` | Group Policy autoenrollment's Kerberos acceptance against a throwaway MIT KDC |
 | `design/` | Design concepts, critiques, audits and the chosen direction (`design/CONCEPTS.md`); the logo (`design/brand/`) |
 | `docs/` | Controller guides, enrollment, troubleshooting, plans and the README screenshots |
 | `.github/` | CI workflow, Dependabot, issue and pull request templates |
@@ -18,7 +22,7 @@
 
 ```sh
 cd deploy
-./install.sh --lab --no-start                     # secrets + .env once (lab adds Samba AD and a Wi-Fi client)
+./install.sh --lab --no-start                     # secrets + .env once (lab adds Samba AD, a Wi-Fi client and a switch)
 docker compose -f docker-compose.yml -f docker-compose.dev.yml --profile lab up -d --build
 docker compose exec easyeap-api easyeap setup-token
 cd ../frontend && pnpm install && EASYEAP_API=http://127.0.0.1:8000 pnpm dev
@@ -42,6 +46,9 @@ and test users are described in `deploy/lab/README.md`. Read the domain's CA cer
 | RADIUS config renderer | `docker run --rm -v "$PWD":/src -w /src/backend python:3.13-slim sh -c "pip -q install pytest && python -m pytest tests/test_radius_render.py"` (from the repo root) | — |
 | Frontend unit tests | `cd frontend && pnpm test` | — |
 | Type check and lint | `cd frontend && pnpm typecheck && pnpm lint`; `docker compose exec easyeap-api ruff check --no-cache app tests` | — |
+| RADIUS integration (wired and Wi-Fi detection, monitor mode, MAC authentication, TACACS+, version skew) | `tests/radius/run.sh` | Docker; the `v1.0.1` tag |
+| Windows setup files and renewal (PowerShell 7, no Windows) | `tests/windows/run.sh` | Docker; an API image (`API_IMAGE`) |
+| Group Policy autoenrollment Kerberos (real MIT KDC) | `tests/autoenroll/kerberos.sh` | Docker; an API image (`API_IMAGE`); network access (it installs the KDC) |
 | End-to-end EAP-TLS | `tests/e2e/run.sh` | lab profile |
 | Console smoke test (browser) | `node tests/e2e/console-smoke.mjs https://127.0.0.1` | running stack, Playwright Chromium |
 
@@ -49,7 +56,8 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and eve
 
 - the backend's `ruff` lint and unit tests, plus a compile check of the RADIUS agent;
 - the frontend's type check, lint, unit tests and production build;
-- the Compose file validation and the API, RADIUS and proxy image builds.
+- the Compose file validation and the API, RADIUS and proxy image builds;
+- `tests/radius/run.sh`: real FreeRADIUS with the rendered configuration and real EAP-TLS, in seconds.
 
 The integration tests, the end-to-end EAP-TLS test and the browser smoke test need the full stack, so run them
 locally before a release.
@@ -67,7 +75,31 @@ Then it authenticates with real EAP-TLS through FreeRADIUS. It checks:
 - the nested-group VLAN, the staff VLAN, the deny rule and a rogue self-signed client;
 - revocation, and an AD account disabled after issuance;
 - that RADIUS keeps authenticating with the API and worker stopped;
+- wired 802.1X, through two more lab-client containers registered as switches inside the controller's subnet:
+  monitor mode (accepted, no VLAN sent; the would-be VLAN logged), readiness and the pasted session list, the
+  generated configuration (no shared secret in it), Enforce (confirmation required, then the mapped VLAN on ports,
+  Wi-Fi unchanged), "keep the port's VLAN", wrong-network refusals, the wrong-secret diagnosis, wired
+  enrollment packages and the Windows wired kit;
+- MAC authentication: the allow list, "Seen, not allowed", the Enforce gate, group VLANs, block, Cisco MAB and UniFi
+  MAC-Based;
+- device administration: TACACS+ logins from a lab container acting as a switch, with an EasyEAP account and with AD
+  users through nested group mappings (privilege 15 and 1), refusals with their reasons, the Admin log with a masked
+  command, key rotation with grace, a break-glass name, and admin logins turned off;
+- the Windows setup: user and computer certificates from one download, renewal, and the computer certificate on the
+  network;
+- Group Policy autoenrollment: Kerberos from the lab DC, policy and certificates through the proxy, and the computer
+  on the network;
+- the switch audit: SNMP and syslog from a pretend Catalyst, and its findings against EasyEAP's own answers;
 - the audit chain.
+
+`E2E_WIRED=0` skips the wired steps (for a build from before wired 802.1X), `E2E_ADMIN=0` the device-administration
+steps, `E2E_WINSETUP=0` the Windows setup, `E2E_AUTOENROLL=0` Group Policy autoenrollment and `E2E_AUDIT=0` the switch
+audit. `E2E_DEPLOY_DIR`, `COMPOSE_PROJECT_NAME` and `COMPOSE_FILE` point it at another deployment, for example one
+installed from a previous release to test an upgrade.
+
+Two pieces of code exist twice and are tested to stay identical: the command masking in `backend/app/admin/mask.py`
+and `services/radius/agent/tacmask.py` (the agent has no access to the backend's code), and the reason codes the TACACS+
+service logs and their labels in `frontend/src/app/api/deviceAdmin.ts`.
 
 The policy engine is implemented twice: `backend/app/policy/engine.py` is authoritative, and
 `frontend/src/domain/policy.ts` serves previews in the prototypes. Both are tested against the same fixtures in

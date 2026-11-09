@@ -150,7 +150,10 @@ def run_ceremony(session: Session, bao: OpenBao, tenant: m.Tenant, req: Ceremony
     )
     session.add_all([root_ca, issuing_ca])
     session.flush()
+    from app.pki import renewal
+    percent = renewal.settings(session, tenant.id).renew_at_percent
     for tpl in default_templates(tenant):
+        tpl.renew_before_days = renewal.derived_days(tpl.validity_days, percent)
         session.add(tpl)
         write_role(bao, tenant.id, tpl, organization=req.organization)
     session.flush()
@@ -160,15 +163,15 @@ def run_ceremony(session: Session, bao: OpenBao, tenant: m.Tenant, req: Ceremony
 def default_templates(tenant: m.Tenant) -> list[m.CertificateTemplate]:
     return [
         m.CertificateTemplate(tenant_id=tenant.id, name="User Wi-Fi", purpose="user", key_algorithm="ecdsa-p256", validity_days=365,
-                              renew_before_days=30, extended_key_usage=["clientAuth"], key_usage=["digitalSignature"],
+                              renew_before_days=73, extended_key_usage=["clientAuth"], key_usage=["digitalSignature"],
                               subject_pattern="CN={upn}", san_patterns=["upn:{upn}", "email:{email}"],
                               allow_client_keygen=True, allow_server_keygen=True, bao_role="user-wifi"),
         m.CertificateTemplate(tenant_id=tenant.id, name="Device Wi-Fi", purpose="device", key_algorithm="ecdsa-p256", validity_days=730,
-                              renew_before_days=45, extended_key_usage=["clientAuth"], key_usage=["digitalSignature"],
+                              renew_before_days=146, extended_key_usage=["clientAuth"], key_usage=["digitalSignature"],
                               subject_pattern="CN={device}.{username}", san_patterns=["upn:{upn}"],
                               allow_client_keygen=True, allow_server_keygen=True, bao_role="device-wifi"),
         m.CertificateTemplate(tenant_id=tenant.id, name="RADIUS Server", purpose="radius-server", key_algorithm="ecdsa-p256", validity_days=397,
-                              renew_before_days=30, extended_key_usage=["serverAuth"], key_usage=["digitalSignature"],
+                              renew_before_days=80, extended_key_usage=["serverAuth"], key_usage=["digitalSignature"],
                               subject_pattern="CN={server}", san_patterns=["dns:{server}"],
                               allow_client_keygen=False, allow_server_keygen=True, bao_role="radius-server"),
     ]
@@ -242,6 +245,16 @@ def issuing_ca(session: Session, tenant_id: uuid.UUID) -> m.CertificateAuthority
     return ca
 
 
+def capped_ttl_hours(ca: m.CertificateAuthority, validity_days: int, now: datetime | None = None) -> int:
+    """A leaf's lifetime in hours: the template's validity, or less when the issuing CA expires sooner (OpenBao refuses a
+    leaf that outlives its CA). Under a day left: refused, with a reason an admin can act on."""
+    now = now or datetime.now(UTC)
+    left = int((ca.not_after - now).total_seconds() // 3600) - 1
+    if left < 24:
+        raise PkiError(f"The issuing CA expires on {ca.not_after:%Y-%m-%d %H:%M} UTC, too soon to issue certificates. Renew the issuing CA.")
+    return min(validity_days * 24, left)
+
+
 def root_ca(session: Session, tenant_id: uuid.UUID) -> m.CertificateAuthority | None:
     return session.scalars(select(m.CertificateAuthority).where(
         m.CertificateAuthority.tenant_id == tenant_id, m.CertificateAuthority.role == "root", m.CertificateAuthority.status == "active")).first()
@@ -270,9 +283,48 @@ def sign_csr(session: Session, bao: OpenBao, tenant: m.Tenant, tpl: m.Certificat
     cn, alt, other = render_names(tpl, names)
     data = bao.write(f"{tenant_mount(tenant.id)}/sign/{tpl.bao_role}", {
         "csr": csr_pem, "common_name": cn, "alt_names": ",".join(alt), "other_sans": ",".join(other),
-        "ttl": f"{tpl.validity_days * 24}h", "format": "pem", "exclude_cn_from_sans": True,
+        "ttl": f"{capped_ttl_hours(ca, tpl.validity_days)}h", "format": "pem", "exclude_cn_from_sans": True,
     })["data"]
     return _record(session, tenant.id, ca, tpl, data["certificate"], key_origin, identity_id, device_id, enrollment_id)
+
+
+# ── Group Policy autoenrollment: OpenBao CEL roles (docs/plans/gpo-autoenrollment.md §2.5) ──────────────────────
+
+def _autoenroll_program(max_hours: int) -> dict:
+    """The role's CEL program. It fixes what EasyEAP mustn't vary (not a CA, digital signature, client authentication,
+    validity capped) and takes from the request only the subject CN and two extensions, by OID: the certificate
+    template extension Windows needs and the subject alternative name EasyEAP built from the directory."""
+    return {"cel_program": {
+        "variables": [
+            {"name": "ok", "expression": "has(request.cn) && has(request.template_ext) && has(request.san) && has(request.ttl) && "
+                                         f"duration(request.ttl) > duration('1h') && duration(request.ttl) <= duration('{max_hours}h')"},
+            {"name": "cert", "expression":
+                "CertTemplate{Subject: PKIX.Name{CommonName: request.cn}, NotBefore: now - duration('5m'), "
+                "NotAfter: now + duration(request.ttl), KeyUsage: KeyUsage.KeyUsageDigitalSignature, "
+                "ExtKeyUsage: [ExtKeyUsage.ExtKeyUsageClientAuth], BasicConstraintsValid: true, IsCA: false, ExtraExtensions: ["
+                "PKIX.Extension{Id: [1, 3, 6, 1, 4, 1, 311, 21, 7], Critical: false, Value: base64.decode(request.template_ext)}, "
+                "PKIX.Extension{Id: [2, 5, 29, 17], Critical: false, Value: base64.decode(request.san)}]}"},
+            {"name": "output", "expression": "ValidationOutput{template: cert, issuer_ref: 'default'}"},
+        ],
+        "expression": "ok ? output : 'EasyEAP autoenrollment: missing or out-of-range request fields'",
+    }}
+
+
+def write_autoenroll_role(bao: OpenBao, tenant_id: uuid.UUID, tpl: m.CertificateTemplate) -> None:
+    bao.write(f"{tenant_mount(tenant_id)}/cel/roles/{tpl.bao_role}", _autoenroll_program(tpl.validity_days * 24))
+
+
+def sign_autoenroll(session: Session, bao: OpenBao, tenant: m.Tenant, tpl: m.CertificateTemplate, csr_pem: str, *, common_name: str,
+                    san_der: bytes, template_ext_der: bytes, ttl: timedelta, identity_id: uuid.UUID, device_id: uuid.UUID | None) -> m.Certificate:
+    """Issue through the template's CEL role. The CSR's own subject and extensions are ignored."""
+    import base64
+
+    ca = issuing_ca(session, tenant.id)
+    data = bao.write(f"{tenant_mount(tenant.id)}/cel/sign/{tpl.bao_role}", {
+        "csr": csr_pem, "cn": common_name, "san": base64.b64encode(san_der).decode(),
+        "template_ext": base64.b64encode(template_ext_der).decode(), "ttl": f"{int(ttl.total_seconds())}s",
+    })["data"]
+    return _record(session, tenant.id, ca, tpl, data["certificate"], "device", identity_id, device_id, None)
 
 
 def issue_with_server_key(session: Session, bao: OpenBao, tenant: m.Tenant, tpl: m.CertificateTemplate, names: dict[str, str], *,
@@ -284,7 +336,7 @@ def issue_with_server_key(session: Session, bao: OpenBao, tenant: m.Tenant, tpl:
     cn, alt, other = render_names(tpl, names)
     key_type, key_bits = KEY_PARAMS.get(tpl.key_algorithm, ("ec", 256))
     data = bao.write(f"{tenant_mount(tenant.id)}/issue/{tpl.bao_role}", {
-        "common_name": cn, "alt_names": ",".join(alt), "other_sans": ",".join(other), "ttl": f"{tpl.validity_days * 24}h",
+        "common_name": cn, "alt_names": ",".join(alt), "other_sans": ",".join(other), "ttl": f"{capped_ttl_hours(ca, tpl.validity_days)}h",
         "format": "pem", "private_key_format": "pkcs8", "exclude_cn_from_sans": True, "key_type": key_type, "key_bits": key_bits,
     })["data"]
     cert = _record(session, tenant.id, ca, tpl, data["certificate"], "server", identity_id, device_id, enrollment_id)

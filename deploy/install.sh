@@ -61,6 +61,21 @@ else
 fi
 host="$(grep '^EASYEAP_HOSTNAME=' .env | cut -d= -f2)"
 
+# ── Syslog on UDP 514 too (Cisco AireOS controllers send nowhere else; docker-compose.syslog514.yml) ─
+udp_in_use() { # udp_in_use <port>: something on this host listens on that UDP port (or we can't tell)
+  [ -r /proc/net/udp ] || return 0
+  awk -v p="$(printf ':%04X' "$1")" 'substr($2, length($2) - 4) == p { f = 1 } END { exit !f }' /proc/net/udp /proc/net/udp6 2>/dev/null
+}
+if ! grep -q '^COMPOSE_FILE=' .env && [ "$(grep '^EASYEAP_SYSLOG_PORT=' .env | cut -d= -f2)" != 514 ]; then
+  if udp_in_use 514; then
+    say "UDP 514 is in use on this host: syslog is received on EASYEAP_SYSLOG_PORT only (AireOS controllers can't send there)"
+  else
+    printf '%s\n' "# Also receive syslog on UDP 514 (AireOS controllers send only there). Remove this line if the host needs 514." \
+      "COMPOSE_FILE=docker-compose.yml:docker-compose.syslog514.yml" >> .env
+    say "Syslog will also be received on UDP 514"
+  fi
+fi
+
 # ── TLS certificate for the console (replace with your own; see DEPLOYMENT.md) ─
 if [ ! -s secrets/tls.crt ] || [ ! -s secrets/tls.key ]; then
   # Browsers match an IP address only against an IP subjectAltName, never a DNS one.

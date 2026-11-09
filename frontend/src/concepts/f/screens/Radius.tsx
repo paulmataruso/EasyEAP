@@ -101,7 +101,7 @@ export function RadiusScreen({ entityId, navigate }: { entityId?: string; naviga
   const selected = d.radiusClients.find((n) => n.id === entityId) ?? d.radiusClients.find((n) => n.status !== 'ok') ?? d.radiusClients[0]
   const [vendorTab, setVendorTab] = useState<SnippetVendor>('cisco-9800')
   useEffect(() => {
-    if (selected && selected.vendor !== 'other') setVendorTab(selected.vendor)
+    if (selected && selected.vendor !== 'other' && selected.vendor !== 'cisco-switch') setVendorTab(selected.vendor)
   }, [selected?.id, selected?.vendor]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const n = d.radiusClients.find((x) => x.id === entityId)
@@ -225,7 +225,7 @@ export function RadiusScreen({ entityId, navigate }: { entityId?: string; naviga
         </section>
       )}
 
-      <AddControllerDialog open={adding} onOpenChange={setAdding} onAdded={(v) => v !== 'other' && setVendorTab(v)} />
+      <AddControllerDialog open={adding} onOpenChange={setAdding} onAdded={(v) => v !== 'other' && v !== 'cisco-switch' && setVendorTab(v)} />
       {rotating && <RotateSecretDialog client={rotating} open={!!rotating} onOpenChange={(o) => !o && setRotating(null)} />}
     </div>
   )

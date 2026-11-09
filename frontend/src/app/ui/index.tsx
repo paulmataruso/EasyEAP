@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type ComponentProps, type ReactNode, type 
 import { Dialog, Select, Switch, ToggleGroup, Tooltip } from 'radix-ui'
 import {
   ArrowDown, ArrowUp, Ban, BadgeCheck, Building, CalendarX, Check, ChevronDown, ChevronsUpDown, CircleAlert, CircleCheck, CircleX,
-  Clock, Copy, Info, Laptop, Monitor, RefreshCw, ServerCog, ShieldCheck, ShieldX, Smartphone, Tablet, TriangleAlert, UserRound, X,
+  Clock, Copy, Info, KeyRound, Laptop, Monitor, RefreshCw, ServerCog, ShieldCheck, ShieldX, Smartphone, Tablet, TriangleAlert, UserRound, X,
 } from 'lucide-react'
 import { cn } from '@/ui/lib'
 import { ApiError } from '../api/client'
@@ -212,6 +212,11 @@ export function ErrorState({ error, onRetry, title = 'This couldn’t be loaded'
 export const errorMessage = (e: unknown) => (e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Something went wrong.')
 /** Standard mutation error toast. */
 export const toastError = (title: string) => (e: unknown) => toast(title, errorMessage(e), 'crit')
+
+/** Fills a secret EasyEAP keeps into a configuration on screen (api/oneTime.ts useReveal). */
+export function FillSecretButton({ what, busy, onClick }: { what: string; busy: boolean; onClick: () => void }) {
+  return <Btn size="sm" variant="ghost" busy={busy} onClick={onClick}><KeyRound aria-hidden />Fill in the {what}</Btn>
+}
 
 // ── Inputs ──────────────────────────────────────────────────────────────
 export function Seg<T extends string>({ value, onChange, options, label }: { value: T; onChange: (v: T) => void; options: Array<{ value: T; label: ReactNode; count?: number }>; label: string }) {

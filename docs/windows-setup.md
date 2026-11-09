@@ -1,0 +1,161 @@
+# Windows setup file
+
+One file per user that sets up a Windows 11 PC for EasyEAP: trust in your certificate authority, the Wi-Fi and wired
+802.1X networks, the user's certificate, the computer's certificate, and their renewal. Run it once on the PC and the
+PC connects by itself from then on, including at the sign-in screen.
+
+It's the quickest way to set up a PC that isn't managed by Group Policy, or a domain PC before Group Policy is in place.
+For the Group Policy side, see [windows-group-policy.md](windows-group-policy.md).
+
+## Make the file
+
+1. Open the user in the console and choose **Windows setup** (needs a role that can issue certificates and manage
+   enrollment; the button appears only for enabled accounts).
+2. Choose what it sets up:
+   - **The user's certificate** and **the computer's certificate** (both on by default). The computer's certificate is
+     what gives the sign-in screen network, so people who have never signed in on that PC can, without cached
+     credentials. It belongs to the same user (a device certificate, named `<PC name>.<username>`), so the PC gets that
+     user's access.
+   - **Shared PC**: the PC always connects with the computer's certificate, so anyone who signs in keeps the network.
+   - **Wi-Fi** (needs the network name in RADIUS settings) and **Wired 802.1X** (on by default when wired enrollment is
+     on).
+   - How long the codes last: 24 hours to 14 days (3 days by default).
+3. **Download setup** saves `EasyEAP-Setup-<username>.cmd`.
+
+The file contains one-time codes, never a private key. Each code works once, for that user only, and expires. The
+console lists them under the user's **Enrollment links** ("Windows setup file") until they're used, and you can cancel
+them there. A file that was used or has expired does nothing; make a new one.
+
+Lost the file? **Download setup file** on the user's page (or **Setup file waiting** in **Users**) makes the same
+file again with the same codes, without a new certificate: EasyEAP keeps each code encrypted with the tenant's key
+until it's used, cancelled or expires, and each download is in the audit log. Only the codes not used yet are in it,
+so a PC that finished half the setup (the user's certificate, say, but not the computer's) finishes the rest. The
+file keeps the choices it was made with (Wi-Fi, wired, shared PC, sign-in mode) and takes today's RADIUS settings
+(server name, network name). Files made before EasyEAP kept the codes can't be downloaded again.
+
+## Run it on the PC
+
+1. Copy the file to the PC, or send it to the user.
+2. The user signs in **as themselves** and double-clicks the file. Windows warns that it came from the internet:
+   choose **More info → Run anyway** if SmartScreen asks.
+3. Windows asks for administrator approval for the computer part. A standard user needs IT to type an administrator's
+   name and password there. Don't start the file with "Run as administrator" from another account: the user's
+   certificate would end up in the wrong account, so the setup skips it and says so.
+4. The window lists every step with `[ok]` or `[!!]`, then waits for Enter.
+
+| Network sign-in | When | What Windows does |
+|---|---|---|
+| Computer, then user | Both certificates (default) | The computer's certificate at the sign-in screen, the user's after sign-in |
+| Computer only | Shared PC, or no user certificate | The computer's certificate, always |
+| User only | No computer certificate | The user's certificate after sign-in; no network at the sign-in screen on 802.1X ports |
+
+## What it does
+
+As administrator (the computer part):
+
+- Adds your root CA to the computer's Trusted Root Certification Authorities and the issuing CA to Intermediate
+  Certification Authorities.
+- Creates the computer's key and certificate in the computer's store (`certlm.msc` → Personal).
+- Starts Wired AutoConfig (set to Automatic) and adds the wired profile to every physical Ethernet adapter.
+- Adds the Wi-Fi network for every user on the PC.
+- Installs `C:\Program Files\EasyEAP\renew.ps1` and two scheduled tasks under **Task Scheduler → EasyEAP**: *Renew
+  computer certificate* (as SYSTEM, daily and at startup) and *Renew user certificate* (as each user, two minutes
+  after sign-in and unlock, and daily). Per-user renewal tasks for the same EasyEAP, left by an earlier setup without an
+  administrator or by the portal's Windows helper, are removed: the shared task renews everyone's certificate.
+
+As the user:
+
+- Creates the user's key and certificate in their own store (`certmgr.msc` → Personal).
+
+Each step stands on its own: a PC without Wi-Fi, or an adapter Windows refuses, doesn't stop the others. Without
+administrator approval, the user part still installs the user's certificate, trusts the CA for that user (Windows asks
+them to confirm), adds the Wi-Fi network for them and a renewal task for them only; wired 802.1X and the computer's
+certificate need the administrator part.
+
+The profiles check the RADIUS server's name and certificate authority, and pick the EasyEAP certificate even when the PC
+has other client certificates (they match the issuer).
+
+## Where the keys are
+
+Keys are created on the PC and can't be exported. The setup tries, in order:
+
+1. The **TPM** (Microsoft Platform Crypto Provider), ECDSA P-256.
+2. The TPM with RSA 2048, for TPMs without elliptic curves.
+3. **Software**: the Microsoft Software Key Storage Provider, ECDSA P-256, non-exportable. This is for PCs without a
+   usable TPM, such as Windows 11 installed with the TPM requirement bypassed.
+
+The console shows which one each certificate got: **TPM** or **Software key** next to the key's origin on the user's
+page and on the certificate.
+
+## Renewal
+
+The renewal tasks run `renew.ps1` (renewer 2.0, from setup files made since 2026-11-09). Once a day it **checks in**
+with EasyEAP, signed with the certificate's own key: the certificate's page in the console shows the last check-in,
+and EasyEAP answers when renewal starts (from 80 % of the certificate's life by default: Certificate authority →
+Renewal). Sign-in and unlock don't check in again the same day. When EasyEAP can't be reached, the renewal period the
+file was made with decides.
+
+When renewal starts, the script makes a new key (the same order as above) and a request, and the current
+certificate's key signs it. EasyEAP checks that signature, issues the new certificate and marks the old one superseded
+(it stays valid until it expires, so nothing drops). The script installs the new certificate, then checks in once
+more signed with the **new** key: that shows the key works on this PC and tells EasyEAP the device has it. Only then
+does it delete the old certificate with its key. It never touches other certificates in the store: Group Policy's,
+the portal helper's, or one imported from a package.
+
+Renewal needs nobody to sign in to the console and no new file. It stops working for a certificate that was revoked,
+has expired, or whose user was disabled, and while renewal of user or device certificates is turned off (Certificate
+authority → Renewal): run a new setup file then. Each refusal is in the audit log (**Certificate renewal refused**, once
+a day per certificate and reason), and a certificate that hasn't renewed two weeks into its window shows on the
+dashboard. A user whose certificate has 14 days or less left and didn't renew gets a Windows notification once a day
+(from "*Organization* network"; it's in the log when Windows notifications are turned off).
+
+**When something gets lost on the way:**
+
+- The answer (sleep, a Wi-Fi drop, a timeout): the new key and its request stay on the PC (in the REQUEST store, with a
+  subject of their own), and the next run sends the same request again. EasyEAP sends the certificate it already
+  issued for it.
+- The key as well (a cleared TPM, a reset profile, a key Windows can't use): the next check-in hears that the
+  certificate was renewed, and the script asks again with a new key. EasyEAP replaces the certificate it issued if
+  RADIUS has never accepted it and the device never checked in with it, within 14 days of the first renewal and at
+  most 3 times. If that certificate *has* been used, the request is refused as a conflict (**Certificate renewed with
+  two keys**, critical on the dashboard): two devices hold the same key.
+- A refusal that may change (a wrong clock, renewal turned off, a disabled account) keeps the request: a certificate
+  may already exist for it. A final one (revoked, renewed elsewhere, a conflict) drops it, and the script stops asking
+  for that certificate.
+
+Once RADIUS accepts the new certificate and the old one hasn't connected for 7 days, EasyEAP retires the old one
+(revokes it as superseded; **Retire renewed certificates** in Certificate authority → Renewal). If a PC keeps
+presenting the old certificate more than a day after it started using the new one, the dashboard says so instead.
+
+PCs set up with an earlier file keep the older `renew.ps1` (it asks only when due and doesn't check in) until the setup
+file is run again; its certificates show as renewing by themselves until they are overdue.
+
+Logs: `C:\Program Files\EasyEAP\renew.log` (computer), `%LOCALAPPDATA%\EasyEAP\renew.log` (user), and the Application
+event log, source **EasyEAP**.
+
+## Check it
+
+1. `certlm.msc` → Personal → Certificates: the computer's certificate, issued by your EasyEAP issuing CA.
+   `certmgr.msc` → Personal: the user's.
+2. `netsh lan show profiles` and `netsh wlan show profiles`.
+3. Sign out: the sign-in screen shows the network connected (wired or Wi-Fi). EasyEAP's Authentication log shows the
+   computer's certificate (`<PC name>.<username>`), then the user's after sign-in.
+4. Run `Get-ScheduledTask -TaskPath \EasyEAP\` to see the renewal tasks, and
+   `Start-ScheduledTask -TaskPath \EasyEAP\ -TaskName 'Renew computer certificate'` to run one now (it does nothing
+   until the renewal window).
+
+## Remove it
+
+- Delete the certificates in `certlm.msc` and `certmgr.msc` (issued by your EasyEAP issuing CA), and revoke them in the
+  console.
+- `netsh lan delete profile interface="Ethernet"`, `netsh wlan delete profile name="<SSID>"`.
+- Task Scheduler → EasyEAP: delete both tasks; delete `C:\Program Files\EasyEAP`, and each user's
+  `%LOCALAPPDATA%\EasyEAP`.
+
+## Not verified here
+
+The setup is tested without Windows: PowerShell parses every generated file, the setup's steps run with Windows'
+commands replaced by recorders (success, partial failure, no administrator), its own signing code signs check-ins and
+renewals that EasyEAP verifies, and the renewal's decisions run against a stand-in store and EasyEAP (a lost answer,
+a lost key, refusals, a key that can't sign, an unconfirmed install). It hasn't run on a real Windows 11 PC in EasyEAP's lab, so certreq with the TPM, netsh, the
+approval prompt and the scheduled tasks are unverified. Windows 10 usually works; the setup says when it runs there.

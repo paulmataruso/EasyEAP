@@ -1,16 +1,18 @@
 // Users in the tenant (directory and local), with whether each can connect now.
-// GET /api/tenants/{tid}/identities (routers/identities.py): q, state, group_id, enrolled, page, page_size ≤ 200.
+// GET /api/tenants/{tid}/identities (routers/identities.py): q, state, group_id, enrolled, waiting, page, page_size ≤ 200.
+// A link or Windows setup file still waiting for a device can be given again from here (people/GiveAgain.tsx).
 import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { UserPlus, Users as UsersIcon, X } from 'lucide-react'
 import { useTenant } from '../api/tenant'
 import type { EnforcementStatus } from '../api/types'
-import { createIdentity, invalidatePeople, useDirectory, useDirectoryGroups, useIdentities, usePolicy, type IdentityListItem, type PolicyVlan } from '../api/people'
+import { createIdentity, invalidatePeople, useDirectory, useDirectoryGroups, useIdentities, usePolicy, type IdentityListItem, type PolicyVlan, type WaitingEnrollment } from '../api/people'
 import { paths, targetPath } from '../routes'
 import { AccessStateChip, Btn, Callout, EDialog, Empty, ErrorState, errorMessage, ESelect, Field, PageHeader, Panel, Seg, SourceTag, toast, VlanTag } from '../ui'
 import { ago, fmtDateTime, plural } from '../lib/format'
 import { useNow } from '../lib/useNow'
+import { ShowLinkDialog, WaitingList } from './people/GiveAgain'
 import { AccountChip, denyReason, GroupPicker, Pager, SearchBox, TableSkeleton, useUrlState } from './people/shared'
 
 const PAGE_SIZE = 50
@@ -26,15 +28,19 @@ export default function Users() {
   const { tid, tenant, can } = useTenant()
   const navigate = useNavigate()
   const now = useNow()
-  const { values, page, set } = useUrlState(['q', 'state', 'group', 'enrolled'] as const)
+  const { values, page, set } = useUrlState(['q', 'state', 'group', 'enrolled', 'kind'] as const)
+  const computers = values.kind === 'computer'
   const [createOpen, setCreateOpen] = useState(false)
+  const [showing, setShowing] = useState<{ w: WaitingEnrollment; name: string } | null>(null)
   const params = {
     q: values.q || undefined,
     state: values.state || undefined,
     group_id: values.group || undefined,
     enrolled: values.enrolled === 'yes' ? true : values.enrolled === 'no' ? false : undefined,
+    waiting: values.enrolled === 'waiting' ? true : undefined,
     page,
     page_size: PAGE_SIZE,
+    kind: computers ? 'computer' as const : undefined,
   }
   const list = useIdentities(tid, params)
   const groups = useDirectoryGroups(tid)
@@ -74,13 +80,15 @@ export default function Users() {
       )}
 
       <div className="mb-4 flex flex-wrap items-center gap-2.5" role="search" aria-label="Filter users">
+        <Seg label="Show" value={computers ? 'computer' : 'user'} onChange={(v) => set({ kind: v === 'computer' ? 'computer' : null, enrolled: null })}
+          options={[{ value: 'user', label: 'People' }, { value: 'computer', label: 'Computers' }]} />
         <SearchBox className="w-full sm:w-[280px]" value={values.q} onChange={(v) => set({ q: v.trim() || null })} label="Search users" placeholder="Name, username, email or UPN" />
         <ESelect label="Account state" className="min-w-[180px]" value={values.state || 'any'} onChange={(v) => set({ state: v === 'any' ? null : v })} options={STATES} />
         <ESelect label="Group" className="min-w-[200px] max-w-full" value={values.group || 'any'} onChange={(v) => set({ group: v === 'any' ? null : v })}
           placeholder={groups.isLoading ? 'Loading groups…' : undefined}
           options={[{ value: 'any', label: 'Any group' }, ...groupList.map((g) => ({ value: g.id, label: `${g.name}${dupNames.has(g.name) ? (g.source === 'ad' ? ' (AD)' : ' (local)') : ''} · ${g.members}` }))]} />
-        <Seg label="Enrollment" value={(values.enrolled || 'all') as 'all' | 'yes' | 'no'} onChange={(v) => set({ enrolled: v === 'all' ? null : v })}
-          options={[{ value: 'all', label: 'All' }, { value: 'yes', label: 'Enrolled' }, { value: 'no', label: 'Not enrolled' }]} />
+        <Seg label="Enrollment" value={(values.enrolled || 'all') as 'all' | 'yes' | 'no' | 'waiting'} onChange={(v) => set({ enrolled: v === 'all' ? null : v })}
+          options={[{ value: 'all', label: 'All' }, { value: 'yes', label: 'Enrolled' }, { value: 'no', label: 'Not enrolled' }, { value: 'waiting', label: 'Waiting for device' }]} />
         {filtered && <Btn size="sm" variant="ghost" onClick={clear}><X aria-hidden />Clear filters</Btn>}
       </div>
 
@@ -92,7 +100,12 @@ export default function Users() {
             Search matches name, username, email and UPN. Deleted directory accounts appear only under “Deleted in directory”.
           </Empty>
         ) : (
-          <Empty icon={<UsersIcon aria-hidden />} title={`No users in ${tenant.name} yet`}
+          computers ? (
+            <Empty icon={<UsersIcon aria-hidden />} title={`No computers in ${tenant.name} yet`}
+              action={<Link to={paths.autoenroll(tid)} className="ee-btn">Group Policy autoenrollment</Link>}>
+              A domain PC appears here when it first asks EasyEAP for a certificate through Group Policy autoenrollment. Its access comes from its own AD groups.
+            </Empty>
+          ) : <Empty icon={<UsersIcon aria-hidden />} title={`No users in ${tenant.name} yet`}
             action={
               <div className="flex flex-wrap gap-2">
                 {!directory.data?.config && <Link to={paths.directory(tid)} className="ee-btn ee-btn-primary">Connect Active Directory</Link>}
@@ -130,7 +143,7 @@ export default function Users() {
                         <span className="ee-small ee-ink-3 block truncate">{[u.upn ?? u.username, u.department].filter(Boolean).join(' · ')}</span>
                       </td>
                       <td><AccessCell u={u} enforceable={data.enforceable} enforcement={data.enforcement_status} vlans={vlans} /></td>
-                      <td className="text-right ee-num whitespace-nowrap"><CertCount u={u} /></td>
+                      <td className="text-right ee-num whitespace-nowrap"><CertCount u={u} /><WaitingList u={u} onShow={(w) => setShowing({ w, name: u.display_name })} align="end" /></td>
                       <td className="max-w-[260px]"><Groups u={u} /></td>
                       <td className="text-right whitespace-nowrap ee-ink-2 ee-num">
                         {u.last_auth_at ? <time dateTime={u.last_auth_at} title={fmtDateTime(u.last_auth_at)}>{ago(u.last_auth_at, now)}</time> : <span className="ee-ink-3">Never</span>}
@@ -155,6 +168,7 @@ export default function Users() {
                   <AccessCell u={u} enforceable={data.enforceable} enforcement={data.enforcement_status} vlans={vlans} />
                   <span className="ee-small ee-ink-2 ee-num"><CertCount u={u} /></span>
                 </div>
+                <WaitingList u={u} onShow={(w) => setShowing({ w, name: u.display_name })} />
                 <p className="ee-small ee-ink-3 mt-1.5">{u.last_auth_at ? <>Last authenticated {ago(u.last_auth_at, now)}</> : 'Never authenticated'}</p>
               </li>
             ))}
@@ -163,6 +177,7 @@ export default function Users() {
         </Panel>
       )}
 
+      <ShowLinkDialog tid={tid} identityName={showing?.name ?? ''} e={showing?.w ?? null} onClose={() => setShowing(null)} />
       {can('identities:write') && <CreateUserDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={(id) => navigate(paths.user(tid, id))} />}
     </div>
   )

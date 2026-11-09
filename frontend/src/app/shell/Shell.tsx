@@ -4,8 +4,8 @@ import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 
 import { Dialog, DropdownMenu, Popover } from 'radix-ui'
 import { NavLink, useLocation, useNavigate } from 'react-router'
 import {
-  Building, Check, ChevronsUpDown, Clock, Command, FileKey, FilePlus, KeyRound, LayoutDashboard, ListOrdered, LogOut, Menu, Router,
-  ScrollText, Search, ServerCog, Settings, ShieldCheck, UserCog, Users, X, BookUser, History,
+  Building, Cable, Check, ChevronsUpDown, Clock, Command, FileBadge, FileKey, FilePlus, KeyRound, LayoutDashboard, ListOrdered, LogOut, Menu, Router,
+  Logs, ScrollText, Search, ServerCog, Settings, ShieldCheck, SquareTerminal, UserCog, Users, X, BookUser, History,
 } from 'lucide-react'
 import { LogoMark, Wordmark } from '@/ui/Logo'
 import { cn } from '@/ui/lib'
@@ -45,7 +45,7 @@ function TenantSwitcher({ onNavigated }: { onNavigated?: () => void }) {
     if (id === current?.id) return
     // Keep the same section when switching; entity pages belong to the previous tenant, so land on the list.
     const section = location.pathname.split('/')[3] ?? 'dashboard'
-    const keep = ['dashboard', 'users', 'certificates', 'radius', 'policy', 'directory', 'pki', 'events', 'audit', 'settings']
+    const keep = ['dashboard', 'users', 'certificates', 'radius', 'mac', 'device-admin', 'policy', 'directory', 'pki', 'events', 'syslog', 'audit', 'settings']
     navigate(`/t/${id}/${keep.includes(section) ? section : 'dashboard'}`)
     onNavigated?.()
   }
@@ -93,7 +93,9 @@ function TenantSwitcher({ onNavigated }: { onNavigated?: () => void }) {
 function hitPath(tid: string, h: Hit) {
   if (h.kind === 'user') return paths.user(tid, h.id)
   if (h.kind === 'certificate') return paths.certificate(tid, h.id)
-  if (h.kind === 'controller') return paths.radius(tid)
+  if (h.kind === 'controller') return paths.radius(tid, { client: h.id })
+  if (h.kind === 'mac') return paths.mac(tid, { device: h.id })
+  if (h.kind === 'admin') return paths.deviceAdmin(tid, { account: h.id })
   return paths.policy(tid)
 }
 
@@ -103,7 +105,7 @@ function ScopeSearch({ inputRef, onNavigated }: { inputRef: React.RefObject<HTML
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
-  const { hits, loading } = useEntitySearch(tctx?.tid ?? null, query)
+  const { hits, loading } = useEntitySearch(tctx?.tid ?? null, query, undefined, { mac: tctx?.can('mac:read') ?? false, admin: tctx?.can('admin:read') ?? false })
   const listId = 'ee-search-results'
   const go = (h: Hit) => { if (!tctx) return; navigate(hitPath(tctx.tid, h)); setQuery(''); setOpen(false); onNavigated?.() }
   const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -176,7 +178,7 @@ function RecentList({ onNavigated }: { onNavigated?: () => void }) {
   // Nothing to show until something has been opened: no placeholder hint taking sidebar space.
   if (!tctx || recent.length === 0) return null
   const open = (r: RecentItem) => {
-    navigate(r.kind === 'identity' ? paths.user(tctx.tid, r.id) : r.kind === 'certificate' ? paths.certificate(tctx.tid, r.id) : paths.radius(tctx.tid))
+    navigate(r.kind === 'identity' ? paths.user(tctx.tid, r.id) : r.kind === 'certificate' ? paths.certificate(tctx.tid, r.id) : paths.radius(tctx.tid, { client: r.id }))
     onNavigated?.()
   }
   return (
@@ -242,6 +244,7 @@ function SidebarContent({ inputRef, onNavigated, onPalette }: { inputRef: React.
               { to: paths.dashboard(tid), label: 'Dashboard', icon: <LayoutDashboard aria-hidden /> },
               { to: paths.users(tid), label: 'Users', icon: <Users aria-hidden />, perm: 'identities:read' },
               { to: paths.events(tid), label: 'Authentication log', icon: <ScrollText aria-hidden />, perm: 'events:read' },
+              { to: paths.syslog(tid), label: 'Device syslog', icon: <Logs aria-hidden />, perm: 'radius:read' },
             ]} />
             <div>
               <p className="ee-nav-group">Enroll</p>
@@ -259,7 +262,10 @@ function SidebarContent({ inputRef, onNavigated, onPalette }: { inputRef: React.
             <NavGroup title="Configure" onNavigated={onNavigated} items={[
               { to: paths.policy(tid), label: 'Access policy', icon: <ListOrdered aria-hidden />, perm: 'policy:read' },
               { to: paths.radius(tid), label: 'RADIUS', icon: <Router aria-hidden />, perm: 'radius:read' },
+              { to: paths.mac(tid), label: 'MAC allow list', icon: <Cable aria-hidden />, perm: 'mac:read' },
+              { to: paths.deviceAdmin(tid), label: 'Device administration', icon: <SquareTerminal aria-hidden />, perm: 'admin:read' },
               { to: paths.directory(tid), label: 'Directory', icon: <BookUser aria-hidden />, perm: 'directory:read' },
+              { to: paths.autoenroll(tid), label: 'GPO autoenrollment', icon: <FileBadge aria-hidden />, perm: 'directory:read' },
               { to: paths.pki(tid), label: 'Certificate authority', icon: <KeyRound aria-hidden />, perm: 'certificates:read' },
             ]} />
             <NavGroup title="Govern" onNavigated={onNavigated} items={[

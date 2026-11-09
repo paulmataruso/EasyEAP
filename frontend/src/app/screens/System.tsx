@@ -2,7 +2,7 @@
 // snapshots it has applied, background jobs, and full backup and restore.
 import type { ReactNode } from 'react'
 import { Link } from 'react-router'
-import { Cog, Database, KeyRound, Router, Send } from 'lucide-react'
+import { Cog, Database, KeyRound, Network, Router, Send } from 'lucide-react'
 import { ApiError } from '../api/client'
 import { useOverview } from '../api/dashboard'
 import { useSession } from '../api/session'
@@ -20,6 +20,8 @@ const SERVICE: Record<string, { name: string; icon: ReactNode; what: string }> =
   pki: { name: 'Certificate authority service', icon: <KeyRound />, what: 'OpenBao: holds each tenant’s issuing CA key and signs certificates.' },
   radius: { name: 'RADIUS', icon: <Router />, what: 'FreeRADIUS and its agent: authenticates devices from a local snapshot.' },
   worker: { name: 'Background worker', icon: <Cog />, what: 'Directory sync, hourly snapshot rebuilds, CRLs, renewals and retention.' },
+  collector: { name: 'Switch collector', icon: <Network />, what: 'Polls monitored switches over SNMP for the switch audit.' },
+  switch_syslog: { name: 'Device syslog', icon: <Network />, what: 'Receives switches’ and controllers’ syslog: the switch audit’s “the switch says”, and Investigate → Device syslog.' },
   syslog: { name: 'Remote syslog', icon: <Send />, what: 'Forwards the audit trail, authentication events and system log.' },
 }
 

@@ -1,4 +1,8 @@
-"""Host-side helpers for run.sh (stdlib only): unpack the provisioning JSON, check monitoring events."""
+"""Host-side helpers for run.sh (stdlib only): unpack the provisioning JSON, check monitoring events, check JSON.
+
+    … | lab.py check '<python expression over d>'   exit 0 if it is true for the JSON on stdin (test-authored expressions)
+    … | lab.py has-event <epoch> '<expression over e>'  exit 0 if an event since then satisfies it
+"""
 import json
 import os
 import sys
@@ -41,6 +45,46 @@ def has_reason(since_epoch, reason):
     return 1
 
 
+def has_event(since_epoch, expr):
+    """Exit 0 if an event recorded at or after `since_epoch` satisfies `expr` (over e)."""
+    events = json.load(sys.stdin)
+    recent = [e for e in events if datetime.fromisoformat(e["at"]).timestamp() >= float(since_epoch) - 2]
+    for e in recent:
+        try:
+            if eval(expr, {"__builtins__": {}, "str": str}, {"e": e}):  # noqa: S307 — test-authored
+                return 0
+        except (KeyError, TypeError):
+            continue
+    print(f"none matched (since start: {[{k: e.get(k) for k in ('result', 'reason', 'network', 'port', 'vlan', 'monitor')} for e in recent][:8]})")
+    return 1
+
+
+def check(expr):
+    raw = sys.stdin.read()
+    try:
+        d = json.loads(raw)
+        good = bool(eval(expr, {"__builtins__": {}, "any": any, "all": all, "len": len, "set": set, "sorted": sorted, "str": str, "next": next, "sum": sum,
+                                "datetime": datetime}, {"d": d}))  # noqa: S307 — test-authored
+    except Exception as e:  # noqa: BLE001 — report any failure as a failed check
+        good, raw = False, f"{type(e).__name__}: {e} in {raw[:600]}"
+    if not good:
+        print(raw[:1200])
+    return 0 if good else 1
+
+
+def check_script(script):
+    """Like check, for several statements: asserts over d; an AssertionError's message is printed."""
+    raw = sys.stdin.read()
+    try:
+        d = json.loads(raw)
+        exec(script, {"__builtins__": {"any": any, "all": all, "len": len, "set": set, "sorted": sorted, "str": str, "next": next, "sum": sum,  # noqa: S102 — test-authored
+                                        "AssertionError": AssertionError}, "d": d})
+        return 0
+    except Exception as e:  # noqa: BLE001 — report any failure as a failed check
+        print(f"{type(e).__name__}: {str(e)[:600]}")
+        return 1
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1]
     if cmd == "unpack":
@@ -49,3 +93,9 @@ if __name__ == "__main__":
         sys.exit(has_reason(sys.argv[2], sys.argv[3]))
     elif cmd == "now":
         print(time.time())
+    elif cmd == "has-event":
+        sys.exit(has_event(sys.argv[2], sys.argv[3]))
+    elif cmd == "check-script":
+        sys.exit(check_script(sys.argv[2]))
+    elif cmd == "check":
+        sys.exit(check(sys.argv[2]))

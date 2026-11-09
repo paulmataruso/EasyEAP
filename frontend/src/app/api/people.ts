@@ -13,6 +13,9 @@ export interface GroupRef { id: string; name: string }
 export interface Identity {
   id: string
   source: 'ad' | 'local'
+  /** computer: a domain PC that enrolled through Group Policy autoenrollment (username NAME$). */
+  kind?: 'user' | 'computer'
+  dns_name?: string | null
   username: string
   upn: string | null
   email: string | null
@@ -27,7 +30,7 @@ export interface Identity {
 }
 
 export interface IdentityAccess { status: AccessStatus; vlan_id: number | null; reason_code: string | null }
-export interface IdentityListItem extends Identity { certificates: number; active_certificates: number; access: IdentityAccess }
+export interface IdentityListItem extends Identity { certificates: number; active_certificates: number; access: IdentityAccess; waiting: WaitingEnrollment[] }
 export interface IdentityPage extends Page<IdentityListItem> { enforceable: boolean; enforcement_missing: EnforcementGap[]; enforcement_status?: EnforcementStatus }
 
 export interface Device { id: string; name: string; platform: string; last_seen_mac: string | null; created_at: string | null }
@@ -37,12 +40,31 @@ export interface IdentityEnrollment {
   id: string
   device_name: string
   platform: string
-  method: 'link' | 'server'
+  /** windows-setup: one code of a Windows setup file (screens/people/WindowsSetupDialog.tsx). */
+  method: 'link' | 'server' | 'windows-setup'
   status: EnrollmentStatus
+  /** The certificate it issues: device = the PC's own certificate in a Windows setup. Identity detail only. */
+  purpose?: 'user' | 'device' | null
   created_by: string
   created_at: string | null
   expires_at: string
   completed_at: string | null
+  /** EasyEAP kept its one-time code, so it can be given again: Show link (a link) or Download setup file (Windows
+   *  setup). False for links and setup files made before EasyEAP kept them, and once used, cancelled or expired. */
+  link_available?: boolean
+  /** A Windows setup file's two codes share it. Identity detail only. */
+  device_id?: string | null
+}
+/** A link, Windows setup file or package still waiting for a device (Users list). A setup file is one entry. */
+export interface WaitingEnrollment {
+  id: string
+  method: IdentityEnrollment['method']
+  device_name: string
+  platform: string
+  expires_at: string
+  /** Show link or Download setup file works (see IdentityEnrollment.link_available). */
+  available: boolean
+  device_id: string | null
 }
 
 export interface EventExplanation { title: string; explanation: string; fix: string }
@@ -76,7 +98,7 @@ export interface IdentityDetail extends Identity {
   events: AuthEvent[]
 }
 
-export interface IdentityListParams { q?: string; state?: string; group_id?: string; enrolled?: boolean; page?: number; page_size?: number }
+export interface IdentityListParams { q?: string; state?: string; group_id?: string; enrolled?: boolean; waiting?: boolean; page?: number; page_size?: number; kind?: 'user' | 'computer' }
 
 export function useIdentities(tid: string, params: IdentityListParams, enabled = true) {
   return useQuery({
@@ -111,7 +133,7 @@ export interface Certificate {
   common_name: string
   subject: string
   sans: string[]
-  purpose: 'user' | 'device' | 'radius-server'
+  purpose: 'user' | 'device' | 'computer' | 'radius-server'
   not_before: string
   not_after: string
   key_algorithm: string
@@ -128,11 +150,48 @@ export interface Certificate {
   identity: { id: string; username: string; display_name: string } | null
   device: { id: string; name: string; platform: string } | null
   created_at: string | null
+  /** Where Windows keeps the key: tpm | software (a PC without a TPM) | null (not reported). */
+  key_storage?: 'tpm' | 'software' | null
+  /** The certificate this one renewed, and when this one was renewed (renewal by its own key). */
+  renewal_of?: string | null
+  renewed_at?: string | null
+  /** What renews it (docs/plans/cert-renewal.md §15b): null means the user needs a new link. */
+  renewer?: Renewer | null
+  /** "1": an older renewal task that asks only when due; "2…": checks in daily. */
+  renewer_version?: string | null
+  /** The renewer's last check-in signed with this certificate's key (v2 renewers). */
+  renewal_checked_at?: string | null
+  /** When EasyEAP retired it (revoked as superseded: its device uses the newer certificate). */
+  retired_at?: string | null
+}
+
+export type Renewer = 'windows-setup' | 'windows-helper' | 'linux' | 'gpo' | 'renewed'
+/** auto: renews by itself; silent: its renewer stopped checking in while due; overdue: should have renewed; manual: needs the user. */
+export type RenewalState = 'auto' | 'silent' | 'overdue' | 'manual'
+export interface CertificateSuccessor {
+  id: string
+  serial: string
+  status: CertStatusValue
+  not_after: string
+  revoked_by: string | null
+  /** Revoked by EasyEAP because the device never received it and asked again (a lost renewal answer). */
+  replaced?: boolean
+  /** A renewal of this certificate (same template and device), not a certificate that replaced it. */
+  renewal?: boolean
 }
 
 export interface CertificatePage extends Page<Certificate> { counts: Record<CertStatusValue, number>; warning_days: number }
 export interface CertificateDecision extends Outcome { computed_at: string }
-export interface CertificateDetail extends Certificate { decision: CertificateDecision | null; issuer: string | null }
+export interface CertificateDetail extends Certificate {
+  decision: CertificateDecision | null
+  issuer: string | null
+  /** Client certificates only: when renewal starts, whether it's on for this kind, and how it stands (null unless active). */
+  renewal?: { renew_from: string; enabled: boolean; state: RenewalState | null } | null
+  /** Certificates that superseded this one, newest first (including ones revoked since). */
+  successors?: CertificateSuccessor[]
+  /** What revoking this one revokes too: the unrevoked chain renewed from it. */
+  revoke_also?: { id: string; serial: string }[]
+}
 
 export interface CertificateListParams { q?: string; status?: string; purpose?: string; identity_id?: string; page?: number; page_size?: number }
 
@@ -152,9 +211,10 @@ export function useCertificate(tid: string, id: string | null | undefined) {
   })
 }
 
-export interface RevokeResult { ok: boolean; disconnect: DisconnectResult; session_timeout_seconds: number | null; note: string }
-export const revokeCertificate = (tid: string, id: string, reason: RevocationReason, disconnect: boolean) =>
-  api.post<RevokeResult>(`/api/tenants/${tid}/certificates/${id}/revoke`, { reason, disconnect })
+export interface RevokeResult { ok: boolean; disconnect: DisconnectResult; session_timeout_seconds: number | null; note: string; successors?: string[] }
+/** `successors`: also revoke the certificates renewed from this one (the backend's default). */
+export const revokeCertificate = (tid: string, id: string, reason: RevocationReason, disconnect: boolean, successors = true) =>
+  api.post<RevokeResult>(`/api/tenants/${tid}/certificates/${id}/revoke`, { reason, disconnect, successors })
 export const fetchPem = (tid: string, id: string) => api.get<string>(`/api/tenants/${tid}/certificates/${id}/pem`)
 
 /** Authentications that presented this certificate (events search matches the serial). */
@@ -191,7 +251,31 @@ export type EnrollResult =
 
 /** Called directly, not through useMutation, so the one-time link and PKCS#12 password never enter a query cache. */
 export const createEnrollment = (tid: string, body: EnrollIn) => api.post<EnrollResult>(`/api/tenants/${tid}/enrollments`, body)
+/** The Windows 11 setup for one user (routers/enrollments.py windows_setup): a .cmd file with one-time codes. */
+export interface WindowsSetupIn {
+  identity_id: string
+  user_certificate: boolean
+  computer_certificate: boolean
+  wifi: boolean
+  wired: boolean
+  shared_pc: boolean
+  ttl_hours: number
+}
+export interface WindowsSetupResult {
+  filename: string
+  content: string
+  expires_at: string
+  sign_in_mode: 'user' | 'machine' | 'machineOrUser'
+  enrollments: unknown[]
+}
+export const createWindowsSetup = (tid: string, body: WindowsSetupIn) => api.post<WindowsSetupResult>(`/api/tenants/${tid}/enrollments/windows-setup`, body)
 export const cancelEnrollment = (tid: string, id: string) => api.post<{ ok: boolean }>(`/api/tenants/${tid}/enrollments/${id}/cancel`)
+/** A pending enrollment's link, again (recorded in the audit log). */
+export const showEnrollmentLink = (tid: string, id: string) => api.post<{ link: string; expires_at: string }>(`/api/tenants/${tid}/enrollments/${id}/link`)
+/** A waiting Windows setup file again, with the same one-time codes (recorded in the audit log). Not cached. */
+export const downloadSetupAgain = (tid: string, id: string) => api.post<WindowsSetupResult>(`/api/tenants/${tid}/enrollments/${id}/windows-setup`)
+/** A waiting Linux link's setup script, the one its page gives (recorded in the audit log). Not cached. */
+export const downloadLinuxScript = (tid: string, id: string) => api.post<{ filename: string; content: string; expires_at: string }>(`/api/tenants/${tid}/enrollments/${id}/linux-script`)
 /** Takes the one-time PKCS#12 package (consumes it). */
 export const downloadPackage = (tid: string, id: string) => api.postRaw(`/api/tenants/${tid}/enrollments/${id}/download`)
 
@@ -233,7 +317,7 @@ export interface Authority {
 export interface Template {
   id: string
   name: string
-  purpose: 'user' | 'device' | 'radius-server'
+  purpose: 'user' | 'device' | 'computer' | 'radius-server'
   key_algorithm: string
   validity_days: number
   renew_before_days: number
@@ -251,7 +335,7 @@ export function usePki(tid: string, enabled = true) {
 
 export interface RadiusClientLite { id: string; name: string; vendor: string; address: string; site: string; coa_enabled: boolean; coa_port: number }
 export interface RadiusOverview {
-  settings: { session_timeout_seconds: number | null; ssid: string; server_hostname: string } | null
+  settings: { session_timeout_seconds: number | null; ssid: string; server_hostname: string; wired_enabled?: boolean } | null
   clients: RadiusClientLite[]
 }
 

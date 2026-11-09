@@ -29,11 +29,13 @@ export const notifyMaintenance = (state: unknown) => maintenanceListeners.forEac
 export const maintenanceFrom = (status: number, body: unknown): unknown =>
   status === 503 && body && typeof body === 'object' && 'maintenance' in body ? (body as { maintenance: unknown }).maintenance : null
 
-/** FastAPI errors: {"detail": "text"} or {"detail": [{"msg": …, "loc": […]}]} for validation. */
+/** FastAPI errors: {"detail": "text"}, {"detail": {"field": …, "message": …}} for one field of a form, or
+ * {"detail": [{"msg": …, "loc": […]}]} for validation. */
 export function messageFrom(body: unknown, status: number): string {
   if (body && typeof body === 'object' && 'detail' in body) {
     const d = (body as { detail: unknown }).detail
     if (typeof d === 'string') return d
+    if (d && typeof d === 'object' && !Array.isArray(d) && typeof (d as { message?: unknown }).message === 'string') return (d as { message: string }).message
     if (Array.isArray(d) && d.length) {
       return d.map((e) => {
         const field = Array.isArray(e?.loc) ? e.loc.filter((x: unknown) => x !== 'body').join('.') : ''
@@ -47,8 +49,8 @@ export function messageFrom(body: unknown, status: number): string {
   return `Request failed (${status}).`
 }
 
-async function request<T>(method: string, path: string, body?: unknown, init?: { signal?: AbortSignal; raw?: boolean }): Promise<T> {
-  const headers: Record<string, string> = { Accept: 'application/json' }
+async function request<T>(method: string, path: string, body?: unknown, init?: { signal?: AbortSignal; raw?: boolean; headers?: Record<string, string> }): Promise<T> {
+  const headers: Record<string, string> = { Accept: 'application/json', ...init?.headers }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (method !== 'GET' && method !== 'HEAD' && csrfToken) headers['X-CSRF-Token'] = csrfToken
   let res: Response
@@ -72,8 +74,17 @@ async function request<T>(method: string, path: string, body?: unknown, init?: {
   return (type.includes('application/json') ? await res.json() : await res.text()) as T
 }
 
+/** The form field an error is about, when the API names one ({"detail": {"field": …}}). */
+export function errorField(e: unknown): string | null {
+  const body = e instanceof ApiError ? e.detail : null
+  const d = body && typeof body === 'object' && 'detail' in body ? (body as { detail: unknown }).detail : null
+  return d && typeof d === 'object' && !Array.isArray(d) && typeof (d as { field?: unknown }).field === 'string' ? (d as { field: string }).field : null
+}
+
 export const api = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, { signal }),
+  /** GET that doesn't count as activity: a page polling on its own doesn't keep an idle session alive (deps.py). */
+  poll: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, { signal, headers: { 'X-EasyEAP-Passive': '1' } }),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body ?? {}),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body ?? {}),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body ?? {}),
