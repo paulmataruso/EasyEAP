@@ -5,6 +5,29 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-09
+
+Wired 802.1X and MAC authentication on Cisco, Meraki MS and UniFi switches; switch logins over TACACS+; a switch
+audit over SNMP and syslog; device syslog from switches, controllers and access points; a Windows setup file, a Linux
+setup script and Group Policy autoenrollment (preview); and certificates that renew themselves, with renewal
+settings, renewal protocol v2 and retirement of renewed certificates.
+
+### Upgrading from 1.0.x
+
+- Back up first (System → Backup and restore, or `deploy/backup.sh`). Database migrations `0004` to `0015` run by
+  themselves when the API starts. A 1.0.x API can't start on the migrated database, so to go back, restore that
+  backup into a fresh 1.0.x installation.
+- Two new containers, **`easyeap-collector`** (the switch audit's poller) and **`easyeap-syslog`** (UDP 5514), start
+  with the stack. New settings in `deploy/.env.example`: `EASYEAP_TACACS_BIND` (TCP 49, device administration),
+  and `EASYEAP_SYSLOG_BIND` and `EASYEAP_SYSLOG_PORT` (syslog, UDP 5514). Both listen on 127.0.0.1 only until you set
+  the address switches reach EasyEAP on.
+- Migration `0014` recalculates the renewal period of every certificate template except Group Policy's from the new
+  renewal settings (from 80 % of the certificate's life by default); check Certificate authority → Renewal after
+  upgrading.
+- Windows setup files and Linux setup scripts made before 1.1.0 keep renewing with renewal protocol v1, on the days
+  they were made with. Make new ones (or have users download theirs again) for the daily check-in and renewal from
+  EasyEAP's date.
+
 ### Added
 
 - **Certificate renewal settings** (Certificate authority → Renewal; [plan](docs/plans/cert-renewal.md) §15a): turn
@@ -117,8 +140,7 @@ versions follow [Semantic Versioning](https://semver.org/).
   `/renew` take `?format=pem`.
 - **Renewal survives a lost answer.** A renewal request for an already-renewed certificate, signed by its key and
   carrying the same new key, gets the certificate issued the first time instead of "already renewed" (the Linux
-  renewal keeps its pending key for this; the Windows renewal makes a new key each run, so after a lost answer a
-  Windows PC still needs its setup file run again).
+  renewal and, from `renew.ps1` 2.0, the Windows renewal keep their pending request for this).
 
 - **Wired 802.1X for Cisco Catalyst and UniFi switches**, with the same device certificates as Wi-Fi
   ([docs/controllers/cisco-catalyst-switch.md](docs/controllers/cisco-catalyst-switch.md),
@@ -173,7 +195,8 @@ versions follow [Semantic Versioning](https://semver.org/).
     verified LDAPS or StartTLS, binding as the administrator. Failed binds stay under half the domain's lockout
     threshold within its observation window (both read from the domain's password policy at each sync), counting
     binds still in flight.
-  - Per-device TACACS+ keys, shown once, with a 24-hour grace on rotation; the generated configuration keeps the
+  - Per-device TACACS+ keys, shown once when created or rotated (later only by **Fill in the TACACS+ key**, audited),
+    with a 24-hour grace on rotation; the generated configuration keeps the
     console port and local accounts as fallback, with preflight checks, `reload in 15` and a rollback.
   - The **Admin log**: logins, enables, sessions and commands, with secrets in commands masked; names that match no
     account are logged as a keyed hash.
@@ -204,19 +227,21 @@ versions follow [Semantic Versioning](https://semver.org/).
     EasyEAP sent, MAB EasyEAP has off, critical authentication, err-disabled ports, a replaced switch, and SNMP failures.
     Two polls to open and two to resolve; acknowledge with a note; open ones in the needs-action queue.
   - **SNMPv2c by default** with a generated community bound to a read-only view and an ACL, or **SNMPv3** (SHA-256 or
-    SHA-1, AES-128 or AES-256). The configuration block is generated; the credentials are shown once and stored
-    encrypted. Test connection checks which tables the switch answers before monitoring turns on.
-  - A new **`easyeap-collector`** container polls the switches (at most eight at once, every 15 minutes by default,
+    SHA-1, AES-128 or AES-256). The configuration block is generated; the credentials are stored encrypted and shown
+    again only on request (**Fill in the credentials**). Test connection checks which tables the switch answers
+    before monitoring turns on.
+  - A new **`easyeap-collector`** container polls the switches (at most eight at once, every minute by default,
     "Poll now"), with its own heartbeat in System health and its own source in the system log.
   - **Enforce** uses the switch's polled session list instead of a pasted `show access-session` when it's recent.
-  - **Syslog** ("what the switch says"): a new **`easyeap-syslog`** container receives the switches' 802.1X, MAB,
-    err-disable, RADIUS server and configuration messages on UDP 5514, published when `EASYEAP_SYSLOG_BIND` is set.
-    Only messages from a switch's polled management address count, once a poll there has succeeded; an address two
-    switches claim is ignored. Shown on the switch's audit and under the matching findings, never a finding on its
-    own. An err-disable, a security violation or a configuration change brings the next poll forward (five minutes
-    after the last at the earliest). Each RADIUS server the switch says is dead is shown until it's alive again or
-    the switch's requests reach EasyEAP. Redacted, coalesced per minute, rate-limited per switch and per tenant, kept
-    14 days; heartbeat in System health. Migration `0010`.
+  - **Syslog** ("what the switch says"): a new **`easyeap-syslog`** container receives the switches' messages on UDP
+    5514 (and 514, above), published when `EASYEAP_SYSLOG_BIND` is set. Messages count from a switch's polled
+    management address, once a poll there has succeeded, and from the extra addresses added for it; an address two
+    switches claim is ignored. The 802.1X, MAB, err-disable, RADIUS server and configuration messages show on the
+    switch's audit and under the matching findings, never as a finding on their own. An err-disable, a security
+    violation, a configuration change or a failed authentication brings the next poll forward (30 seconds after the
+    last at the earliest). Each RADIUS server the switch says is dead is shown until it's alive again or the switch's
+    requests reach EasyEAP. Redacted, coalesced per minute, rate-limited per switch and per tenant; access messages
+    are kept 14 days and the rest 3 (above). Heartbeat in System health. Migration `0010`.
 - **Group Policy autoenrollment (preview)**: domain PCs and the users who sign in to them get certificates from
   EasyEAP through Group Policy, as from AD CS, and Windows renews them
   ([docs/autoenrollment.md](docs/autoenrollment.md), [plan and critique](docs/plans/gpo-autoenrollment.md)).
@@ -482,6 +507,7 @@ Verified end to end with a live Cisco Catalyst 9800 and an iPhone enrolled throu
 - Backups made by the preview (`.tar.gz.enc` or `.tar.gz.gpg`) can't be restored. Make a new backup from the
   console after upgrading.
 
-[Unreleased]: https://github.com/paulmataruso/EasyEAP/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/paulmataruso/EasyEAP/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/paulmataruso/EasyEAP/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/paulmataruso/EasyEAP/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/paulmataruso/EasyEAP/releases/tag/v1.0.0

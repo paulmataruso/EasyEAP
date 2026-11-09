@@ -1,6 +1,6 @@
 [project]
 name = "easyeap"
-version = "1.0.1"
+version = "1.1.0"
 description = "EasyEAP — Enterprise Wi-Fi Authentication, Simplified."
 requires-python = ">=3.12"
 dependencies = [
