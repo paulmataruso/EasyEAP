@@ -67,10 +67,15 @@ runs one command in Terminal, `bash ~/Downloads/EasyEAP-WiFi-Setup.sh`, and type
   the certificate request, and keeps the key in `/etc/easyeap/<tenant>/`, readable by root only;
 - adds the Wi-Fi network for all users of the computer with the root CA and the RADIUS server name pinned, and no
   password stored or asked for. It replaces earlier settings for the same SSID, including the half-finished ones
-  GNOME's Wi-Fi dialog saves. With wired 802.1X on and NetworkManager, it also adds a wired connection (802.1X is
-  optional on it: a port that doesn't ask for it connects after up to 15 seconds). Wired settings the computer already
-  has (a fixed address, DNS, one port) are kept: 802.1X goes on a copy of each, which NetworkManager prefers, so
-  `--remove` brings the originals back unchanged. Nothing is reconnected while the script runs;
+  GNOME's Wi-Fi dialog saves. With wired 802.1X on and NetworkManager, it sets up the network ports too (802.1X is
+  optional on them: a port that doesn't ask for it connects after up to 15 seconds). Wired settings the computer
+  already has (a fixed address, DNS, one port) are kept: 802.1X goes on a copy of each, which NetworkManager prefers.
+  Ports without settings of their own (a dock, a USB adapter) get "Wired 802.1X (<organization>): other ports", which
+  NetworkManager doesn't use on the ports that have a copy, so it connects each port with one 802.1X connection.
+  GNOME Settings' Wired page may still list "other ports" on a port bound by name, as it doesn't read that rule.
+  Nothing is reconnected while the script runs. `--remove` deletes the script's connections and leaves the
+  originals; a port left with none (NetworkManager's own "Wired connection 1" is kept in memory only and isn't made
+  again after a restart while the copy fits its port) gets a plain wired connection back;
 - installs a daily systemd timer (or a cron job) that renews the certificate before it expires, signed with the
   current key like the Windows renewal. Each run checks in with EasyEAP (signed with the key; the certificate's page
   shows the last check-in) and renews once EasyEAP says renewal has started; when EasyEAP can't be reached, the

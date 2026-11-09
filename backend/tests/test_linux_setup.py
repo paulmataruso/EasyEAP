@@ -160,6 +160,258 @@ def test_the_wpa_supplicant_block_is_removed_even_without_its_comments(tmp_path)
     assert run() == "rc=1\n" and conf.read_text() == other + other  # nothing of ours left: unchanged
 
 
+# ── Network ports with NetworkManager ───────────────────────────────────────
+# A stand-in nmcli keeps the profiles in a JSON file. Which profiles fit a port follows NetworkManager's rules:
+# connection.interface-name and 802-3-ethernet.mac-address bind a profile to one port, mac-address-blacklist/denylist
+# leave ports out, and match.interface-name "!name" does too (nm_wildcard_match_check, 1.22). NetworkManager's own
+# "Wired connection 1" is bound by interface name with the lowest priority and lives in memory only: after a restart
+# it isn't made again while another profile fits its port (nm-device-ethernet.c new_default_connection,
+# nm-settings.c device_realized). GNOME Settings and nm-applet list profiles with libnm's check, which reads the name,
+# the address and the denylist but not match (libnm-client-impl/nm-device-ethernet.c connection_compatible).
+
+_FAKE_NMCLI = r'''
+import json, os, sys, uuid
+state_file = os.environ["FAKE_NM"]
+st = json.load(open(state_file))
+ver = tuple(int(x) for x in os.environ.get("FAKE_NM_VERSION", "1.46.0").split("."))
+a = sys.argv[1:]
+def save(): json.dump(st, open(state_file, "w"))
+def esc(v): return v.replace("\\", "\\\\").replace(":", "\\:")
+def known(k):
+    if k.startswith("match.") and ver < (1, 14): return False
+    if k.startswith("match.") and k != "match.interface-name" and ver < (1, 26): return False
+    if k.endswith("mac-address-denylist") and ver < (1, 48): return False
+    return True
+def find(u):
+    for p in st["profiles"]:
+        if p["connection.uuid"] == u: return p
+    sys.exit(f"Error: unknown connection '{u}'.")
+def setprops(p, kv):
+    for k, v in zip(kv[::2], kv[1::2]):
+        if not known(k): sys.exit(f"Error: invalid property '{k}'.")
+        if p["connection.id"] in os.environ.get("FAKE_NM_FAIL", "").split(","): sys.exit("Error: failed to modify.")
+        p[k] = v
+if a == ["--version"]: print("nmcli tool, version " + ".".join(map(str, ver))); sys.exit()
+if a[:4] == ["-t", "-f", "UUID,TYPE", "connection"]:
+    for p in st["profiles"]: print(p["connection.uuid"] + ":" + p["connection.type"])
+elif a[:4] == ["-t", "-f", "UUID", "connection"]:
+    for p in st["profiles"]: print(p["connection.uuid"])
+elif a[0] == "-g":
+    if not known(a[1]): sys.exit(f"Error: invalid field '{a[1]}'.")
+    p = find(a[5])
+    print(esc(p.get(a[1], "yes" if a[1] == "connection.autoconnect" else "")))
+elif a[:2] == ["connection", "clone"]:
+    old = find(a[3]); new = dict(old, **{"connection.id": a[4], "connection.uuid": str(uuid.uuid4())})
+    new.pop("in-memory", None)
+    st["profiles"].append(new); save()
+    print(f"{old['connection.id']} ({old['connection.uuid']}) cloned as {a[4]} ({new['connection.uuid']}).")
+elif a[:2] == ["connection", "modify"]:
+    p = find(a[3]); setprops(p, a[4:]); save()
+elif a[:4] == ["connection", "add", "type", "ethernet"]:
+    p = {"connection.id": a[5], "connection.uuid": str(uuid.uuid4()), "connection.type": "802-3-ethernet"}
+    setprops(p, a[6:]); st["profiles"].append(p); save()
+    print(f"Connection '{a[5]}' ({p['connection.uuid']}) successfully added.")
+elif a[:3] == ["connection", "delete", "uuid"]:
+    st["profiles"] = [p for p in st["profiles"] if p["connection.uuid"] != a[3]]; save()
+else:
+    sys.exit("fake nmcli: " + " ".join(a))
+'''
+
+_FAKE_IP = r'''
+import os, sys
+macs = dict(x.split("=") for x in os.environ["FAKE_PORTS"].split())
+dev = sys.argv[-1]
+if dev in macs: print(f"2: {dev}: <BROADCAST,MULTICAST,UP> mtu 1500 link/ether 02:00:00:00:00:99 brd ff:ff:ff:ff:ff:ff permaddr {macs[dev]}")
+'''
+
+PORTS = {"enp3s0": "00:11:22:33:44:55", "enp4s0": "00:11:22:33:44:66", "enx001122aabbcc": "00:11:22:aa:bb:cc"}
+UBUNTU = {"connection.id": "Wired connection 1", "connection.interface-name": "enp3s0", "connection.autoconnect-priority": "-999",
+          "in-memory": True}
+GENERIC = "Wired 802.1X (Corp)"
+OTHER = "Wired 802.1X (Corp): other ports"
+COPY = "Wired 802.1X (Corp): Wired connection 1"
+
+
+def _fits(p: dict, dev: str, mac: str, *, libnm: bool = False) -> bool:
+    """Whether NetworkManager would use profile p on port dev (permanent address mac); libnm=True: whether GNOME Settings
+    and nm-applet list it there."""
+    import fnmatch
+    if p.get("connection.interface-name") not in (None, "", dev):
+        return False
+    if p.get("802-3-ethernet.mac-address", "").lower() not in ("", mac.lower()):
+        return False
+    deny = ",".join(p.get(k, "") for k in ("802-3-ethernet.mac-address-blacklist", "802-3-ethernet.mac-address-denylist"))
+    if mac.lower() in deny.lower().split(","):
+        return False
+    pats = [x for x in p.get("match.interface-name", "").split(",") if x]
+    if pats and not libnm:
+        if any(fnmatch.fnmatchcase(dev, x[1:]) for x in pats if x.startswith("!")):
+            return False
+        may = [x for x in pats if not x.startswith("!")]
+        if may and not any(fnmatch.fnmatchcase(dev, x) for x in may):
+            return False
+    return True
+
+
+def _offered(profiles: list[dict], *, libnm: bool = False) -> dict[str, list[str]]:
+    """The 802.1X profiles on each port."""
+    return {dev: sorted(p["connection.id"] for p in profiles if p.get("802-1x.eap") and _fits(p, dev, mac, libnm=libnm))
+            for dev, mac in PORTS.items()}
+
+
+def _fn(text: str, name: str) -> str:
+    i = text.index(f"\n{name}() {{") + 1
+    line = text[i:text.index("\n", i)]
+    return line + "\n" if line.rstrip().endswith("}") else text[i:text.index("\n}\n", i) + 3]
+
+
+def _nm(tmp: Path, profiles: list[dict], body: str, *, version: str = "1.46.0", fail: str = "") -> tuple[list[dict], str]:
+    """Run body with the script's NetworkManager functions against the stand-in nmcli; the profiles after, and the output."""
+    text = _script()
+    nm = text[text.index("\nNM_8021X=(") + 1:]
+    nm = nm[:nm.index("\nsetup_nm()")]
+    fns = "".join(_fn(text, f) for f in ("nm_name", "nm_ours", "nm_get", "nm_val", "nm_eth", "port_mac", "nm_restore_ports",
+                                         "nm_version", "nm_claim", "setup_nm_wired"))
+    probe = (f"set -u\nDIR=/etc/easyeap/corp IDENTITY=nina@corp.example SERVER=radius.corp.example ORG=Corp\n"
+             f"WIRED_NAME=\"Wired 802.1X ($ORG)\"\nETH=({' '.join(PORTS)})\nok() {{ echo \"ok: $*\"; }}\nwarn() {{ echo \"warn: $*\"; }}\n"
+             f"die() {{ echo \"die: $*\"; exit 1; }}\n{nm}\n{fns}\n{body}\n")
+    bin_ = tmp / "bin"
+    bin_.mkdir(exist_ok=True)
+    for name, code in (("nmcli", _FAKE_NMCLI), ("ip", _FAKE_IP)):
+        (bin_ / name).write_text(f"#!{shutil.which('python3')}\n{code}")
+        (bin_ / name).chmod(0o755)
+    for i, p in enumerate(profiles):
+        p.setdefault("connection.uuid", f"00000000-0000-4000-8000-{i:012d}")
+        p.setdefault("connection.type", "802-3-ethernet")
+    state = tmp / "nm.json"
+    if not state.exists() or profiles:
+        state.write_text(json.dumps({"profiles": profiles}))
+    env = {"PATH": f"{bin_}:{os.environ['PATH']}", "FAKE_NM": str(state), "FAKE_NM_VERSION": version, "FAKE_NM_FAIL": fail,
+           "FAKE_PORTS": " ".join(f"{k}={v}" for k, v in PORTS.items())}
+    out = subprocess.run([BASH, "-c", probe], capture_output=True, text=True, env=env, timeout=60)
+    assert out.returncode == 0, out.stdout + out.stderr
+    return json.loads(state.read_text())["profiles"], out.stdout
+
+
+_SETUP_AGAIN = "for u in $(nm_ours); do nmcli connection delete uuid \"$u\"; done; setup_nm_wired"  # what setup_nm does
+
+
+def _wired(tmp: Path, profiles: list[dict], **kw) -> tuple[list[dict], str]:
+    return _nm(tmp, profiles, _SETUP_AGAIN, **kw)
+
+
+@needs_tools
+@pytest.mark.parametrize("version", ["1.22.10", "1.46.0", "1.52.0"])
+def test_a_port_with_networkmanagers_own_profile_offers_one_8021x_profile(tmp_path, version):
+    """The report from a real Ubuntu desktop: the copy of "Wired connection 1" and "Wired 802.1X (Corp)" were both
+    offered on its port."""
+    profiles, out = _wired(tmp_path, [dict(UBUNTU)], version=version)
+    assert _offered(profiles) == {"enp3s0": [COPY], "enp4s0": [OTHER], "enx001122aabbcc": [OTHER]}
+    mine = {p["connection.id"]: p for p in profiles}
+    assert mine[COPY]["connection.autoconnect-priority"] == "20" and mine[COPY]["802-1x.optional"] == "yes"
+    assert {k: v for k, v in mine["Wired connection 1"].items() if k not in ("connection.uuid", "connection.type")} == UBUNTU
+    assert mine[OTHER]["match.interface-name"] == "!enp3s0" and not any("mac-address-" in k for k in mine[OTHER])
+    assert "for the network ports without a connection of their own" in out and "die:" not in out and "warn:" not in out
+
+
+@needs_tools
+def test_ports_bound_by_address_by_name_or_in_a_bridge_are_left_out_of_the_other_ports_profile(tmp_path):
+    profiles, out = _wired(tmp_path, [
+        {"connection.id": "Office", "802-3-ethernet.mac-address": PORTS["enp3s0"].upper(), "ipv4.method": "manual"},
+        {"connection.id": "bridge-slave-enp4s0", "connection.interface-name": "enp4s0", "connection.master": "br0"},
+    ], version="1.52.0")
+    expected = {"enp3s0": ["Wired 802.1X (Corp): Office"], "enp4s0": [], "enx001122aabbcc": [OTHER]}
+    assert _offered(profiles) == expected
+    # Bound by address, so GNOME Settings lists one there too (it doesn't read match: the bridge port still lists it).
+    assert _offered(profiles, libnm=True)["enp3s0"] == ["Wired 802.1X (Corp): Office"]
+    other = next(p for p in profiles if p["connection.id"] == OTHER)
+    assert other["802-3-ethernet.mac-address-denylist"] == PORTS["enp3s0"].upper() and other["match.interface-name"] == "!enp4s0"
+    copy = next(p for p in profiles if p["connection.id"] == "Wired 802.1X (Corp): Office")
+    assert copy["ipv4.method"] == "manual"  # the copy keeps the fixed address
+    assert "warn:" not in out and "die:" not in out
+
+
+@needs_tools
+def test_a_copy_for_every_port_needs_no_other_profile(tmp_path):
+    profiles, out = _wired(tmp_path, [{"connection.id": "LAN", "connection.autoconnect-priority": "0"},
+                                      dict(UBUNTU, **{"connection.id": "Wired connection 2"})])
+    names = {p["connection.id"] for p in profiles}
+    assert GENERIC not in names and OTHER not in names and "goes on any network port" in out
+    offered = _offered(profiles)
+    assert offered["enp4s0"] == offered["enx001122aabbcc"] == ["Wired 802.1X (Corp): LAN"]
+
+
+@needs_tools
+def test_a_copy_that_doesnt_connect_by_itself_doesnt_stand_in_for_every_port(tmp_path):
+    profiles, out = _wired(tmp_path, [dict(UBUNTU), {"connection.id": "Lab static", "connection.autoconnect": "no",
+                                                     "ipv4.method": "manual"}])
+    mine = {p["connection.id"]: p for p in profiles}
+    assert OTHER in mine and mine[OTHER]["match.interface-name"] == "!enp3s0"
+    assert "goes on any network port" not in out
+
+
+@needs_tools
+def test_no_wired_profile_yet_gets_the_generic_one_for_every_port(tmp_path):
+    profiles, out = _wired(tmp_path, [])
+    assert _offered(profiles) == {d: [GENERIC] for d in PORTS} == _offered(profiles, libnm=True)
+    assert "match.interface-name" not in profiles[0] and "for the network ports: 802.1X" in out
+
+
+@needs_tools
+def test_a_port_whose_copy_failed_keeps_the_other_profile(tmp_path):
+    profiles, out = _wired(tmp_path, [dict(UBUNTU)], fail=COPY)
+    assert "warn: Couldn't add 802.1X to \"Wired connection 1\"" in out
+    assert _offered(profiles)["enp3s0"] == [GENERIC]
+    assert [p["connection.id"] for p in profiles] == ["Wired connection 1", GENERIC]
+
+
+@needs_tools
+def test_an_interface_name_the_match_syntax_would_read_is_left_out_of_the_exclusions(tmp_path):
+    profiles, out = _wired(tmp_path, [dict(UBUNTU), {"connection.id": "odd", "connection.interface-name": "eth*0"}])
+    other = next(p for p in profiles if p["connection.id"] == OTHER)
+    assert other["match.interface-name"] == "!enp3s0" and "die:" not in out
+
+
+@needs_tools
+def test_running_the_setup_again_gives_the_same_profiles(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    once, _ = _wired(tmp_path / "a", [dict(UBUNTU)])
+    _wired(tmp_path / "b", [dict(UBUNTU)])
+    twice, _ = _nm(tmp_path / "b", [], _SETUP_AGAIN)
+    strip = lambda ps: sorted((p["connection.id"], p.get("match.interface-name")) for p in ps)  # noqa: E731
+    assert strip(once) == strip(twice) and len(twice) == 3
+
+
+_REMOVE = ("wired=0; for u in $(nm_ours); do [ \"$(nm_get connection.type \"$u\")\" = 802-3-ethernet ] && wired=1; "
+           "nmcli connection delete uuid \"$u\"; done; [ \"$wired\" = 1 ] && nm_restore_ports; true")
+
+
+@needs_tools
+@pytest.mark.parametrize("restarted", [False, True])
+def test_remove_leaves_every_port_a_connection(tmp_path, restarted):
+    """After a restart NetworkManager's own "Wired connection 1" is gone (it lived in memory and the copy fitted its
+    port): --remove gives the port a plain one back. Without a restart the original is still there."""
+    text = _script()
+    assert '[ "$wired" = 1 ] && nm_restore_ports' in text[text.index("\nremove_all() {"):]  # what _REMOVE stands for
+    profiles, _ = _wired(tmp_path, [dict(UBUNTU), {"connection.id": "Office", "802-3-ethernet.mac-address": PORTS["enp4s0"]}])
+    if restarted:
+        profiles = [p for p in profiles if not p.get("in-memory")]
+        (tmp_path / "nm.json").write_text(json.dumps({"profiles": profiles}))
+    after, out = _nm(tmp_path, [], _REMOVE)
+    assert not any(p.get("802-1x.eap") for p in after)
+    # Each port has one connection: its own, or a plain one (the adapter's was the "other ports" one).
+    assert {dev: [p["connection.id"] for p in after if _fits(p, dev, mac)] for dev, mac in PORTS.items()} == {
+        "enp3s0": ["Wired connection 1"], "enp4s0": ["Office"], "enx001122aabbcc": ["Wired connection 2"]}
+    back = next(p for p in after if p["connection.id"] == "Wired connection 1")
+    if restarted:
+        assert back["connection.interface-name"] == "enp3s0" and back["connection.autoconnect-priority"] == "-999"
+        assert "Gave enp3s0 a plain wired connection back" in out
+    else:
+        assert back.get("in-memory") and "Gave enp3s0" not in out
+    assert "Gave enx001122aabbcc a plain wired connection back" in out
+
+
 def test_the_page_never_sees_the_key():
     text = _script()
     assert "-----BEGIN" not in text.replace("-----BEGIN CERTIFICATE-----", "") and "\"key_origin\":\"device\"" in text and "?format=pem" in text

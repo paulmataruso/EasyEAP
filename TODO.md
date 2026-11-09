@@ -11,8 +11,9 @@ Tick items off here when they're done or verified, and say where (commit, or the
 1. **UniFi controller wizard.** EasyEAP sets up a UniFi Network controller through its API: the RADIUS profile, a
    WPA2/WPA3-Enterprise Wi-Fi network (an existing one, or a new one if the admin agrees), and/or 802.1X on UniFi
    switch ports. Planned and critiqued in [docs/plans/unifi-wizard.md](docs/plans/unifi-wizard.md), not built.
-   - [ ] **Blocked on a UniFi console for the spike** (§11): a test site on a real console, or UniFi OS Server on the
-     demo host with the owner's OK. Phase 2 (Wi-Fi) isn't built until S1, S2, S4 and S8 have run.
+   - [ ] **The spike** (§11) on the owner's console, one site only. Phase 2 (Wi-Fi) isn't built until S1, S2, S4 and
+     S8 have run. S1 and S8 done, S2 half done, S4's settings side done, 2026-11-09 (§11.4). S4's joins wait for an access
+     point; S5–S7 wait for the owner's go-ahead to turn on 802.1X on the site's switch.
    - [ ] Phase 2: Wi-Fi. Phase 3: wired. Phase 4: the cloud connection and Enforce through the API. Phase 5: saved
      connection and the UniFi switch audit.
 2. ~~Certificate renewal, phase 2b (Windows)~~: done 2026-11-09 (`renew.ps1` 2.0 and the portal helper's renewal;
@@ -107,6 +108,12 @@ named in each item says what to check.
 ### Linux
 - [ ] **Linux script on a real machine** (not a container): Wi-Fi, then wired on a real switch port
   (`802-1x.optional`, the copied wired profiles, `--remove` puts the originals back).
+  - [x] Wired on Ubuntu desktop, Catalyst port in monitor mode: EAP-TLS accepted (2026-11-09). It showed two 802.1X
+    connections on the port (the copy of "Wired connection 1" and the generic one); the first one tried got no
+    address after the accept.
+  - [ ] Again with the one-profile-per-port fix: one 802.1X connection offered on the port (quick settings menu,
+    GNOME Settings' Wired page), an address by DHCP, a dock or USB adapter getting "other ports" (and a dock with MAC
+    pass-through), `--remove` before and after a restart.
 - [ ] The **iwd** and **dhcpcd** paths (written, never run).
 - [ ] **Renewer v2 on a real machine**: the daily check-in, a renewal, and a pending request kept across a lost answer.
 

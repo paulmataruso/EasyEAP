@@ -255,6 +255,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Linux: one 802.1X connection per network port.** With wired 802.1X, the setup script's copy of a port's own
+  connection (Ubuntu's "Wired connection 1") and its generic "Wired 802.1X" connection were both offered on that port.
+  The generic one, now "Wired 802.1X (<organization>): other ports", leaves out the ports that have a copy (by name,
+  and by address for connections bound by address), and isn't added when a copy that connects by itself already fits
+  every port. `--remove` gives a port left without any connection a plain one back: NetworkManager's own "Wired
+  connection 1" lives in memory and isn't made again after a restart while the copy fits its port. Run the new script
+  to tidy a computer set up before.
 - **A lost renewal answer no longer strands a Windows PC.** The setup file's renewal task deletes its new key when
   the answer doesn't arrive, and EasyEAP refused the next day's request with another key ("already renewed"), so the
   PC kept its old certificate until it expired. EasyEAP now replaces the unused certificate (within 14 days, at most 3

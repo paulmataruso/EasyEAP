@@ -438,6 +438,34 @@ say "  Joins:     \"$SSID\", checking that the server is $SERVER"
 
 # ── --remove ────────────────────────────────────────────────────────────
 nm_name() { nmcli -g connection.id connection show uuid "$1" 2>/dev/null | sed 's/\\\(.\)/\1/g'; }  # -g escapes : and \
+nm_get() { nmcli -g "$1" connection show uuid "$2" 2>/dev/null; }
+nm_val() { nm_get "$1" "$2" | sed 's/\\\(.\)/\1/g'; }  # without -g's escaping of : and \
+nm_eth() { nmcli -t -f UUID,TYPE connection show 2>/dev/null | sed -n 's/^\([0-9a-f-]*\):802-3-ethernet$/\1/p'; }
+port_mac() {  # the permanent address of network port $1, when it is here
+  local m
+  m=$(ip -d -o link show dev "$1" 2>/dev/null | sed -n 's/.* permaddr \([0-9a-fA-F:]\{17\}\).*/\1/p')
+  [ -n "$m" ] || m=$(cat "/sys/class/net/$1/address" 2>/dev/null)
+  printf '%s' "$m" | tr 'A-F' 'a-f'
+}
+# NetworkManager's own "Wired connection 1" lives in memory, and isn't made again (after a restart) while another
+# connection fits its port: the copy this script made of it. Without the copy, the port would have no connection at
+# all, so it gets a plain one back, like NetworkManager's.
+nm_restore_ports() {
+  local u dev ifn mac n names claimed=' '
+  for u in $(nm_eth); do
+    ifn=$(nm_val connection.interface-name "$u"); mac=$(nm_val 802-3-ethernet.mac-address "$u" | tr 'A-F' 'a-f')
+    if [ -n "$ifn" ]; then claimed+="$ifn "
+    elif [ -n "$mac" ]; then for dev in ${ETH[@]+"${ETH[@]}"}; do [ "$(port_mac "$dev")" = "$mac" ] && claimed+="$dev "; done
+    else return 0; fi  # a connection that can fit any port
+  done
+  for dev in ${ETH[@]+"${ETH[@]}"}; do
+    case "$claimed" in *" $dev "*) continue ;; esac
+    names=$(for u in $(nmcli -t -f UUID connection show 2>/dev/null); do nm_name "$u"; done)
+    n=1; while printf '%s\n' "$names" | grep -qxF "Wired connection $n"; do n=$((n+1)); done
+    nmcli connection add type ethernet con-name "Wired connection $n" connection.interface-name "$dev" \
+      connection.autoconnect-priority -999 >/dev/null 2>&1 && ok "Gave $dev a plain wired connection back (\"Wired connection $n\")"
+  done
+}
 nm_ours() {  # UUIDs of NetworkManager connections that use this tenant's files
   local uuid ca
   nmcli -t -f UUID connection show 2>/dev/null | while read -r uuid; do
@@ -459,12 +487,13 @@ drop_block() {  # remove this tenant's network from a wpa_supplicant file; non-z
   cat "$1.easyeap" > "$1" && rm -f "$1.easyeap"
 }
 remove_all() {
-  local u f i n=0
+  local u f i n=0 wired=0
   if have nmcli && nm_running; then
     for u in $(nm_ours); do
-      i=$(nm_name "$u")
+      i=$(nm_name "$u"); [ "$(nm_get connection.type "$u")" = 802-3-ethernet ] && wired=1
       nmcli connection delete uuid "$u" >/dev/null 2>&1 && { ok "Removed the NetworkManager connection \"$i\""; n=$((n+1)); }
     done
+    [ "$wired" = 1 ] && nm_restore_ports
   fi
   f="/var/lib/iwd/$IWD_NAME.8021x"
   if [ -f "$f" ] && grep -q "$DIR/" "$f"; then rm -f "$f" && ok "Removed $f"; n=$((n+1)); fi
@@ -550,7 +579,7 @@ if [ "$MODE" = check ]; then
   say "  - Save them in $DIR (the key readable by root only)"
   case "$STACK" in
     nm) say "  - Add the NetworkManager connection \"$SSID\" for all users, and connect if the network is in range"
-        [ "$WIRED" = 1 ] && say "  - Add the NetworkManager connection \"$WIRED_NAME\" for network ports" ;;
+        [ "$WIRED" = 1 ] && say "  - Network ports: add 802.1X to a copy of each wired connection, and a connection for the ports without one (a dock, a USB adapter)" ;;
     iwd) say "  - Write /var/lib/iwd/$IWD_NAME.8021x" ;;
     networkd) say "  - Add the network to /etc/wpa_supplicant/wpa_supplicant-$IF.conf, run wpa_supplicant@$IF and DHCP on $IF" ;;
     dhcpcd) say "  - Add the network to /etc/wpa_supplicant/wpa_supplicant.conf" ;;
@@ -592,7 +621,6 @@ fi
 # ── The network ─────────────────────────────────────────────────────────
 FAILED=
 nm_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/:/\\:/g'; }
-nm_get() { nmcli -g "$1" connection show uuid "$2" 2>/dev/null; }
 NM_8021X=(802-1x.eap tls 802-1x.identity "$IDENTITY" 802-1x.domain-suffix-match "$SERVER" 802-1x.ca-cert "$DIR/ca.pem"
           802-1x.client-cert "$DIR/client.pem" 802-1x.private-key "$DIR/client.key" 802-1x.private-key-password-flags 4)
 setup_nm() {
@@ -627,14 +655,27 @@ setup_nm() {
   fi
 }
 # Network ports. 802.1X is optional on them: a port that doesn't ask for it connects anyway, after up to 15 seconds.
-# Wired profiles this computer already has keep their settings (a fixed address, DNS, one port): each gets a copy
-# with 802.1X added that NetworkManager prefers over the original. Nothing is reconnected now.
+# Wired connections this computer already has keep their settings (a fixed address, DNS, one port): each gets a copy
+# with 802.1X added that NetworkManager prefers over the original. One more connection is for the ports none of
+# them is for (a dock, a USB adapter), and leaves the others out, so that NetworkManager offers one 802.1X connection
+# per port. A connection is for one port by connection.interface-name (NetworkManager's own "Wired connection 1") or
+# ethernet.mac-address; one with neither, and no match, can go on any port. Nothing is reconnected now.
+nm_version() {  # 1.48.10 -> 1048; 0 when unknown
+  local v a b
+  v=$(nmcli --version 2>/dev/null | awk '{ print $NF }'); a=${v%%.*}; b=${v#*.}; b=${b%%.*}
+  case "$a:$b" in *[!0-9:]*|:*|*:) echo 0 ;; *) echo $((10#$a * 1000 + 10#$b)) ;; esac
+}
+nm_claim() {  # setup_nm_wired: the port of the connection in hand ($ifn, $mac) has a connection of its own
+  if [ -n "$ifn" ]; then ports+=("$ifn"); elif [ -n "$mac" ]; then macs+=("$mac"); fi
+}
 setup_nm_wired() {
-  local uuid name prio out new wired=(802-1x.optional yes 802-1x.auth-timeout 15)
-  for uuid in $(nmcli -t -f UUID,TYPE connection show 2>/dev/null | sed -n 's/^\([0-9a-f-]*\):802-3-ethernet$/\1/p'); do
+  local uuid name prio out new ifn mac p list key gname everywhere='' ports=() macs=() excl=()
+  local wired=(802-1x.optional yes 802-1x.auth-timeout 15)
+  for uuid in $(nm_eth); do
     name=$(nm_name "$uuid")
-    [ -n "$(nm_get connection.master "$uuid")" ] && continue  # part of a bond or a bridge: left alone
-    if [ -n "$(nm_get 802-1x.eap "$uuid")" ]; then warn "\"$name\" already uses 802.1X: left as it is"; continue; fi
+    ifn=$(nm_val connection.interface-name "$uuid"); mac=$(nm_val 802-3-ethernet.mac-address "$uuid")
+    if [ -n "$(nm_get connection.master "$uuid")" ]; then nm_claim; continue; fi  # part of a bond or a bridge: left alone
+    if [ -n "$(nm_get 802-1x.eap "$uuid")" ]; then warn "\"$name\" already uses 802.1X: left as it is"; nm_claim; continue; fi
     prio=$(nm_get connection.autoconnect-priority "$uuid")
     case "$prio" in ''|*[!0-9-]*|-) prio=0 ;; esac
     [ "$prio" -lt 10 ] && prio=10
@@ -643,14 +684,41 @@ setup_nm_wired() {
     new=$(printf '%s' "$out" | grep -o '[0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}' | tail -n 1)
     if [ -n "$new" ] && out=$(nmcli connection modify uuid "$new" connection.autoconnect-priority "$prio" "${NM_8021X[@]}" "${wired[@]}" 2>&1); then
       ok "Added 802.1X to a copy of \"$name\": the same settings, used in its place"
+      nm_claim
+      # A copy that can go on any port, by itself, does the other connection's job.
+      p=$(nm_get match.interface-name "$new")$(nm_get match.driver "$new")$(nm_get match.path "$new")
+      p+=$(nm_get 802-3-ethernet.mac-address-blacklist "$new")
+      if [ -z "$ifn$mac$p" ] && [ "$(nm_get connection.autoconnect "$new")" = yes ]; then everywhere=${everywhere:-$name}; fi
     else
       [ -n "$new" ] && nmcli connection delete uuid "$new" >/dev/null 2>&1
       warn "Couldn't add 802.1X to \"$name\": $out"
     fi
   done
-  out=$(nmcli connection add type ethernet con-name "$WIRED_NAME" connection.autoconnect yes connection.autoconnect-priority 10 \
-        "${NM_8021X[@]}" "${wired[@]}" 2>&1) || die "NetworkManager didn't accept the wired settings: $out"
-  ok "Added \"$WIRED_NAME\" for other network ports: 802.1X where the port asks for it"
+  if [ -n "$everywhere" ]; then
+    ok "The copy of \"$everywhere\" goes on any network port: no other wired connection needed"; return
+  fi
+  # Leave out the ports above: by name ("!name", NetworkManager 1.22 and later, which wired 802.1X needs anyway), and
+  # by address for connections bound by address (a name with characters the match syntax reads is skipped).
+  list=''
+  for p in ${ports[@]+"${ports[@]}"}; do
+    case "$p" in *[!A-Za-z0-9._+@-]*) continue ;; esac
+    list+="${list:+,}!$p"
+  done
+  [ -n "$list" ] && excl+=(match.interface-name "$list")
+  if [ ${#macs[@]} -gt 0 ]; then
+    key=802-3-ethernet.mac-address-blacklist; [ "$(nm_version)" -ge 1048 ] && key=802-3-ethernet.mac-address-denylist
+    excl+=("$key" "$(IFS=,; printf '%s' "${macs[*]}")")
+  fi
+  gname=$WIRED_NAME; [ ${#excl[@]} -gt 0 ] && gname="$WIRED_NAME: other ports"
+  if out=$(nmcli connection add type ethernet con-name "$gname" connection.autoconnect yes connection.autoconnect-priority 10 \
+           "${NM_8021X[@]}" "${wired[@]}" ${excl[@]+"${excl[@]}"} 2>&1); then
+    if [ ${#excl[@]} -gt 0 ]; then ok "Added \"$gname\" for the network ports without a connection of their own (a dock, a USB adapter)"
+    else ok "Added \"$gname\" for the network ports: 802.1X where the port asks for it"; fi
+  elif [ ${#excl[@]} -gt 0 ]; then
+    warn "Couldn't add \"$gname\" for other network ports (a dock, a USB adapter): $out"
+  else
+    die "NetworkManager didn't accept the wired settings: $out"
+  fi
 }
 
 setup_iwd() {
