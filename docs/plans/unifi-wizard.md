@@ -784,10 +784,23 @@ printing.
 
   WPA3 with 6 GHz was accepted. That was with no 6 GHz access point on the site, so whether 6 GHz is dropped on
   real hardware is still open.
+- **S6: writes, with the owner's go-ahead, on one port.**
+  - `PUT set/setting/global_switch/{_id}` with the whole object read back, and three keys changed
+    (`dot1x_portctrl_enabled`, `radiusprofile_id`, `dot1x_fallback_networkconf_id`), changed only those three.
+  - The switch then dropped off the controller for about 70 seconds while it re-provisioned. The access point,
+    uplinked elsewhere, stayed connected. Review has to say this.
+  - `PUT rest/device/{_id}` with `port_overrides` (the one entry, `dot1x_ctrl` changed to `auto`) was accepted.
+    `GET stat/device/{x}` takes a MAC, not the `_id`. `GET rest/device/{_id}` answered 404.
+  - Afterwards the switch's own `dot1x_portctrl_enabled` still read `false` with the site setting on. Which one
+    wins is shown by the first device on the port.
+- **S7: started.**
+  - An access point sends RADIUS from its own address (accounting arrived from the AP's IP as soon as it had the
+    network).
+  - `Called-Station-Id` is `BSSID:SSID` with dashes (`AA-BB-CC-DD-EE-FF:SSID`), one record per radio.
 - **Not run yet:**
-  - S4's joins (which networks Windows 11 `WPA3ENT` and `WPA2` profiles join) need an access point online.
-  - S5, the S6 writes and S7 turn 802.1X on for the site, which re-provisions the switch. They wait for the owner's
-    go-ahead.
+  - S4's joins: which networks Windows 11 `WPA3ENT` and `WPA2` profiles join.
+  - S5: the fallback network on a rejected device.
+  - S7's wired half: `NAS-Port-Type` and the port id from the switch.
   - S0 needs a Site Manager key.
 
 ## 12. Phases
