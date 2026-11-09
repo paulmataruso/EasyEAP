@@ -944,6 +944,122 @@ script and the portal's Windows helper, §4.3–4.5).
    checking in and still hasn't renewed 14 days into its window is *overdue* (it's being refused: the audit log says
    why). Both are critical once a certificate has 14 days or less.
 
+### 15c. Phase 2b plan: the Windows renewer v2 (2026-11-09)
+
+§4.3 and §4.5, narrowed to what a PC can do now. Taking a new root (cross-certificates, rewriting the profiles) waits
+for phase 6, as on Linux, because nothing can test it before the server sends one. The trust block is read but not
+acted on.
+
+1. **`renew.ps1` v2** (`SCRIPT_VERSION = "2"`, renewer version `2.0`). The same file serves the setup file (kind
+   `windows-setup`, computer and user scope) and the portal's helper (kind `windows-helper`, user scope). Baked in:
+   - the API address and the kind;
+   - the tenant's root certificates (SHA-256 of each) and the issuing CA;
+   - the template renewal days, kept only as the fallback when EasyEAP can't be reached.
+2. **Which certificate is EasyEAP's.** v1 took every certificate in the store whose issuer matched the issuing CA's
+   name, and deleted all but the newest. That deleted Group Policy's certificate from the same EasyEAP CA, when a PC
+   had both. v2 takes only certificates that:
+   - have their private key;
+   - allow client authentication;
+   - chain (X509Chain, revocation not checked) to one of the baked roots;
+   - **don't** carry the certificate template extension (`1.3.6.1.4.1.311.21.7`), which marks Group Policy's own.
+   It deletes only the certificate it just renewed, and its own older leftovers matched by the same test.
+3. **Daily check-in.** A signed `easyeap-check-v2` with the client block:
+   `{kind, version: "2.0", scope, roots: [the baked roots present in the Root store]}`.
+   - The answer's `renew_from`, `renewal_enabled` and `superseded` go into `renew-state.json` beside the log.
+   - The computer task runs daily and at startup. The user task runs at sign-in and unlock. Each checks in at most
+     once in 20 hours, unless the saved window says it's due.
+   - When EasyEAP doesn't answer, the baked days decide.
+   - A 404/422 means an EasyEAP from before check-ins: protocol v1 (the v1 message, no client block).
+4. **The pending request survives a lost answer.** `certreq -new` puts the key in the store's REQUEST folder.
+   `renew-pending.json` keeps:
+   - the request (PEM);
+   - the thumbprint of its REQUEST entry (the one that appeared when certreq ran);
+   - the thumbprint of the certificate it renews.
+
+   The next run sends that same request at once, and EasyEAP answers with the certificate it already issued. It's
+   dropped when:
+   - EasyEAP refuses it (400);
+   - its REQUEST entry is gone;
+   - it was made for another certificate;
+   - it is older than 30 days.
+
+   v1 deleted every `CN=EasyEAP` request after any failure.
+5. **Installing.** `certreq -accept` with the answer.
+   - Check the certificate landed in the store with its private key; only then delete the old certificate (and its
+     key) and the pending file.
+   - The issuing CA from the answer goes to the CA store, as v1 did.
+6. **The user's warning.** The user task only, once a day: a Windows notification (a toast, as Windows PowerShell) when
+   the certificate expires within 14 days and the run didn't renew it (refused, renewal turned off, EasyEAP
+   unreachable), or has expired. The computer certificate relies on the dashboard, as planned: SYSTEM can't show UI.
+7. **One run at a time.** A named mutex per scope (and per user) stops the sign-in and unlock triggers, or the
+   portal's and the setup file's tasks, from overlapping. A second run exits quietly.
+8. **The portal's helper renews too** (§4.5). `windows.ps1` writes the renewal script (kind `windows-helper`) to
+   `%LOCALAPPDATA%\EasyEAP\renew.ps1` and registers the per-user task the setup file uses without an administrator:
+   the same name, daily and at sign-in. It skips this when the setup file's shared user task exists. Its request says
+   `renewer: "windows-helper"`, so EasyEAP records the renewer at issuance.
+   - Only the new helper says this. A helper downloaded before the change installs no renewal, and its certificates
+     stay "needs the user".
+9. **Existing PCs.** A PC keeps its v1 script until someone runs a setup file again; the new file replaces the script
+   and the tasks. The certificate's page says "Renewal task version 2.0" after the first check-in.
+10. **Tests.**
+    - `tests/windows`: the v2 script's decisions with the store, certreq, the network and the notification replaced by
+      recorders:
+      - which certificate it takes (a Group Policy one, a foreign chain, one without a key);
+      - quiet within 20 hours, a check-in that says not yet, due;
+      - a lost answer sent again, with the same request and no check-in;
+      - a refusal drops the request;
+      - an old server gets v1;
+      - the warning only for the user, once a day.
+    - The check-in and v2 renewal bodies the script signs are verified by EasyEAP's own code. Unit tests cover the
+      generated files and the helper's renewer.
+    - Not covered without Windows: certreq, the TPM, the toast, the tasks.
+
+**Critique of this plan (2026-11-09), and what it changed.** A critic read the plan and the first draft of the script.
+
+| # | Finding | Change |
+|---|---|---|
+| 1 | A PC that lost its waiting request after EasyEAP issued the new certificate hit a silent dead end: v2 got no replacement for another key, the check-in said `superseded` and the script stopped quietly until the old certificate expired. The v1/v2 rule wasn't a control anyway: the version is the client's own claim. | v2 gets v1's bounded replacement (unused successor, 14 days, 3 times). A `superseded` check-in with nothing waiting is logged as a warning and asks again with a new key (Linux too). |
+| 2 | Any 400 dropped the request, including a wrong clock (refused before the resend check), so the key of an issued certificate could be thrown away. The 30-day age rule did the same. | The 400 body carries `code`. The request is dropped only on final codes (renewed, conflict, revoked, expired, same_key, request, gpo, kind, missing), and a final refusal stops asking for that certificate (`final` in the state file, `renew-refused` on Linux). No age rule. |
+| 3 | v1 and the setup file delete every `CN=EasyEAP` REQUEST entry, which would take v2's waiting key. | Each request has its own subject (`CN=EasyEAP renewal <guid>`, `CN=EasyEAP setup <guid>`); clean-up removes only its own. The setup file's computer part removes the old per-user tasks when it installs the shared one. |
+| 4 | Finding the REQUEST entry as "the one that appeared" races Group Policy's autoenrollment. | Found by its subject. Installing checks first whether the certificate is already in the store with its key. |
+| 5 | Deleting every older EasyEAP certificate at the start of a run could delete the helper's, a console package's, or (on an expiry tie) the new one. | Only the certificate the request was for is deleted, after the new one is confirmed. The newest certificate is the one renewed; NotBefore breaks an expiry tie. |
+| 6 | `HasPrivateKey` doesn't prove the key works. | After installing, a check-in signed with the new key; the old certificate goes only after EasyEAP answers. A new key that can't sign: the new certificate goes, the old stays, and EasyEAP's replacement covers the next try. An interrupted run finishes next time (`answered` in the pending file). |
+| 7 | Any local user can create a `Global\` mutex first and stop the computer's renewal. | A lock file in the account's own LocalApplicationData (SYSTEM's profile for the computer), which other users can't open. |
+| 8 | A user who never locks the PC never checks in. | The shared user task also runs daily; sign-in and unlock wait two minutes. |
+| 9 | A request answered "not renewed" was resent on every trigger for up to 30 days. | Nothing was issued for it: it's dropped and the window is saved. |
+| 10 | The v1 fallback on 404/405/422 was over-built (a v2 server made the script, and 422 is also a validation error). | Removed. |
+| 11 | The toast came from "Windows PowerShell", which users can turn off, and fails silently. | Its own AUMID `EasyEAP.Renewal` (registered under HKCU, as Windows asks of unpackaged apps); a turned-off setting is logged. |
+| 12 | A standard user can't always list the shared task, so the helper might add a second one. SYSTEM uses its own proxy settings. | The setup file leaves `renews-users.txt` for the helper to find. An unreachable EasyEAP is logged with the proxy used. |
+
+Kept from the plan: resending the same request (answered by `_earlier_renewal`, matched by key), the 21.7 exclusion,
+the chain test, `[int]$_.Exception.Response.StatusCode` (5.1 and 7), a negative check-in age counting as stale.
+Not done: a dashboard item for "renewed, never received" (the client now recovers by itself; the certificate still
+shows as overdue if it doesn't), warning users about the computer's certificate on shared PCs.
+
+**Critique of the implementation (2026-11-09), and what it changed.** A second critic read the code and ran its own
+scenarios.
+
+| # | Finding | Change |
+|---|---|---|
+| 1 | Linux: a superseded certificate never asked again: EasyEAP's `renew_from` is the moment it answers, a second past the script's start, so the script waited. Its test fixed the time before the script ran. | Superseded skips the time comparison (as on Windows). The test's fake answers with the time it answers at. |
+| 2 | The helper is downloaded as UTF-8 without a BOM; Windows PowerShell reads such a file as ANSI, and an organization name with ł, т, Ñ (bytes that decode to curly quotes) broke renew.ps1. | The helper is served with a BOM. renew.ps1 is ASCII: `$Org` is decoded from base64, comments are ASCII. |
+| 3 | PowerShell reads ‘ ’ ‚ ‛ as single quotes; a name like "Children’s Hospital" broke the setup file and renew.ps1. | Every one of them is doubled in a quoted string; a here-string refuses a line starting with any of them and @. The helper's message quotes the network name the same way. Tests parse files made with such names. |
+| 4 | After a refusal that keeps the request, only the first day was quiet. | Every such refusal sets the check-in time: one resend a day. |
+| 5 | An unconfirmed new certificate was finished only if it was the newest; a shorter one was renewed over, and EasyEAP revoked it. | It's found among all of EasyEAP's certificates in the store. |
+| 6 | A confirming check-in refused for good (revoked since, a database restored from before) left the run stuck. | Refused (other than a wrong clock): the new certificate goes, the old stays, and the next run starts from a fresh check-in. |
+| 7 | The helper skipped its task, and the setup file removed per-user tasks, without checking they were for the same EasyEAP. | The helper skips only when the shared script carries its root; the setup file removes only per-user tasks whose script carries its root (or, for older scripts, its issuing CA). |
+| 8 | A request that failed after certreq made a key had no back-off. | Waits a day; a key whose request can't be saved is deleted. |
+| 9 | Reading the toast setting could throw and stop the toast. | Its own try. Whether Windows shows a toast for an AUMID registered only in the registry is on the Windows 11 list. |
+| 10 | The tests replaced the HTTP client and never ran the certificate selection. | `Invoke-EasyEap` runs against a real HTTP server (codes, details, errors, nothing listening), and `Test-EasyEapCertificate` against real certificates (EasyEAP's, Group Policy's, a server one, another CA's, one without its key). |
+| - | Windows PowerShell may turn certreq's error output into a stopping error under `$ErrorActionPreference = 'Stop'`, so the next key provider is never tried (not verified). | certreq runs with `Continue` for that call, in renew.ps1, the setup file and the helper. |
+
+**As built (2026-11-09).** Items 1, 2, 3, 5, 6, 8, 9 as planned with the changes above. Item 4: no age rule, entries
+found by subject, the `answered` marker. Item 7: a lock file. Item 10: `tests/windows/renew-decisions.ps1` runs the
+generated script's own functions against a stand-in store and EasyEAP (21 decision checks), the real HTTP client
+against a local server, and the certificate selection against real certificates; rules broken on purpose made their
+checks fail. The selection runs on .NET for Linux (OpenSSL, not CryptoAPI), so the Windows 11 test repeats it with a
+real store.
+
 ## 16. Sources
 
 Read in November 2026. Numbers 14 and 17 aren't cited in the text; they hold pages read for the research that back

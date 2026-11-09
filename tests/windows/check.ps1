@@ -29,14 +29,20 @@ foreach ($name in $expect.Keys) {
   }
 }
 
-# The renewal signing code, exactly as generated.
+# The renewal signing code, exactly as generated: a v2 renewal and a check-in, each over the client block the script
+# builds (fixture.py verify checks them with EasyEAP's own code).
 $renew = [System.Management.Automation.Language.Parser]::ParseFile('/out/full-renew.ps1', [ref]$null, [ref]$null)
-$funcs = $renew.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in 'Get-Hex', 'New-RenewalBody' }, $true)
-foreach ($fn in $funcs) { . ([scriptblock]::Create($fn.Extent.Text)) }
+$sign = 'Get-Hex', 'Get-Now', 'New-Signature', 'New-CheckInBody', 'New-RenewalBody', 'New-ClientBlock'
+foreach ($fn in $renew.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in $sign }, $true)) {
+  . ([scriptblock]::Create($fn.Extent.Text))
+}
+$Kind = 'windows-setup'; $RenewerVersion = '2.0'; $Machine = $false
+function Get-TrustedRoots { @('ab' * 32) }
+$client = New-ClientBlock
 foreach ($kind in 'ec', 'rsa') {
   $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new("/out/$kind.pfx", 'test')
-  $body = New-RenewalBody $cert (Get-Content "/out/$kind.csr" -Raw) 'software'
-  $body | ConvertTo-Json | Set-Content "/out/$kind-body.json"
+  New-RenewalBody $cert (Get-Content "/out/$kind.csr" -Raw) 'software' $client | ConvertTo-Json | Set-Content "/out/$kind-body.json"
+  New-CheckInBody $cert $client | ConvertTo-Json | Set-Content "/out/$kind-check.json"
 }
 
 # The setup's own flow (the computer part, then the user part) with Windows' commands replaced by recorders: each step
@@ -72,13 +78,21 @@ function netsh.exe {
 function New-EventLog { [CmdletBinding()] param($LogName, $Source) }
 function New-ScheduledTaskSettingsSet { [CmdletBinding()] param([Parameter(ValueFromRemainingArguments)]$Rest) 'settings' }
 function New-ScheduledTaskAction { [CmdletBinding()] param($Execute, $Argument) $Argument }
-function New-ScheduledTaskTrigger { [CmdletBinding()] param([Parameter(ValueFromRemainingArguments)]$Rest) 'trigger' }
+function New-ScheduledTaskTrigger { [CmdletBinding()] param([Parameter(ValueFromRemainingArguments)]$Rest) [pscustomobject]@{ Delay = $null } }
 function New-ScheduledTaskPrincipal { [CmdletBinding()] param($UserId, $GroupId, $LogonType, $RunLevel) "$UserId$GroupId" }
 function Get-CimClass { [CmdletBinding()] param($Namespace, $ClassName) 'class' }
-function New-CimInstance { [CmdletBinding()] param($CimClass, [switch]$ClientOnly) [pscustomobject]@{ StateChange = 0 } }
+function New-CimInstance { [CmdletBinding()] param($CimClass, [switch]$ClientOnly) [pscustomobject]@{ StateChange = 0; Delay = $null } }
 function Register-ScheduledTask { [CmdletBinding()] param($TaskPath = '\', $TaskName, $Action, $Trigger, $Principal, $Settings, [switch]$Force)
   $script:log.Add("task $TaskPath$TaskName as '$Principal' triggers=$(@($Trigger).Count)") }
-function Get-ScheduledTask { [CmdletBinding()] param($TaskName) [pscustomobject]@{ TaskName = $TaskName } }
+# Per-user tasks from earlier: omar's runs this EasyEAP's script, zed's another EasyEAP's (left alone).
+New-Item -ItemType Directory -Force -Path '/tmp/users/omar', '/tmp/users/zed' | Out-Null
+Set-Content '/tmp/users/omar/renew.ps1' ("`$RootsDer = @('" + ($RootPem -replace '-----[^-]+-----', '' -replace '\s', '') + "')")
+Set-Content '/tmp/users/zed/renew.ps1' "`$RootsDer = @('MIIBsomeoneelse')"
+function Get-ScheduledTask { [CmdletBinding()] param($TaskPath, $TaskName)
+  if ($TaskName) { return [pscustomobject]@{ TaskName = $TaskName } }
+  @([pscustomobject]@{ TaskName = 'EasyEAP renew certificate (omar)'; Actions = @([pscustomobject]@{ Arguments = '-NoProfile -File "/tmp/users/omar/renew.ps1" -Scope User' }) },
+    [pscustomobject]@{ TaskName = 'EasyEAP renew certificate (zed)'; Actions = @([pscustomobject]@{ Arguments = '-NoProfile -File "/tmp/users/zed/renew.ps1" -Scope User' }) },
+    [pscustomobject]@{ TaskName = 'Backup'; Actions = @() }) }
 function Unregister-ScheduledTask { [CmdletBinding()] param([Parameter(ValueFromPipeline)]$InputObject, [switch]$Confirm) process { $script:log.Add("unregister $($InputObject.TaskName)") } }
 
 function Check([string]$Name, [bool]$Ok, $Detail) {
@@ -93,7 +107,8 @@ $c = Invoke-ComputerPart
 Check 'computer part: all steps, both tasks' ($c.ok -and $c.trusted -and $c.wifi -and $c.renewal -and $c.steps.Count -eq 5 -and
   (Has 'import Cert:\LocalMachine\Root') -and (Has 'netsh lan add profile*interface=Ethernet') -and (Has 'netsh lan add profile*interface=Dock') -and
   -not (Has 'netsh lan*interface=Wi-Fi') -and (Has 'netsh wlan add profile*user=all') -and (Has "task \EasyEAP\Renew computer certificate as 'S-1-5-18' triggers=2") -and
-  (Has "task \EasyEAP\Renew user certificate as 'S-1-5-32-545' triggers=2")) (($c.errors + $script:log) -join ' | ')
+  (Has "task \EasyEAP\Renew user certificate as 'S-1-5-32-545' triggers=3") -and (Has 'unregister EasyEAP renew certificate (omar)') -and
+  -not (Has 'unregister EasyEAP renew certificate (zed)') -and -not (Has 'unregister Backup') -and (Test-Path '/tmp/pf/EasyEAP/renews-users.txt')) (($c.errors + $script:log) -join ' | ')
 $back = $c | ConvertTo-Json | ConvertFrom-Json   # as the elevated copy hands it back
 $script:log.Clear()
 $u = Invoke-UserPart $back
@@ -121,4 +136,28 @@ $script:log.Clear()
 $u = Invoke-UserPart $null
 Check 'user part alone' ($u.ok -and (Has 'import Cert:\CurrentUser\Root') -and (Has 'netsh wlan add profile*user=current') -and
   (Has "task \EasyEAP renew certificate (nina) as '' triggers=2") -and (Test-Path '/tmp/lad/EasyEAP/renew.ps1')) (($u.errors + $script:log) -join ' | ')
+
+# 5. The portal helper's renewal task: its own when the setup file's shared one isn't there, none when it is.
+$helper = [System.Management.Automation.Language.Parser]::ParseFile('/out/helper.ps1', [ref]$null, [ref]$null)
+foreach ($st in $helper.EndBlock.Statements) {
+  if ($st -is [System.Management.Automation.Language.AssignmentStatementAst] -and $st.Left.Extent.Text -eq '$RenewPs1') { . ([scriptblock]::Create($st.Extent.Text)) }
+}
+foreach ($fn in $helper.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Install-Renewal' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
+function Get-ScheduledTask { [CmdletBinding()] param($TaskPath, $TaskName) $null }
+$env:ProgramFiles = '/tmp/pf-helper'
+Remove-Item -Recurse -Force '/tmp/lad', '/tmp/pf-helper' -ErrorAction SilentlyContinue
+$script:log.Clear()
+$ok = Install-Renewal
+Check 'helper: its own task' ($ok -and (Has "task \EasyEAP renew certificate (nina) as '' triggers=2") -and
+  (Get-Content '/tmp/lad/EasyEAP/renew.ps1' -Raw).TrimEnd() -eq (Get-Content '/out/helper-renew.ps1' -Raw).TrimEnd()) ($script:log -join ' | ')
+New-Item -ItemType Directory -Force '/tmp/pf-helper/EasyEAP' | Out-Null; Set-Content '/tmp/pf-helper/EasyEAP/renews-users.txt' 'x'
+Set-Content '/tmp/pf-helper/EasyEAP/renew.ps1' "`$RootsDer = @('MIIBsomeoneelse')"
+$script:log.Clear()
+Check 'helper: its own task next to another EasyEAP''s shared one' ((Install-Renewal) -and (Has 'task*')) ($script:log -join ' | ')
+Copy-Item '/out/helper-renew.ps1' '/tmp/pf-helper/EasyEAP/renew.ps1'   # this EasyEAP's root
+$script:log.Clear()
+Check 'helper: none next to this EasyEAP''s shared task' ((Install-Renewal) -and -not (Has 'task*')) ($script:log -join ' | ')
+
+# 6. The renewal's decisions (renew.ps1 v2, cert-renewal.md §15c), with the store, certreq and EasyEAP replaced.
+. /t/renew-decisions.ps1 '/out/full-renew.ps1'
 exit $fail

@@ -15,11 +15,11 @@ Tick items off here when they're done or verified, and say where (commit, or the
      demo host with the owner's OK. Phase 2 (Wi-Fi) isn't built until S1, S2, S4 and S8 have run.
    - [ ] Phase 2: Wi-Fi. Phase 3: wired. Phase 4: the cloud connection and Enforce through the API. Phase 5: saved
      connection and the UniFi switch audit.
-2. **Certificate renewal, phase 2b (Windows).** `renew.ps1` v2 does what the Linux script's renewer v2 already does:
-   a daily signed check-in, keeping the pending request when an answer is lost, reporting the roots it trusts, and a
-   notice to the user near expiry. The portal's Windows helper gains the same renewal task.
-   [docs/plans/cert-renewal.md](docs/plans/cert-renewal.md) §4.3, §4.5.
-3. **A critic pass on the Linux renewer v2** (committed in 153adc2/5d1eba7, demo e2e only).
+2. ~~Certificate renewal, phase 2b (Windows)~~: done 2026-11-09 (`renew.ps1` 2.0 and the portal helper's renewal;
+   [cert-renewal.md](docs/plans/cert-renewal.md) §15c). Tested without Windows and on the demo's API; the real-PC
+   items are below.
+3. **A critic pass on the Linux renewer v2** (committed in 153adc2/5d1eba7, demo e2e only). Its refusal handling and
+   lost-key recovery were brought in line with Windows in phase 2b; the rest hasn't had its own critic.
 4. **Certificate renewal, phases 3–7** ([cert-renewal.md](docs/plans/cert-renewal.md) §15):
    - [ ] 3. Assisted renewal for Apple, Android and hand-configured Linux: renewal links, the queue, email (SMTP) and
      reminders, portal renewal pages, profile replacement in place.
@@ -81,10 +81,24 @@ named in each item says what to check.
 ### Windows
 - [ ] **Windows setup file, end to end on a Windows 11 PC**: TPM key through certreq, user and computer certificates,
   Wi-Fi and wired profiles, the approval prompt, the scheduled tasks ([docs/windows-setup.md](docs/windows-setup.md)).
-- [ ] Its **renewal**: let a test certificate reach its renewal point (use a short template) and watch the task renew
-  it. Once phase 2b ships: the daily check-in shows on the certificate's page.
-- [ ] The **lost-answer re-issue** with the current `renew.ps1` (v1): drop the answer once, then confirm the next
-  run gets a replacement and the unused one is revoked as "replaced".
+- [ ] Its **renewal** (`renew.ps1` 2.0): let a test certificate reach its renewal point (use a short template) and
+  watch the task renew it: the daily check-in on the certificate's page, the new certificate in the store, the old one
+  gone only after the confirming check-in. Then:
+  - which certificates it takes, with a Group Policy certificate, a certificate from another CA and an EasyEAP one
+    without its key in the same store (the chain test only ran under PowerShell 7 on Linux);
+  - a lost answer (block the API once mid-renewal): the next run sends the same request and gets the same
+    certificate; a cleared REQUEST entry: the next run gets a replacement;
+  - the two-minute sign-in/unlock delay and the daily trigger of the shared user task on a PC with two signed-in
+    users;
+  - the expiry notification (shows as "*Organization* network"; logged when notifications are off);
+  - the computer task as SYSTEM behind a proxy (the log says which way it went);
+  - a PC whose TPM refuses the key: certreq's error output doesn't stop the script, and the software key is used;
+  - an organization or network name with non-ASCII letters and a curly apostrophe, through the setup file and the
+    portal helper.
+- [ ] The **portal's Windows helper** on a PC without the setup file: its own task, the certificate's page says
+  "Windows enrollment helper", and on a PC with the setup file no second task (even when a standard user can't list
+  the shared task).
+- [ ] An **older PC** (v1 `renew.ps1`) next to a new setup file run: the old per-user tasks are removed.
 - [ ] **Group Policy autoenrollment on a real domain PC**: the first-PC checklist in
   [docs/autoenrollment.md](docs/autoenrollment.md). The open question is whether Windows accepts EasyEAP's unsigned
   CMC response.

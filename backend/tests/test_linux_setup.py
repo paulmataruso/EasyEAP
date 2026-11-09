@@ -184,7 +184,7 @@ class _Api:
     (?format=pem) gets a certificate for the new key (or 204, or a refusal)."""
 
     def __init__(self, tmp: Path, *, renew: bool = True, lose: int = 0, renew_from: datetime | None = None, superseded: bool = False,
-                 checkin: int = 200, refuse: bool = False, enabled: bool = True):
+                 checkin: int = 200, refuse: str | None = None, enabled: bool = True):
         self.key = ec.generate_private_key(ec.SECP256R1())
         self.cert = _cert("localhost", self.key.public_key(), self.key, "localhost", san="localhost")
         (tmp / "srv.pem").write_text(_pem(self.cert))
@@ -214,7 +214,9 @@ class _Api:
                         return self._answer(400, json.dumps({"detail": "The request isn't signed by this certificate's key."}).encode(), "application/json")
                     enr.parse_client(client)
                     answer = {"renewed": False, "not_after": old.not_valid_after_utc.isoformat(), "superseded": api.superseded,
-                              "renew_from": api.renew_from.isoformat(), "renewal_enabled": api.enabled,
+                              # superseded: the moment it answers, as EasyEAP does (a second or two after the script's start)
+                              "renew_from": (datetime.now(UTC) + timedelta(seconds=2) if api.superseded else api.renew_from).isoformat(),
+                              "renewal_enabled": api.enabled,
                               "trust": {"roots": [{"sha256": "ab" * 32, "pem": _pem(CA)}], "cross": []}}
                     return self._answer(200, json.dumps(answer).encode(), "application/json")
                 csr_pem = body["csr"].strip() + "\n"
@@ -225,7 +227,8 @@ class _Api:
                     api.lose -= 1
                     self._answer(502, b"Bad Gateway", "text/plain")
                 elif api.refuse:
-                    self._answer(400, json.dumps({"detail": "This certificate was already renewed. Use the newer one."}).encode(), "application/json")
+                    detail = {"renewed": "This certificate was already renewed. Use the newer one.", "clock": "The request's time is off."}[api.refuse]
+                    self._answer(400, json.dumps({"detail": detail, "code": api.refuse}).encode(), "application/json")
                 elif not api.renew:
                     self._answer(204, b"", "text/plain")
                 else:
@@ -373,20 +376,38 @@ def test_without_a_check_in_answer_the_baked_period_decides(tmp_path, checkin, d
 
 
 @needs_tools
-def test_a_superseded_certificate_with_nothing_waiting_stops(tmp_path):
+def test_a_superseded_certificate_with_nothing_waiting_asks_again(tmp_path):
+    """The renewal's answer and its key were both lost: EasyEAP replaces the unused certificate (cert-renewal.md §15c)."""
     api = _Api(tmp_path, superseded=True)
-    d, _ = _install(tmp_path, days=10)
+    d, _ = _install(tmp_path, days=200)
     r = _run_renewal(tmp_path, api, d)
-    assert r.returncode == 0 and api.renewals() == [] and "renewed this certificate already" in r.stdout
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert len(api.renewals()) == 1 and "never arrived here" in r.stdout and "Renewed" in r.stdout
 
 
 @needs_tools
-def test_a_refused_request_is_dropped_and_a_fresh_key_made_next_time(tmp_path):
-    api = _Api(tmp_path, refuse=True)
+def test_a_final_refusal_drops_the_request_and_isnt_asked_again(tmp_path):
+    api = _Api(tmp_path, refuse="renewed")
     d, _ = _install(tmp_path, days=10)
     r = _run_renewal(tmp_path, api, d)
     assert r.returncode == 1 and "Renewal refused: This certificate was already renewed" in r.stdout
-    assert not list(d.glob("renew-pending.*"))
+    assert not list(d.glob("renew-pending.*")) and (d / "renew-refused").exists()
+    r = _run_renewal(tmp_path, api, d)
+    assert r.returncode == 1 and len(api.renewals()) == 1 and len(api.checkins()) == 2 and "won't renew" in r.stdout
+
+
+@needs_tools
+def test_a_refusal_that_isnt_final_keeps_the_request(tmp_path):
+    """After a wrong clock, EasyEAP may have issued a certificate for that key already: it's sent again, not dropped."""
+    api = _Api(tmp_path, refuse="clock")
+    d, _ = _install(tmp_path, days=10)
+    r = _run_renewal(tmp_path, api, d)
+    assert r.returncode == 1 and (d / "renew-pending.key").exists() and not (d / "renew-refused").exists()
+    api.refuse = None
+    r = _run_renewal(tmp_path, api, d)
+    assert r.returncode == 0, r.stdout + r.stderr
+    first, second = api.renewals()
+    assert first["csr"] == second["csr"] and len(api.checkins()) == 1  # sent again at once, no check-in first
 
 
 @needs_tools

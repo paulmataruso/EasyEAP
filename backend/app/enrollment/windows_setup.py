@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 
-from app.enrollment.profiles import windows_lan_xml, windows_wlan_xml
+from app.enrollment.profiles import ps_here_ok, ps_quote, windows_lan_xml, windows_wlan_xml
 
-SCRIPT_VERSION = "1"
+SCRIPT_VERSION = "2"
 
 
 @dataclass
@@ -53,16 +53,20 @@ def auth_mode(o: SetupOptions) -> str:
     return o.mode or mode_for(bool(o.user_code), bool(o.computer_code), o.shared_pc)
 
 
-def _ps(value: str) -> str:
-    """A PowerShell single-quoted string literal."""
-    return "'" + value.replace("'", "''") + "'"
+_ps = ps_quote  # a PowerShell single-quoted string literal
 
 
 def _here(text: str) -> str:
     """A PowerShell single-quoted here-string. The content must not have a line starting with '@."""
-    if re.search(r"^'@", text, re.MULTILINE):
+    if not ps_here_ok(text):
         raise ValueError("here-string content can't start a line with '@")
     return "@'\n" + text.rstrip("\n") + "\n'@"
+
+
+def _ps_utf8(value: str) -> str:
+    """An expression for this text that is ASCII on the page: renew.ps1 stays readable whatever encoding Windows
+    PowerShell assumes for it (a file without a BOM is read as ANSI)."""
+    return f"[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String({_ps(base64.b64encode(value.encode()).decode())}))"
 
 
 def _comment(text: str) -> str:
@@ -79,19 +83,35 @@ def filename(username: str) -> str:
     return f"EasyEAP-Setup-{safe}.cmd"
 
 
-RENEW = r"""# EasyEAP certificate renewal, installed by the EasyEAP setup. Runs as SYSTEM for the computer's certificate (daily
-# and at startup) and as each user for theirs (at sign-in and unlock). Inside the renewal window it makes a new key,
-# signs the request with the current certificate's key, installs the new certificate and removes the old one.
+RENEW = r"""# EasyEAP certificate renewal (renewer 2.0), installed by the EasyEAP setup file or the portal's Windows helper. Runs as
+# SYSTEM for the computer's certificate (daily and at startup) and as each user for theirs (at sign-in and unlock). It
+# checks in with EasyEAP once a day, signed with the certificate's key; EasyEAP answers when renewal starts. Then it
+# makes a new key, keeps the request until the new certificate is in, installs it and removes the old one.
+# docs/plans/cert-renewal.md section 15c.
 param([ValidateSet('Computer', 'User')][string]$Scope = 'Computer')
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $Api = __API__
+$Kind = __KIND__
+$Org = __ORG__
+$RootsDer = @(__ROOTS__)
 $IssuingDer = __ISSUING__
 $RenewDays = @{ Computer = __COMPUTER_DAYS__; User = __USER_DAYS__ }[$Scope]
+$RenewerVersion = '2.0'
 $Machine = $Scope -eq 'Computer'
+$StoreRoot = if ($Machine) { 'Cert:\LocalMachine' } else { 'Cert:\CurrentUser' }
 $Dir = if ($Machine) { Join-Path $env:ProgramFiles 'EasyEAP' } else { Join-Path $env:LOCALAPPDATA 'EasyEAP' }
 $LogFile = Join-Path $Dir 'renew.log'
+$StateFile = Join-Path $Dir ('renew-state-{0}.json' -f $Scope.ToLowerInvariant())
+$PendingFile = Join-Path $Dir ('renew-pending-{0}.json' -f $Scope.ToLowerInvariant())
+$QuietHours = 20      # one check-in a day is enough; sign-in and unlock triggers don't each need one
+$WarnDays = 14        # the user is told when their certificate is this close to expiry and didn't renew
+# Refusals that finish a waiting request: no certificate can come for it. After any other ("clock", "off", "account",
+# "ca", or none), EasyEAP may already have issued one for it, so the key stays (EasyEAP's audit log has the reason).
+$FinalCodes = @('renewed', 'conflict', 'revoked', 'expired', 'same_key', 'request', 'gpo', 'kind', 'missing')
+$TemplateExt = '1.3.6.1.4.1.311.21.7'   # Group Policy's certificates carry it; never touch those
+$ClientAuth = '1.3.6.1.5.5.7.3.2'
 
 function Write-Log([string]$Text, [string]$Level = 'Information') {
   New-Item -ItemType Directory -Force -Path $Dir | Out-Null
@@ -100,7 +120,126 @@ function Write-Log([string]$Text, [string]$Level = 'Information') {
   try { Write-EventLog -LogName Application -Source 'EasyEAP' -EventId 100 -EntryType $Level -Message $Text } catch { }
 }
 
+function Get-Now { [DateTimeOffset]::UtcNow }
+
+function ConvertTo-Instant($Value) {
+  # A time from EasyEAP's answer or a saved file: Windows PowerShell keeps ISO 8601 text, PowerShell 7 makes a DateTime.
+  if ($null -eq $Value -or "$Value" -eq '') { return $null }
+  if ($Value -is [DateTime]) { return [DateTimeOffset]$Value }
+  if ($Value -is [DateTimeOffset]) { return $Value }
+  try { return [DateTimeOffset]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal) } catch { return $null }
+}
+
+function Get-Hex([byte[]]$Bytes) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  (($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function ConvertFrom-Der([string]$B64) { New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (, [Convert]::FromBase64String($B64)) }
+
+function Read-JsonFile([string]$Path) {
+  try { if (Test-Path $Path) { return (Get-Content -Path $Path -Raw | ConvertFrom-Json) } } catch { }
+  $null
+}
+
+function Save-JsonFile([string]$Path, $Value) {
+  New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+  $Value | ConvertTo-Json -Compress | Set-Content -Path "$Path.tmp" -Encoding UTF8
+  Move-Item -Force "$Path.tmp" $Path
+}
+
+function Test-EasyEapCertificate($Cert) {
+  # EasyEAP's own: its key is here, it's for client authentication, it chains to one of EasyEAP's roots, and it isn't
+  # one Group Policy enrolled (those carry the template extension and Windows renews them itself).
+  if (-not $Cert.HasPrivateKey) { return $false }
+  foreach ($e in $Cert.Extensions) {
+    if ($e.Oid.Value -eq $TemplateExt) { return $false }
+    if ($e.Oid.Value -eq '2.5.29.37' -and -not ($e.EnhancedKeyUsages | Where-Object { $_.Value -eq $ClientAuth })) { return $false }
+  }
+  $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+  $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+  $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]'AllowUnknownCertificateAuthority, IgnoreNotTimeValid'
+  foreach ($c in $script:Cas) { [void]$chain.ChainPolicy.ExtraStore.Add($c) }
+  try {
+    [void]$chain.Build($Cert)
+    $n = $chain.ChainElements.Count
+    if ($n -lt 2) { return $false }
+    $top = $chain.ChainElements[$n - 1].Certificate
+    return $script:RootHashes -contains (Get-Hex $top.RawData)
+  } catch { return $false } finally { $chain.Reset() }
+}
+
+function Get-EasyEapCertificates {
+  # Newest first. NotBefore breaks a tie: a renewal capped at the issuing CA's expiry ends when the old one does.
+  @(Get-ChildItem "$StoreRoot\My" | Where-Object { Test-EasyEapCertificate $_ } |
+    Sort-Object -Property @{ Expression = 'NotAfter'; Descending = $true }, @{ Expression = 'NotBefore'; Descending = $true })
+}
+
+function Get-TrustedRoots {
+  # The EasyEAP roots this PC trusts, for the console (cert-renewal.md section 4.2): what a new root would need.
+  $stores = if ($Machine) { @('Cert:\LocalMachine\Root') } else { @('Cert:\LocalMachine\Root', 'Cert:\CurrentUser\Root') }
+  @($script:Roots | Where-Object { $r = $_; @($stores | Where-Object { Test-Path (Join-Path $_ $r.Thumbprint) }).Count } | ForEach-Object { Get-Hex $_.RawData })
+}
+
+function New-ClientBlock {
+  $scope = if ($Machine) { 'computer' } else { 'user' }
+  [ordered]@{ kind = $Kind; version = $RenewerVersion; scope = $scope; roots = @(Get-TrustedRoots) } | ConvertTo-Json -Compress
+}
+
+function New-Signature($Cert, [string]$Message) {
+  # ECDSA keys sign in IEEE P1363 form, RSA keys with PKCS#1 v1.5 (app/enrollment/service.py verify_signature); TPM
+  # keys work for both.
+  $bytes = [Text.Encoding]::ASCII.GetBytes($Message)
+  $ecKey = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($Cert)
+  if ($ecKey) { $sig = $ecKey.SignData($bytes, [System.Security.Cryptography.HashAlgorithmName]::SHA256) }
+  else {
+    $rsaKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Cert)
+    $sig = $rsaKey.SignData($bytes, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+  }
+  [Convert]::ToBase64String($sig)
+}
+
+function New-CheckInBody($Cert, [string]$Client) {
+  $signedAt = (Get-Now).ToUnixTimeSeconds()
+  $utf8 = [Text.Encoding]::UTF8
+  $msg = 'easyeap-check-v2|' + (Get-Hex $Cert.RawData) + '|' + $signedAt + '|' + (Get-Hex $utf8.GetBytes($Client))
+  @{ certificate = [Convert]::ToBase64String($Cert.RawData); signed_at = $signedAt; signature = (New-Signature $Cert $msg); client = $Client }
+}
+
+function New-RenewalBody($Cert, [string]$CsrPem, [string]$Storage, [string]$Client) {
+  $csrDer = [Convert]::FromBase64String(($CsrPem -replace '-----[^-]+-----', '' -replace '\s', ''))
+  $signedAt = (Get-Now).ToUnixTimeSeconds()
+  $msg = 'easyeap-renew-v2|' + (Get-Hex $Cert.RawData) + '|' + $signedAt + '|' + (Get-Hex $csrDer) + '|' + (Get-Hex ([Text.Encoding]::UTF8.GetBytes($Client)))
+  @{ certificate = [Convert]::ToBase64String($Cert.RawData); csr = $CsrPem; signed_at = $signedAt; key_storage = $Storage; client = $Client
+     signature = (New-Signature $Cert $msg) }
+}
+
+function Invoke-EasyEap($Body) {
+  # Status 200 with the answer, the HTTP status with EasyEAP's reason (and a refusal's code), or 0 when EasyEAP couldn't
+  # be reached.
+  try {
+    $r = Invoke-RestMethod -Method Post -Uri "$Api/api/enroll/renew" -ContentType 'application/json' -Body ($Body | ConvertTo-Json -Compress) -UseBasicParsing -TimeoutSec 60
+    return @{ Status = 200; Data = $r; Detail = ''; Code = '' }
+  } catch {
+    $status = 0; $code = ''
+    try { if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode } } catch { }
+    $detail = $_.Exception.Message
+    if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+      try { $e = $_.ErrorDetails.Message | ConvertFrom-Json; $detail = [string]$e.detail; $code = [string]$e.code } catch { $detail = $_.ErrorDetails.Message }
+    }
+    if ($status -eq 0) {
+      # SYSTEM has its own proxy settings (usually none): say which way it went.
+      try { $p = [Net.WebRequest]::GetSystemWebProxy().GetProxy([uri]$Api); $detail += $(if ($p -and $p.Authority -ne ([uri]$Api).Authority) { " (through proxy $($p.Authority))" } else { ' (no proxy)' }) } catch { }
+    }
+    return @{ Status = $status; Data = $null; Detail = $detail; Code = $code }
+  }
+}
+
 function New-EasyEapRequest([string]$Work) {
+  # The TPM first (ECDSA, then RSA for TPMs without ECC), then a non-exportable software key. certreq leaves the key
+  # waiting in the REQUEST store under the request's subject: one of its own, so this entry is found again and nothing
+  # else (Group Policy's requests, an older renewer's clean-up) mistakes it for theirs. EasyEAP takes the certificate's
+  # names from the directory, not from the request.
   $tries = @(
     @{ Provider = 'Microsoft Platform Crypto Provider'; Alg = 'ECDSA_P256'; Len = 256; Storage = 'tpm' },
     @{ Provider = 'Microsoft Platform Crypto Provider'; Alg = 'RSA'; Len = 2048; Storage = 'tpm' },
@@ -110,86 +249,296 @@ function New-EasyEapRequest([string]$Work) {
     $inf = Join-Path $Work 'renew.inf'; $csr = Join-Path $Work 'renew.csr'
     Remove-Item $csr -ErrorAction SilentlyContinue
     $set = if ($Machine) { 'TRUE' } else { 'FALSE' }
+    $subject = 'CN=EasyEAP renewal ' + [guid]::NewGuid().ToString('N')
     @(
-      '[Version]', 'Signature="$Windows NT$"', '[NewRequest]', 'Subject = "CN=EasyEAP"', "KeyAlgorithm = $($t.Alg)",
+      '[Version]', 'Signature="$Windows NT$"', '[NewRequest]', ('Subject = "' + $subject + '"'), 'FriendlyName = "EasyEAP"', "KeyAlgorithm = $($t.Alg)",
       "KeyLength = $($t.Len)", 'HashAlgorithm = SHA256', 'Exportable = FALSE', "MachineKeySet = $set",
       ('ProviderName = "' + $t.Provider + '"'), 'KeyUsage = 0x80', 'RequestType = PKCS10'
     ) | Set-Content -Path $inf -Encoding ASCII
-    & certreq.exe -q -new $inf $csr 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0 -and (Test-Path $csr)) { return @{ Pem = (Get-Content $csr -Raw); Storage = $t.Storage } }
+    # Windows PowerShell turns a native command's error output into a stopping error under 'Stop': not here, so the
+    # next provider is tried.
+    & { $ErrorActionPreference = 'Continue'; & certreq.exe -q -new $inf $csr 2>&1 | Out-Null }
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $csr)) {
+      $entry = @(Get-ChildItem "$StoreRoot\REQUEST" -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq $subject }) | Select-Object -First 1
+      if (-not $entry) { throw "Windows made the request but it isn't in the REQUEST store." }
+      return @{ Pem = (Get-Content $csr -Raw); Storage = $t.Storage; Request = $entry.Thumbprint }
+    }
   }
   throw 'Windows could not create a key for the new certificate.'
 }
 
-function Get-Hex([byte[]]$Bytes) {
-  $sha = [System.Security.Cryptography.SHA256]::Create()
-  (($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') }) -join '')
+function Remove-Pending($Pending) {
+  if ($Pending -and $Pending.request) { Remove-Item -Path "$StoreRoot\REQUEST\$($Pending.request)" -DeleteKey -ErrorAction SilentlyContinue }
+  Remove-Item -Path $PendingFile -ErrorAction SilentlyContinue
 }
 
-function New-RenewalBody($Current, [string]$CsrPem, [string]$Storage) {
-  # The current key signs the current certificate, the time and the new request (app/enrollment/service.py
-  # renewal_message): ECDSA keys sign in IEEE P1363 form, RSA keys with PKCS#1 v1.5; TPM keys work for both.
-  $csrDer = [Convert]::FromBase64String(($CsrPem -replace '-----[^-]+-----', '' -replace '\s', ''))
-  $signedAt = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-  $message = [Text.Encoding]::ASCII.GetBytes('easyeap-renew-v1|' + (Get-Hex $Current.RawData) + '|' + $signedAt + '|' + (Get-Hex $csrDer))
-  $ecKey = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($Current)
-  if ($ecKey) {
-    $sig = $ecKey.SignData($message, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
-  } else {
-    $rsaKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Current)
-    $sig = $rsaKey.SignData($message, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+function Get-Pending($Current) {
+  # A request from an earlier run whose answer didn't arrive: sent again as it is, so EasyEAP sends the certificate it
+  # already issued for it. Dropped when its key is gone or it was for another certificate. Its age doesn't matter: a
+  # certificate may already be waiting for that key.
+  $p = Read-JsonFile $PendingFile
+  if (-not $p) { return $null }
+  if ($p.for -eq $Current.Thumbprint -and $p.csr -and $p.request -and (Test-Path "$StoreRoot\REQUEST\$($p.request)")) { return $p }
+  Remove-Pending $p
+  $null
+}
+
+function ConvertFrom-Pem([string]$Pem) {
+  New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (, [Convert]::FromBase64String(($Pem -replace '-----[^-]+-----', '' -replace '\s', '')))
+}
+
+function Install-Answer($Answer, [string]$Work) {
+  # certreq matches the certificate to the waiting request by its key and puts it in the store with that key. Already
+  # there (a run that stopped after it): nothing to install.
+  $new = ConvertFrom-Pem $Answer.certificate_pem
+  $installed = Get-Item -Path "$StoreRoot\My\$($new.Thumbprint)" -ErrorAction SilentlyContinue
+  if (-not ($installed -and $installed.HasPrivateKey)) {
+    $pem = Join-Path $Work 'new.pem'
+    Set-Content -Path $pem -Value $Answer.certificate_pem -Encoding ASCII
+    if ($Machine) { & certreq.exe -q -accept -machine $pem | Out-Null } else { & certreq.exe -q -accept -user $pem | Out-Null }
+    if ($LASTEXITCODE -ne 0) { throw "certreq couldn't install the new certificate ($LASTEXITCODE)." }
+    $installed = Get-Item -Path "$StoreRoot\My\$($new.Thumbprint)" -ErrorAction SilentlyContinue
+    if (-not $installed -or -not $installed.HasPrivateKey) { throw 'The new certificate is not in the store with its key.' }
   }
-  @{ certificate = [Convert]::ToBase64String($Current.RawData); csr = $CsrPem; signed_at = $signedAt
-     signature = [Convert]::ToBase64String($sig); key_storage = $Storage }
-}
-
-function Remove-PendingRequests {
-  $req = if ($Machine) { 'Cert:\LocalMachine\REQUEST' } else { 'Cert:\CurrentUser\REQUEST' }
-  Get-ChildItem $req -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq 'CN=EasyEAP' } |
-    ForEach-Object { Remove-Item -Path $_.PSPath -DeleteKey -ErrorAction SilentlyContinue }
-}
-
-$Work = Join-Path $env:TEMP ('easyeap-renew-' + [guid]::NewGuid())
-try {
-  $Ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (, [Convert]::FromBase64String($IssuingDer))
-  $Store = if ($Machine) { 'Cert:\LocalMachine\My' } else { 'Cert:\CurrentUser\My' }
-  $Mine = @(Get-ChildItem $Store | Where-Object { $_.Issuer -eq $Ca.Subject -and $_.HasPrivateKey } | Sort-Object NotAfter -Descending)
-  if ($Mine.Count -eq 0) { exit 0 }
-  $Current = $Mine[0]
-  # Older EasyEAP certificates left behind (a renewal that was interrupted): the newest one is the one in use.
-  foreach ($old in ($Mine | Select-Object -Skip 1)) { Remove-Item -Path $old.PSPath -DeleteKey -ErrorAction SilentlyContinue }
-  if ($Current.NotAfter -le (Get-Date)) { Write-Log 'The certificate has expired. Run the EasyEAP setup again.' 'Warning'; exit 1 }
-  if ($Current.NotAfter -gt (Get-Date).AddDays($RenewDays)) { exit 0 }
-
-  New-Item -ItemType Directory -Path $Work | Out-Null
-  $req = New-EasyEapRequest $Work
-  $body = New-RenewalBody $Current $req.Pem $req.Storage | ConvertTo-Json
-  $resp = Invoke-RestMethod -Method Post -Uri "$Api/api/enroll/renew" -ContentType 'application/json' -Body $body -UseBasicParsing
-  if (-not $resp.renewed) { Remove-PendingRequests; exit 0 }
-  $pem = Join-Path $Work 'new.pem'
-  Set-Content -Path $pem -Value $resp.certificate_pem -Encoding ASCII
-  if ($Machine) { & certreq.exe -q -accept -machine $pem | Out-Null } else { & certreq.exe -q -accept -user $pem | Out-Null }
-  if ($LASTEXITCODE -ne 0) { throw "certreq couldn't install the new certificate ($LASTEXITCODE)." }
-  if ($resp.issuing_ca_pem) {
+  if ($Answer.issuing_ca_pem) {
     $caPem = Join-Path $Work 'issuing.pem'
-    Set-Content -Path $caPem -Value $resp.issuing_ca_pem -Encoding ASCII
-    $caStore = if ($Machine) { 'Cert:\LocalMachine\CA' } else { 'Cert:\CurrentUser\CA' }
-    try { Import-Certificate -FilePath $caPem -CertStoreLocation $caStore | Out-Null } catch { }
+    Set-Content -Path $caPem -Value $Answer.issuing_ca_pem -Encoding ASCII
+    try { Import-Certificate -FilePath $caPem -CertStoreLocation "$StoreRoot\CA" | Out-Null } catch { }
   }
-  Remove-Item -Path $Current.PSPath -DeleteKey -ErrorAction SilentlyContinue
-  Write-Log ("Renewed the EasyEAP certificate: new serial {0}, valid until {1} ({2} key)." -f $resp.serial, $resp.not_after, $req.Storage)
+  $installed
+}
+
+function Remove-Certificate($Cert) { Remove-Item -Path "$StoreRoot\My\$($Cert.Thumbprint)" -DeleteKey -ErrorAction SilentlyContinue }
+
+function Show-Notice([string]$Text) {
+  # A Windows notification for the signed-in user (the user task only: SYSTEM has no desktop), under EasyEAP's own
+  # name: registered for this user, as Windows asks of apps that aren't installed from a package.
+  try {
+    $app = 'EasyEAP.Renewal'
+    try {
+      $key = 'HKCU:\Software\Classes\AppUserModelId\EasyEAP.Renewal'
+      if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+      Set-ItemProperty -Path $key -Name DisplayName -Value "$Org network"
+    } catch { $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe' }
+    $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+    $null = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
+    $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+    $esc = { param($t) [Security.SecurityElement]::Escape($t) }
+    $xml.LoadXml("<toast><visual><binding template='ToastGeneric'><text>$(& $esc "$Org network certificate")</text><text>$(& $esc $Text)</text></binding></visual></toast>")
+    $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app)
+    # A notification Windows won't show fails without an error: say so in the log, which the console's guide points to.
+    try {
+      if ("$($notifier.Setting)" -ne 'Enabled') { Write-Log "Windows notifications are off for EasyEAP ($($notifier.Setting)): this wasn't shown: $Text" 'Warning' }
+    } catch { }
+    $notifier.Show((New-Object Windows.UI.Notifications.ToastNotification $xml))
+  } catch { Write-Log "Couldn't show a notification: $($_.Exception.Message)" 'Warning' }
+}
+
+function Save-Answer($Cert, $Data, $Old) {
+  # A check-in's answer, kept for a day: when renewal starts, and whether it may.
+  $from = ConvertTo-Instant $Data.renew_from
+  $state = [pscustomobject]@{ thumbprint = $Cert.Thumbprint; checked_at = (Get-Now).ToString('o'); renew_from = $(if ($from) { $from.ToString('o') } else { '' })
+                              renewal_enabled = $(if ($null -eq $Data.renewal_enabled) { $true } else { [bool]$Data.renewal_enabled })
+                              superseded = [bool]$Data.superseded; final = $Old.final; warned = $Old.warned }
+  Save-JsonFile $StateFile $state
+  $state
+}
+
+function Complete-Renewal($New, $Pending) {
+  # The new certificate is in the store. A check-in signed with its key shows the key works here and tells EasyEAP the
+  # device has it; only then does the old certificate go (the one this request was for, nothing else).
+  try { $body = New-CheckInBody $New (New-ClientBlock) } catch {
+    Write-Log "The new certificate's key doesn't work here ($($_.Exception.Message)): removed it and kept the old one; the next run asks again." 'Warning'
+    Remove-Certificate $New
+    Remove-Pending $Pending
+    return 1
+  }
+  $r = Invoke-EasyEap $body
+  if ($r.Status -eq 400 -and $r.Code -ne 'clock') {
+    # EasyEAP won't take it (revoked since, or a database from before the renewal): it goes, the old one stays, and the
+    # next run starts from the old one.
+    Write-Log "EasyEAP refused the new certificate ($($r.Detail)): removed it and kept the old one." 'Warning'
+    Remove-Certificate $New
+    Remove-Item -Path $PendingFile, $StateFile -ErrorAction SilentlyContinue   # the next run asks EasyEAP afresh
+    return 1
+  }
+  if ($r.Status -ne 200) {
+    Write-Log "The new certificate is installed, but EasyEAP didn't confirm it yet ($($r.Detail)); the old one stays until it does." 'Warning'
+    return 1
+  }
+  $old = Get-Item -Path "$StoreRoot\My\$($Pending.for)" -ErrorAction SilentlyContinue
+  if ($old -and $old.Thumbprint -ne $New.Thumbprint) { Remove-Certificate $old }
+  Remove-Item -Path $PendingFile -ErrorAction SilentlyContinue
+  [void](Save-Answer $New $r.Data ([pscustomobject]@{}))
+  Write-Log ('Renewed: the new EasyEAP certificate is in use until {0:u}, and the old one is removed.' -f $New.NotAfter.ToUniversalTime())
+  0
+}
+
+function Invoke-Renewal([string]$Work) {
+  # Returns 0 when there's nothing to do or the certificate renewed, 1 when it should have and didn't.
+  $mine = @(Get-EasyEapCertificates)
+  if ($mine.Count -eq 0) { return 0 }
+  $current = $mine[0]
+  $now = Get-Now
+  $waiting = Read-JsonFile $PendingFile
+  if ($waiting -and $waiting.answered) {
+    # The last run installed the new certificate and stopped before it finished (it needn't be the newest: a shorter
+    # template can end it before the old one).
+    $installed = @($mine | Where-Object { $_.Thumbprint -eq $waiting.answered }) | Select-Object -First 1
+    if ($installed) { return (Complete-Renewal $installed $waiting) }
+  }
+  if ($current.NotAfter.ToUniversalTime() -le $now.UtcDateTime) { Write-Log 'The certificate has expired, so it can''t renew itself. Run the EasyEAP setup again.' 'Warning'; return 1 }
+
+  $state = Read-JsonFile $StateFile
+  if (-not $state -or $state.thumbprint -ne $current.Thumbprint) { $state = [pscustomobject]@{ thumbprint = $current.Thumbprint } }
+  $byDays = $current.NotAfter.ToUniversalTime() -le $now.UtcDateTime.AddDays($RenewDays)
+  $client = New-ClientBlock
+  $pending = Get-Pending $current
+  $from = ConvertTo-Instant $state.renew_from
+  $checked = ConvertTo-Instant $state.checked_at
+  $recent = $false
+  if ($checked) { $age = ($now - $checked).TotalHours; $recent = $age -ge 0 -and $age -lt $QuietHours }
+
+  if ($pending) {
+    # A request is waiting for its certificate (an answer was lost): sent again as it is, unless EasyEAP said today
+    # that it isn't time yet or turned it down.
+    if ($recent -and $from -and $now -lt $from) { return 0 }
+    if ($recent -and $state.refused) { return 1 }
+  } elseif ($recent) {
+    # Checked in less than a day ago: the saved answer decides, and a due certificate goes straight to its request.
+    # A refusal today isn't asked again until tomorrow (sign-in and unlock would each make a key for nothing).
+    if ($state.final) { return 1 }
+    if ($from -and $now -lt $from) { return 0 }
+    if (-not $from -and -not $byDays) { return 0 }
+    if ($state.renewal_enabled -eq $false -or $state.refused) { return 1 }
+  } else {
+    $r = Invoke-EasyEap (New-CheckInBody $current $client)
+    if ($r.Status -eq 200) {
+      $state = Save-Answer $current $r.Data $state
+      $from = ConvertTo-Instant $state.renew_from
+      if ($state.final) { return 1 }   # refused for good: asking again changes nothing
+      if ($state.superseded) {
+        # Renewed, but the new certificate never got here and no request is waiting for it (its key was lost):
+        # EasyEAP replaces it if nothing used it, within limits.
+        Write-Log 'EasyEAP renewed this certificate, but the new one never arrived here. Asking again with a new key.' 'Warning'
+      } else {
+        if ($from -and $now -lt $from) { return 0 }
+        if (-not $from -and -not $byDays) { return 0 }
+      }
+      if (-not $state.renewal_enabled) { Write-Log 'Renewal is due, but automatic renewal is turned off in EasyEAP. Ask your IT team.' 'Warning'; return 1 }
+    } elseif ($r.Status -eq 400) {
+      # The certificate isn't one EasyEAP renews (revoked, or unknown): asked again tomorrow, not at every unlock.
+      $state = [pscustomobject]@{ thumbprint = $current.Thumbprint; checked_at = $now.ToString('o'); refused = $true; final = $state.final; warned = $state.warned }
+      Save-JsonFile $StateFile $state
+      Write-Log "Check-in refused: $($r.Detail)" 'Warning'; return 1
+    } else {
+      if (-not $byDays) { return 0 }
+      Write-Log "Couldn't check in with EasyEAP ($($r.Detail)); renewing by the template's days." 'Warning'
+    }
+  }
+
+  if (-not $pending) {
+    try { $req = New-EasyEapRequest $Work } catch {
+      # No request (no key provider worked, or its entry can't be found): tried again tomorrow, not at every unlock.
+      $state | Add-Member -NotePropertyName refused -NotePropertyValue $true -Force
+      $state | Add-Member -NotePropertyName checked_at -NotePropertyValue $now.ToString('o') -Force
+      try { Save-JsonFile $StateFile $state } catch { }
+      throw
+    }
+    $pending = [pscustomobject]@{ csr = $req.Pem; request = $req.Request; storage = $req.Storage; for = $current.Thumbprint; made = $now.ToString('o') }
+    try { Save-JsonFile $PendingFile $pending } catch {
+      Remove-Item -Path "$StoreRoot\REQUEST\$($req.Request)" -DeleteKey -ErrorAction SilentlyContinue   # a key nothing would find again
+      throw
+    }
+  }
+  $r = Invoke-EasyEap (New-RenewalBody $current $pending.csr $pending.storage $client)
+  if ($r.Status -eq 200 -and $r.Data.renewed) {
+    $answer = ConvertFrom-Pem $r.Data.certificate_pem
+    $pending | Add-Member -NotePropertyName answered -NotePropertyValue $answer.Thumbprint -Force
+    Save-JsonFile $PendingFile $pending
+    try { $new = Install-Answer $r.Data $Work } catch {
+      # The key that request was made with doesn't take its certificate: it goes, and EasyEAP replaces the unused
+      # certificate when the next run asks with a new one.
+      Write-Log "Couldn't install the new certificate ($($_.Exception.Message)); the next run asks again." 'Warning'
+      Remove-Pending $pending
+      return 1
+    }
+    Write-Log ('EasyEAP renewed the certificate: new serial {0}, valid until {1} ({2} key).' -f $r.Data.serial, $r.Data.not_after, $pending.storage)
+    return (Complete-Renewal $new $pending)
+  }
+  if ($r.Status -eq 200) {
+    # Not renewed: nothing was issued for that request (the renewal window moved since the check-in). It goes, and the
+    # window is kept for the next run.
+    Remove-Pending $pending
+    [void](Save-Answer $current $r.Data $state)
+    return 0
+  }
+  if ($r.Status -eq 400) {
+    # Quiet until tomorrow, every time: a request kept after a refusal is sent again once a day, not at every unlock.
+    $state | Add-Member -NotePropertyName refused -NotePropertyValue $true -Force
+    $state | Add-Member -NotePropertyName checked_at -NotePropertyValue $now.ToString('o') -Force
+    if ($FinalCodes -contains $r.Code) {
+      Remove-Pending $pending
+      $state | Add-Member -NotePropertyName final -NotePropertyValue $r.Code -Force
+    }
+    Save-JsonFile $StateFile $state
+    Write-Log "Renewal refused: $($r.Detail)" 'Warning'
+    return 1
+  }
+  Write-Log "Renewal failed, asking again next time: $($r.Detail)" 'Warning'
+  1
+}
+
+function Invoke-Warning {
+  # The user's certificate expires soon and didn't renew: tell them, once a day.
+  if ($Machine) { return }
+  $c = @(Get-EasyEapCertificates) | Select-Object -First 1
+  if (-not $c) { return }
+  $now = Get-Now
+  $left = ($c.NotAfter.ToUniversalTime() - $now.UtcDateTime).TotalDays
+  if ($left -gt $WarnDays) { return }
+  $state = Read-JsonFile $StateFile
+  $today = $now.ToString('yyyyMMdd')
+  if ($state -and $state.warned -eq $today) { return }
+  $when = $c.NotAfter.ToString('D')
+  Show-Notice $(if ($left -le 0) { "Your certificate for the network expired on $when. Contact your IT team." }
+               else { "Your certificate for the network expires on $when and couldn't renew itself. Contact your IT team." })
+  if (-not $state) { $state = [pscustomobject]@{ thumbprint = $c.Thumbprint } }
+  $state | Add-Member -NotePropertyName warned -NotePropertyValue $today -Force
+  Save-JsonFile $StateFile $state
+}
+
+# -- Run ---------------------------------------------------------------------
+$Roots = @($RootsDer | ForEach-Object { ConvertFrom-Der $_ })
+$RootHashes = @($Roots | ForEach-Object { Get-Hex $_.RawData })
+$Cas = @($Roots) + @(ConvertFrom-Der $IssuingDer)
+
+# One run at a time per certificate store: sign-in and unlock can start together, and a PC can have both the setup
+# file's task and the portal helper's. A lock file in the account's own profile (SYSTEM's for the computer), which
+# other users can't open; a named mutex anyone could take first.
+$lockDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'EasyEAP'
+$lock = $null
+try {
+  New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
+  $lock = [IO.File]::Open((Join-Path $lockDir ('renew-{0}.lock' -f $Scope.ToLowerInvariant())), 'OpenOrCreate', 'ReadWrite', 'None')
+} catch { exit 0 }
+$Work = Join-Path $env:TEMP ('easyeap-renew-' + [guid]::NewGuid())
+$code = 1
+try {
+  New-Item -ItemType Directory -Path $Work | Out-Null
+  $code = Invoke-Renewal $Work
 } catch {
-  $msg = $_.Exception.Message
-  if ($_.ErrorDetails -and $_.ErrorDetails.Message) { try { $msg = ($_.ErrorDetails.Message | ConvertFrom-Json).detail } catch { $msg = $_.ErrorDetails.Message } }
-  Remove-PendingRequests
-  Write-Log "Renewal failed: $msg" 'Warning'
-  exit 1
+  Write-Log "Renewal failed: $($_.Exception.Message)" 'Warning'
+  $code = 1
 } finally {
+  if ($code -ne 0) { try { Invoke-Warning } catch { } }
   Remove-Item -Recurse -Force $Work -ErrorAction SilentlyContinue
   if ((Get-Item $LogFile -ErrorAction SilentlyContinue).Length -gt 256KB) {
     Get-Content $LogFile -Tail 500 | Set-Content "$LogFile.tmp" -Encoding UTF8; Move-Item -Force "$LogFile.tmp" $LogFile
   }
+  $lock.Dispose()
 }
+exit $code
 """
 
 MAIN = r"""
@@ -242,13 +591,15 @@ function New-EasyEapRequest([string]$Work, [bool]$Machine) {
     $inf = Join-Path $Work 'req.inf'; $csr = Join-Path $Work 'req.csr'
     Remove-Item $csr -ErrorAction SilentlyContinue
     $set = if ($Machine) { 'TRUE' } else { 'FALSE' }
+    # A subject of its own: clean-up after a failure removes this request's key and no other (a renewal's may be waiting).
+    $subject = 'CN=EasyEAP setup ' + [guid]::NewGuid().ToString('N')
     @(
-      '[Version]', 'Signature="$Windows NT$"', '[NewRequest]', 'Subject = "CN=EasyEAP"', "KeyAlgorithm = $($t.Alg)",
+      '[Version]', 'Signature="$Windows NT$"', '[NewRequest]', ('Subject = "' + $subject + '"'), "KeyAlgorithm = $($t.Alg)",
       "KeyLength = $($t.Len)", 'HashAlgorithm = SHA256', 'Exportable = FALSE', "MachineKeySet = $set",
       ('ProviderName = "' + $t.Provider + '"'), 'KeyUsage = 0x80', 'RequestType = PKCS10'
     ) | Set-Content -Path $inf -Encoding ASCII
-    & certreq.exe -q -new $inf $csr 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0 -and (Test-Path $csr)) { return @{ Pem = (Get-Content $csr -Raw); Storage = $t.Storage } }
+    & { $ErrorActionPreference = 'Continue'; & certreq.exe -q -new $inf $csr 2>&1 | Out-Null }   # see renew.ps1
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $csr)) { return @{ Pem = (Get-Content $csr -Raw); Storage = $t.Storage; Subject = $subject } }
   }
   throw 'Windows could not create a key for the certificate.'
 }
@@ -260,7 +611,7 @@ function Install-EasyEapCertificate([string]$Code, [bool]$Machine, [string]$Work
     $resp = Invoke-RestMethod -Method Post -Uri "$Api/api/enroll/$Code/csr" -ContentType 'application/json' -Body $body -UseBasicParsing
   } catch {
     $pending = if ($Machine) { 'Cert:\LocalMachine\REQUEST' } else { 'Cert:\CurrentUser\REQUEST' }
-    Get-ChildItem $pending -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq 'CN=EasyEAP' } |
+    Get-ChildItem $pending -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq $req.Subject } |
       ForEach-Object { Remove-Item -Path $_.PSPath -DeleteKey -ErrorAction SilentlyContinue }
     throw
   }
@@ -273,7 +624,9 @@ function Install-EasyEapCertificate([string]$Code, [bool]$Machine, [string]$Work
   $new = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (, $newDer)
   $ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 (, [Convert]::FromBase64String($IssuingDer))
   $store = if ($Machine) { 'Cert:\LocalMachine\My' } else { 'Cert:\CurrentUser\My' }
-  Get-ChildItem $store | Where-Object { $_.Issuer -eq $ca.Subject -and $_.Thumbprint -ne $new.Thumbprint } |
+  # Not Group Policy's certificates from the same CA: they carry the template extension, and Windows renews them itself.
+  Get-ChildItem $store | Where-Object { $_.Issuer -eq $ca.Subject -and $_.Thumbprint -ne $new.Thumbprint -and
+    -not ($_.Extensions | Where-Object { $_.Oid.Value -eq '1.3.6.1.4.1.311.21.7' }) } |
     ForEach-Object { Remove-Item -Path $_.PSPath -DeleteKey -ErrorAction SilentlyContinue }
   @{ Serial = $resp.serial; NotAfter = $resp.not_after; Storage = $req.Storage }
 }
@@ -356,9 +709,26 @@ function Invoke-ComputerPart {
         $class = Get-CimClass -Namespace 'ROOT\Microsoft\Windows\TaskScheduler' -ClassName 'MSFT_TaskSessionStateChangeTrigger'
         $unlock = New-CimInstance -CimClass $class -ClientOnly
         $unlock.StateChange = 8
-        $triggers = @((New-ScheduledTaskTrigger -AtLogOn), $unlock)
+        # Two minutes after sign-in and unlock (the network and the desktop are up by then, for a notice), and daily for
+        # whoever is signed in: someone who never locks the PC still checks in.
+        $unlock.Delay = 'PT2M'
+        $logon = New-ScheduledTaskTrigger -AtLogOn
+        $logon.Delay = 'PT2M'
+        $triggers = @($logon, $unlock, (New-ScheduledTaskTrigger -Daily -At '11:00' -RandomDelay (New-TimeSpan -Hours 4)))
         $principal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-545' -RunLevel Limited
         Register-ScheduledTask -TaskPath '\EasyEAP\' -TaskName 'Renew user certificate' -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Force | Out-Null
+        # For the portal's helper, which can't always list this task as a standard user: it then doesn't add its own.
+        Save-Text (Join-Path $ProgramDir 'renews-users.txt') 'The task \EasyEAP\Renew user certificate renews the EasyEAP certificate of everyone who signs in to this PC.'
+        # The shared task renews everyone's certificate now: per-user tasks from setups run without an administrator, or
+        # from the portal's helper, go (two renewers on one store would each make keys).
+        # Only those whose script is for this EasyEAP (its root, or for older scripts its issuing CA): another one's
+        # certificates need their own task.
+        $rootB64 = $RootPem -replace '-----[^-]+-----', '' -replace '\s', ''
+        Get-ScheduledTask -TaskPath '\' -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -like 'EasyEAP renew certificate (*)' } |
+          Where-Object {
+            $file = [regex]::Match("$(@($_.Actions)[0].Arguments)", '-File "([^"]+)"').Groups[1].Value
+            try { $text = Get-Content -Path $file -Raw -ErrorAction Stop; $text.Contains($rootB64) -or $text.Contains($IssuingDer) } catch { $false }
+          } | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
       }
       $r.steps += 'Certificates renew themselves before they expire'
       $r.renewal = $true
@@ -516,9 +886,20 @@ LAUNCHER = (
 )
 
 
+def renew_ps1(*, api: str, kind: str, org: str, root_pems: list[str], issuing_pem: str, user_days: int, computer_days: int) -> str:
+    """The renewal script (renewer 2.0, docs/plans/cert-renewal.md §15c): `kind` is windows-setup (the setup file) or
+    windows-helper (the portal's helper, user scope only)."""
+    if kind not in ("windows-setup", "windows-helper"):
+        raise ValueError("kind must be windows-setup or windows-helper")
+    values = {"__API__": _ps(api.rstrip("/")), "__KIND__": _ps(kind), "__ORG__": _ps_utf8(org), "__ROOTS__": ", ".join(_ps(_der_b64(p)) for p in root_pems),
+              "__ISSUING__": _ps(_der_b64(issuing_pem)), "__COMPUTER_DAYS__": str(int(computer_days)), "__USER_DAYS__": str(int(user_days))}
+    pattern = re.compile("|".join(re.escape(k) for k in sorted(values, key=len, reverse=True)))
+    return pattern.sub(lambda mt: values[mt.group(0)], RENEW)
+
+
 def renew_script(o: SetupOptions) -> str:
-    return (RENEW.replace("__API__", _ps(o.api.rstrip("/"))).replace("__ISSUING__", _ps(_der_b64(o.issuing_pem)))
-            .replace("__COMPUTER_DAYS__", str(int(o.computer_renew_days))).replace("__USER_DAYS__", str(int(o.user_renew_days))))
+    return renew_ps1(api=o.api, kind="windows-setup", org=o.org, root_pems=[o.root_pem], issuing_pem=o.issuing_pem,
+                     user_days=o.user_renew_days, computer_days=o.computer_renew_days)
 
 
 def build(o: SetupOptions) -> str:

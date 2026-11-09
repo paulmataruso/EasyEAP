@@ -214,6 +214,9 @@ api_detail() {
   printf 'EasyEAP answered %s: %s' "$HTTP_CODE" "$(tr '\n' ' ' < "$WORK/resp" | cut -c1-200)"
 }
 
+# A refusal's code (EasyEAP 2026-11 and later): whether a waiting request is finished with.
+api_code() { sed -n 's/.*"code" *: *"\([a-z_]*\)".*/\1/p' "$WORK/resp" | head -n 1; }
+
 sha256_hex() { openssl dgst -sha256 | sed 's/.*= *//'; }
 same_key() { [ "$(openssl x509 -in "$1" -noout -pubkey 2>/dev/null)" = "$(openssl pkey -in "$2" -pubout 2>/dev/null)" ]; }
 
@@ -245,7 +248,7 @@ trap 'rm -rf "$WORK"' EXIT
 : > "$WORK/err"
 # The new key and its request stay in $DIR until the new certificate is in: if EasyEAP's answer gets lost (sleep, a
 # Wi-Fi drop), the next run sends the same request, and EasyEAP sends the certificate it already issued for it.
-pkey="$DIR/renew-pending.key"; pcsr="$DIR/renew-pending.csr"
+pkey="$DIR/renew-pending.key"; pcsr="$DIR/renew-pending.csr"; final="$DIR/renew-refused"
 pending() { [ -s "$pkey" ] && [ -s "$pcsr" ] && [ "$(openssl req -in "$pcsr" -noout -pubkey 2>/dev/null)" = "$(openssl pkey -in "$pkey" -pubout 2>/dev/null)" ]; }
 sign() { printf '%s' "$1" > "$WORK/msg"; openssl dgst -sha256 -sign "$key" "$WORK/msg" | openssl base64 -A; }
 now=$(date +%s)
@@ -275,10 +278,20 @@ if ! pending; then
   printf '{"certificate":"%s","signed_at":%s,"signature":"%s","client":"%s"}' "$der" "$now" "$sig" "$client_json" > "$WORK/body.json"
   http POST "$API/api/enroll/renew" "$WORK/body.json"; rc=$?
   if [ "$rc" = 0 ] && [ "$HTTP_CODE" = 200 ]; then
-    if grep -q '"superseded" *: *true' "$WORK/resp"; then log "EasyEAP renewed this certificate already, and nothing is waiting here; nothing to do."; exit 0; fi
+    # Refused for good earlier (this certificate was renewed elsewhere, or revoked): asking again changes nothing.
+    if [ "$(cat "$final" 2>/dev/null)" = "$cert_hex" ]; then log "EasyEAP won't renew this certificate (see renew.log). Enroll again."; exit 1; fi
+    # Renewed, but the new certificate never got here and no request is waiting (its key was lost): EasyEAP replaces it
+    # if nothing used it, within limits.
+    # (Its renew_from is the moment EasyEAP answered, which can be a second past this run's start: not compared.)
+    superseded=
+    if grep -q '"superseded" *: *true' "$WORK/resp"; then
+      superseded=1; log "EasyEAP renewed this certificate, but the new one never arrived here. Asking again with a new key."
+    fi
     rf=$(sed -n 's/.*"renew_from" *: *"\([^"]*\)".*/\1/p' "$WORK/resp" | head -n 1)
     rf_s=$(date -u -d "$rf" +%s 2>/dev/null) || rf_s=
-    if [ -n "$rf_s" ]; then
+    if [ -n "$superseded" ]; then
+      if grep -q '"renewal_enabled" *: *false' "$WORK/resp"; then log "Automatic renewal is turned off in EasyEAP. Ask your IT team for a new link."; exit 1; fi
+    elif [ -n "$rf_s" ]; then
       [ "$now" -ge "$rf_s" ] || exit 0
       if grep -q '"renewal_enabled" *: *false' "$WORK/resp"; then log "Renewal is due, but automatic renewal is turned off in EasyEAP. Ask your IT team for a new link."; exit 1; fi
     else
@@ -309,8 +322,12 @@ http POST "$API/api/enroll/renew?format=pem" "$WORK/body.json" || { log "Couldn'
 case "$HTTP_CODE" in
   204) log "EasyEAP doesn't renew it yet."; exit 0 ;;
   200) ;;
-  # Refused: that request can't get a certificate (the reason is in EasyEAP's audit log too); the next run makes a new one.
-  400) log "Renewal refused: $(api_detail)"; rm -f "$pkey" "$pcsr"; exit 1 ;;
+  # Refused (the reason is in EasyEAP's audit log too). Only a final refusal finishes the request: after a wrong clock,
+  # say, a certificate may already exist for that key, so it stays and is sent again.
+  400) log "Renewal refused: $(api_detail)"
+       case "$(api_code)" in renewed|conflict|revoked|expired|same_key|request|gpo|kind|missing)
+         rm -f "$pkey" "$pcsr"; printf '%s' "$cert_hex" > "$final" ;; esac
+       exit 1 ;;
   *) log "Renewal failed, asking again next time: $(api_detail)"; exit 1 ;;
 esac
 grep -q 'BEGIN CERTIFICATE' "$WORK/resp" && same_key "$WORK/resp" "$pkey" || { log "EasyEAP's answer isn't a certificate for the new key."; exit 1; }
@@ -318,7 +335,7 @@ grep -q 'BEGIN CERTIFICATE' "$WORK/resp" && same_key "$WORK/resp" "$pkey" || { l
 # for a moment, once a year; NetworkManager and wpa_supplicant read both files at each connection anyway.
 cp "$pkey" "$key.new" && cp "$WORK/resp" "$cert.new" && chmod 600 "$key.new" && chmod 644 "$cert.new" \
   && mv -f "$key.new" "$key" && mv -f "$cert.new" "$cert" || { log "Couldn't write the new files in $DIR."; exit 1; }
-rm -f "$pkey" "$pcsr"
+rm -f "$pkey" "$pcsr" "$final"
 have restorecon && restorecon -R "$DIR" >/dev/null 2>&1
 log "Renewed: $(openssl x509 -in "$cert" -noout -enddate)"
 """
@@ -551,7 +568,7 @@ install_files() {  # install_files KEY CERT
     && printf '%s\n' "$IDENTITY" > "$DIR/identity.new" \
     && chmod 644 "$DIR/ca.pem.new" "$DIR/client.pem.new" "$DIR/identity.new" && chmod 600 "$DIR/client.key.new" \
     && mv -f "$DIR/ca.pem.new" "$DIR/ca.pem" && mv -f "$DIR/client.key.new" "$DIR/client.key" && mv -f "$DIR/client.pem.new" "$DIR/client.pem" \
-    && mv -f "$DIR/identity.new" "$DIR/identity" && rm -f "$DIR/renew-pending.key" "$DIR/renew-pending.csr" \
+    && mv -f "$DIR/identity.new" "$DIR/identity" && rm -f "$DIR/renew-pending.key" "$DIR/renew-pending.csr" "$DIR/renew-refused" \
     || die "Couldn't write the certificate files in $DIR."
   have restorecon && restorecon -R /etc/easyeap >/dev/null 2>&1
   return 0

@@ -143,7 +143,9 @@ def _names(session: Session, e: m.Enrollment) -> tuple[m.Tenant, m.Identity, m.C
 
 
 def complete_with_csr(session: Session, bao: OpenBao, e: m.Enrollment, csr_pem: str, key_origin: str, *,
-                      key_storage: str | None = None, device_hint: str | None = None) -> m.Certificate:
+                      key_storage: str | None = None, device_hint: str | None = None, renewer: str | None = None) -> m.Certificate:
+    """`renewer`: what the request says will renew the certificate. Only the portal's Windows helper says so
+    (`windows-helper`, from phase 2b on), and only a Windows link with a key made on the PC takes it."""
     if e.status != "pending":
         raise EnrollmentError("This enrollment link has already been used or has expired. Ask your IT team for a new one.")
     if key_origin not in ("device", "browser", "csr"):
@@ -159,9 +161,12 @@ def complete_with_csr(session: Session, bao: OpenBao, e: m.Enrollment, csr_pem: 
     cert = pki.sign_csr(session, bao, tenant, tpl, csr_pem, names, key_origin=key_origin, identity_id=identity.id,
                         device_id=device.id, enrollment_id=e.id)
     cert.key_storage = key_storage if key_storage in KEY_STORAGE else None
-    # What will renew it (docs/plans/cert-renewal.md §15b): the setup file's tasks, or the Linux script's timer (it
-    # makes the key on the computer; the portal's by-hand route doesn't). The version comes with its first check-in.
-    cert.renewer = "windows-setup" if e.method == WINDOWS_SETUP else "linux" if e.platform == "linux" and key_origin == "device" else None
+    # What will renew it (docs/plans/cert-renewal.md §15b, §15c): the setup file's tasks, the Linux script's timer (it
+    # makes the key on the computer; the portal's by-hand route doesn't), or the portal's Windows helper's task (only a
+    # helper that installs one says so). The version comes with its first check-in.
+    helper = renewer == "windows-helper" and e.method == "link" and e.platform == "windows" and key_origin == "device"
+    cert.renewer = ("windows-setup" if e.method == WINDOWS_SETUP else "linux" if e.platform == "linux" and key_origin == "device"
+                    else "windows-helper" if helper else None)
     _finish(session, e, cert, identity)
     return cert
 
@@ -336,7 +341,7 @@ def renew(session: Session, bao: OpenBao, *, certificate_der: bytes, csr_pem: st
         if again is not None:  # the answer to the same request got lost on the way: send it again
             return old, again
         try:
-            replace = _replaceable_successor(session, old, now, v1=info is None)  # a v1 renewer threw its key away with the lost answer
+            replace = _replaceable_successor(session, old, now)  # the device lost the answer and the key that went with it
         except RenewalRefused as exc:
             exc.note = (info, now) if info is not None else None
             raise
@@ -396,11 +401,13 @@ def successor_used(session: Session, cert: m.Certificate) -> datetime | None:
                                                                  m.AuthEvent.result == "accept"))
 
 
-def _replaceable_successor(session: Session, old: m.Certificate, now: datetime, *, v1: bool) -> m.Certificate:
-    """A certificate already renewed, asked again with another key (§15b item 3). The earlier successor is replaced when
-    the device can't have it: the request is v1 (whose renewer throws its key away with a lost answer), the successor
-    has never been used or checked in with, it was renewed through this endpoint lately, and not too often. Else the
-    renewal is refused, as a conflict when that successor is in use: two keys claim one certificate."""
+def _replaceable_successor(session: Session, old: m.Certificate, now: datetime) -> m.Certificate:
+    """A certificate already renewed, asked again with another key (§15b item 3, §15c). The earlier successor is
+    replaced when the device can't have it: the successor has never been used or checked in with, it was renewed
+    through this endpoint lately, and not too often. A v1 renewer throws its key away with a lost answer; a v2 renewer
+    keeps it, but can still lose it (a cleared TPM, a profile reset, a key that doesn't work). The renewer's version is
+    its own claim, so it doesn't decide. Else the renewal is refused, as a conflict when that successor is in use: two
+    keys claim one certificate."""
     succ = session.scalars(select(m.Certificate).where(m.Certificate.renewal_of == old.id, m.Certificate.status != "revoked")
                            .order_by(m.Certificate.created_at.desc())).first()
     renewed = RenewalRefused("This certificate was already renewed. Use the newer one.", old, "renewed")
@@ -411,8 +418,8 @@ def _replaceable_successor(session: Session, old: m.Certificate, now: datetime, 
         raise RenewalRefused("This certificate was already renewed with another key, and that certificate is in use. Contact your IT team.",
                              old, "conflict")
     tries = session.scalar(select(func.count()).select_from(m.Certificate).where(m.Certificate.renewal_of == old.id)) or 0
-    if not v1 or now - old.renewed_at > timedelta(days=REISSUE_DAYS) or tries > REISSUE_MAX:
-        raise renewed  # a v2 renewer keeps its request until the answer arrives: another key isn't a lost answer
+    if now - old.renewed_at > timedelta(days=REISSUE_DAYS) or tries > REISSUE_MAX:
+        raise renewed
     return succ
 
 

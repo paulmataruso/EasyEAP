@@ -100,6 +100,78 @@ def test_renewal_script_carries_the_issuer_and_windows():
     assert "$RenewDays = @{ Computer = 45; User = 30 }[$Scope]" in script
     der = x509.load_pem_x509_certificate(ROOT.encode()).public_bytes(serialization.Encoding.DER)
     assert base64.b64encode(der).decode() in script and "/api/enroll/renew" in script and "-DeleteKey" in script
+    assert "$Kind = 'windows-setup'" in script and "$RenewerVersion = '2.0'" in script and "easyeap-check-v2|" in script
+
+
+def test_renewal_script_kinds_and_roots():
+    issuing = _pem(_cert("Test Issuing", ec.generate_private_key(ec.SECP256R1()), ROOT_KEY, issuer="Test Root"))
+    other = _pem(_cert("Next Root", ec.generate_private_key(ec.SECP256R1()), ca=True, days=3650))
+    script = ws.renew_ps1(api="https://e.example/", kind="windows-helper", org="O'Brien", root_pems=[ROOT, other], issuing_pem=issuing,
+                          user_days=21, computer_days=21)
+    assert "$Kind = 'windows-helper'" in script and "$Api = 'https://e.example'" in script
+    org = base64.b64encode(b"O'Brien").decode()
+    assert f"$Org = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{org}'))" in script
+    roots = [base64.b64encode(x509.load_pem_x509_certificate(p.encode()).public_bytes(serialization.Encoding.DER)).decode() for p in (ROOT, other)]
+    assert f"$RootsDer = @('{roots[0]}', '{roots[1]}')" in script
+    assert "__" not in script.replace("__RENEW", "")  # every placeholder filled
+    with pytest.raises(ValueError):
+        ws.renew_ps1(api="https://e.example", kind="linux", org="O", root_pems=[ROOT], issuing_pem=ROOT, user_days=1, computer_days=1)
+
+
+def test_powershell_quotes_include_the_curly_ones():
+    """PowerShell reads ‘ ’ ‚ ‛ as single quotes (about_Quoting_Rules): each is doubled, so the string stays literal."""
+    assert profiles.ps_quote("O'Brien") == "'O''Brien'"
+    assert profiles.ps_quote("Children\u2019s \u2018x\u2019 \u201ay\u201b") == "'Children\u2019\u2019s \u2018\u2018x\u2019\u2019 \u201a\u201ay\u201b\u201b'"
+    assert not profiles.ps_here_ok("a\n\u2019@\nb") and profiles.ps_here_ok("a\n @\nb'@")
+
+
+def test_the_renewal_script_is_ascii_whatever_the_names():
+    """Windows PowerShell reads a file without a BOM as ANSI: renew.ps1 has nothing for it to misread."""
+    script = ws.renew_ps1(api="https://e.example", kind="windows-helper", org="Children\u2019s Szko\u0142a \u5b66\u6821", root_pems=[ROOT],
+                          issuing_pem=ROOT, user_days=30, computer_days=30)
+    assert script.isascii()
+
+
+def test_the_portal_helper_installs_its_renewal():
+    renew = ws.renew_ps1(api="https://e.example", kind="windows-helper", org="Corp", root_pems=[ROOT], issuing_pem=ROOT, user_days=30, computer_days=30)
+    script = profiles.windows_powershell("https://e.example", "tok", "Corp", "radius.corp.example", ROOT, ROOT, renew_ps1=renew)
+    assert "$RenewPs1 = @'\n" + renew.rstrip("\n") + "\n'@\n" in script
+    assert "renewer = $Renewer" in script and "EasyEAP renew certificate ($env:USERNAME)" in script and "-Scope User" in script
+    assert "-TaskPath '\\EasyEAP\\' -TaskName 'Renew user certificate'" in script  # the setup file's shared task wins...
+    root_b64 = base64.b64encode(x509.load_pem_x509_certificate(ROOT.encode()).public_bytes(serialization.Encoding.DER)).decode()
+    assert f".Contains('{root_b64}')" in script  # ...when its script is for this EasyEAP
+    plain = profiles.windows_powershell("https://e.example", "tok", "Corp", "radius.corp.example", ROOT, ROOT)
+    assert "$RenewPs1 = ''\n" in plain
+    with pytest.raises(ValueError):
+        profiles.windows_powershell("https://e.example", "tok", "Corp", "r.example", ROOT, ROOT, renew_ps1="x\n'@\ny")
+
+
+@pytest.mark.parametrize(("method", "platform", "origin", "renewer", "expected"), [
+    ("link", "windows", "device", "windows-helper", "windows-helper"),
+    ("link", "windows", "device", None, None),                       # an older helper, or one that couldn't install the task
+    ("link", "windows", "browser", "windows-helper", None),
+    ("link", "macos", "device", "windows-helper", None),
+    ("link", "linux", "device", "windows-helper", "linux"),
+    (enr.WINDOWS_SETUP, "windows", "device", None, "windows-setup"),
+])
+def test_what_will_renew_a_new_certificate(monkeypatch, method, platform, origin, renewer, expected):
+    monkeypatch.setattr(enr.crypto, "csr_info", lambda pem: None)
+    monkeypatch.setattr(enr, "_device", lambda s_, e_, hint: SimpleNamespace(id=1, name="PC-1"))
+    monkeypatch.setattr(enr, "_names", lambda s_, e_: (None, SimpleNamespace(id=2), None, {}))
+    monkeypatch.setattr(enr.pki, "sign_csr", lambda *a, **kw: SimpleNamespace(id=3))
+    monkeypatch.setattr(enr, "_finish", lambda *a: None)
+    e = SimpleNamespace(status="pending", method=method, platform=platform, device_name="PC-1", id=4)
+    assert enr.complete_with_csr(None, None, e, "csr", origin, renewer=renewer).renewer == expected
+
+
+def test_the_csr_body_takes_only_the_helper_as_renewer():
+    from pydantic import ValidationError
+
+    from app.routers import enroll_public as ep
+    assert ep.CsrIn(csr="x" * 100, renewer="windows-helper").renewer == "windows-helper"
+    assert ep.CsrIn(csr="x" * 100).renewer is None
+    with pytest.raises(ValidationError):
+        ep.CsrIn(csr="x" * 100, renewer="windows-setup")
 
 
 def test_profiles_sign_in_mode_and_issuer_filter():
@@ -469,12 +541,16 @@ def test_three_replacements_at_most(world):
     assert world.call()[1].replaced_serial == "0B"
 
 
-def test_a_v2_renewer_with_another_key_gets_no_replacement(world):
-    """v2 keeps its request until the answer arrives: a different key isn't a lost answer, maybe a copied key."""
+def test_a_v2_renewer_that_lost_its_key_gets_the_same_replacement(world):
+    """v2 keeps its request, but can still lose its key (a cleared TPM, a key that doesn't work): the same bounds as v1,
+    since the version is the client's own claim (cert-renewal.md §15c)."""
     _renewed_before(world)
+    _, new = world.call(client=CLIENT)
+    assert new.replaced_serial == "0B" and new.renewer == "windows-setup"
+    _renewed_before(world, days=15)
     with pytest.raises(enr.RenewalRefused, match="already renewed") as exc:
         world.call(client=CLIENT)
-    assert exc.value.code == "renewed" and "revoked" not in world.issued
+    assert exc.value.code == "renewed"
     assert exc.value.note[0]["kind"] == "windows-setup"  # still a signed check-in: recorded after the rollback
 
 

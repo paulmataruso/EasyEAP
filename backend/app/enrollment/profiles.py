@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import plistlib
+import re
 import uuid
 from xml.sax.saxutils import escape
 
@@ -18,6 +19,20 @@ def _thumbprint(pem: str) -> str:
     cert = x509.load_pem_x509_certificate(pem.encode())
     h = cert.fingerprint(hashes.SHA1()).hex()  # noqa: S303 — Windows WLAN profiles identify trusted roots by SHA-1 thumbprint
     return " ".join(h[i:i + 2] for i in range(0, len(h), 2))
+
+
+# PowerShell reads ‘ ’ ‚ ‛ as single quotes too (about_Quoting_Rules), so each is doubled like ' to stay literal.
+_PS_QUOTES = re.compile("(['\u2018\u2019\u201a\u201b])")
+
+
+def ps_quote(value: str) -> str:
+    """A PowerShell single-quoted string literal."""
+    return "'" + _PS_QUOTES.sub(r"\1\1", value) + "'"
+
+
+def ps_here_ok(text: str) -> bool:
+    """Whether text can sit in a single-quoted here-string: no line may start with a quote and @ (which ends it)."""
+    return not re.search("^['\u2018\u2019\u201a\u201b]@", text, re.MULTILINE)
 
 
 def _der(pem: str) -> bytes:
@@ -249,11 +264,17 @@ WINDOWS_GPO_STEPS = [
 ]
 
 
-def windows_powershell(api_base: str, token: str, ssid: str, server_name: str, root_pem: str, issuing_pem: str, wpa3: bool = False) -> str:
+def windows_powershell(api_base: str, token: str, ssid: str, server_name: str, root_pem: str, issuing_pem: str, wpa3: bool = False,
+                       renew_ps1: str | None = None) -> str:
     """Enrollment helper: non-exportable key in the TPM when Windows can create one there (the software key store
-    otherwise), CSR to EasyEAP, then the certificate, the CA chain and the Wi-Fi profile. Runs as a standard user."""
-    xml = windows_wlan_xml(ssid, server_name, root_pem, wpa3).replace("'", "''")
-    return f"""# EasyEAP Wi-Fi enrollment for Windows. Run in PowerShell as the user who will connect (no admin rights needed).
+    otherwise), CSR to EasyEAP, then the certificate, the CA chain and the Wi-Fi profile. Runs as a standard user.
+    `renew_ps1` (windows_setup.renew_ps1, kind windows-helper): a per-user task renews the certificate, as the setup
+    file's does when no administrator ran it (docs/plans/cert-renewal.md §15c item 8)."""
+    xml = windows_wlan_xml(ssid, server_name, root_pem, wpa3)  # in a here-string: quotes stay as they are
+    if renew_ps1 is not None and not ps_here_ok(renew_ps1):
+        raise ValueError("the renewal script can't start a line with '@")
+    root_b64 = base64.b64encode(_der(root_pem)).decode()
+    script = f"""# EasyEAP Wi-Fi enrollment for Windows. Run in PowerShell as the user who will connect (no admin rights needed).
 # The private key is created on this computer (in the TPM when available) and never leaves it.
 $ErrorActionPreference = 'Stop'
 $Api = '{api_base.rstrip('/')}'
@@ -276,11 +297,51 @@ ProviderName = "$Provider"
 RequestType = PKCS10
 "@ | Set-Content -Path "$Work\\req.inf" -Encoding ASCII
   Remove-Item "$Work\\req.csr" -ErrorAction SilentlyContinue
-  certreq.exe -q -new "$Work\\req.inf" "$Work\\req.csr" 2>&1 | Out-Null
+  # Windows PowerShell turns a native command's error output into a stopping error under 'Stop': not here.
+  & {{ $ErrorActionPreference = 'Continue'; certreq.exe -q -new "$Work\\req.inf" "$Work\\req.csr" 2>&1 | Out-Null }}
   return ($LASTEXITCODE -eq 0) -and (Test-Path "$Work\\req.csr")
 }}
 
+$RenewPs1 = __RENEW_PS1__
+
+function Install-Renewal {{
+  # A daily and sign-in task for this user renews the certificate before it expires. Not when the EasyEAP setup file
+  # already installed the shared one for everyone on this PC.
+  if (-not $RenewPs1) {{ return $false }}
+  # The setup file's shared task, when its script is for this EasyEAP (it renews only certificates under its own root).
+  # The setup file leaves a note when it adds that task: a standard user can't always list it.
+  $shared = Join-Path $env:ProgramFiles 'EasyEAP'
+  $ours = $false
+  try {{ $ours = (Get-Content (Join-Path $shared 'renew.ps1') -Raw -ErrorAction Stop).Contains('{root_b64}') }} catch {{ }}
+  if ($ours) {{
+    if (Test-Path (Join-Path $shared 'renews-users.txt')) {{ return $true }}
+    try {{
+      if (Get-ScheduledTask -TaskPath '\\EasyEAP\\' -TaskName 'Renew user certificate' -ErrorAction SilentlyContinue) {{ return $true }}
+    }} catch {{ }}
+  }}
+  $dir = Join-Path $env:LOCALAPPDATA 'EasyEAP'
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $renew = Join-Path $dir 'renew.ps1'
+  Set-Content -Path $renew -Value $RenewPs1 -Encoding UTF8
+  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$renew`" -Scope User"
+  $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+  $triggers = @((New-ScheduledTaskTrigger -Daily -At '10:00' -RandomDelay (New-TimeSpan -Hours 6)))
+  $name = "EasyEAP renew certificate ($env:USERNAME)"
+  try {{
+    $logon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\\$env:USERNAME"
+    Register-ScheduledTask -TaskName $name -Action $action -Trigger ($triggers + $logon) -Settings $settings -Force | Out-Null
+  }} catch {{
+    # Some PCs don't let a standard user add a sign-in trigger: the daily one is enough.
+    Register-ScheduledTask -TaskName $name -Action $action -Trigger $triggers -Settings $settings -Force | Out-Null
+  }}
+  $true
+}}
+
 try {{
+  $Renewer = $null
+  try {{ if (Install-Renewal) {{ $Renewer = 'windows-helper' }} }} catch {{
+    Write-Host "Automatic renewal wasn't set up ($($_.Exception.Message)). Ask your IT team for a new link before the certificate expires." -ForegroundColor Yellow
+  }}
   # Try the TPM first (no admin rights needed to create a key there); fall back to the software key store.
   $Provider = 'Microsoft Platform Crypto Provider'
   if (-not (New-EasyEapRequest $Provider)) {{
@@ -289,7 +350,7 @@ try {{
   }}
   Write-Host "Key created with: $Provider"
   $Csr = Get-Content "$Work\\req.csr" -Raw
-  $Body = @{{ csr = $Csr; key_origin = 'device'; device_hint = $env:COMPUTERNAME }} | ConvertTo-Json
+  $Body = @{{ csr = $Csr; key_origin = 'device'; device_hint = $env:COMPUTERNAME; renewer = $Renewer }} | ConvertTo-Json
   $Resp = Invoke-RestMethod -Method Post -Uri "$Api/api/enroll/$Token/csr" -ContentType 'application/json' -Body $Body
   Set-Content -Path "$Work\\cert.pem" -Value $Resp.certificate_pem -Encoding ASCII
   certreq.exe -q -accept -user "$Work\\cert.pem" | Out-Null
@@ -305,7 +366,8 @@ try {{
 {xml}
 '@ | Set-Content -Path "$Work\\wifi.xml" -Encoding UTF8
   netsh wlan add profile filename="$Work\\wifi.xml" user=current | Out-Null
-  Write-Host "Done. Connect to '{ssid}'. No password is needed." -ForegroundColor Green
+  if ($Renewer) {{ Write-Host 'Your certificate renews itself before it expires.' }}
+  Write-Host ('Done. Connect to "' + {ps_quote(ssid)} + '". No password is needed.') -ForegroundColor Green
 }} catch {{
   $Err = $_
   $Msg = $Err.Exception.Message
@@ -319,6 +381,7 @@ try {{
 }}
 Read-Host 'Press Enter to close' | Out-Null
 """
+    return script.replace("__RENEW_PS1__", "@'\n" + renew_ps1.rstrip("\n") + "\n'@" if renew_ps1 else "''", 1)
 
 
 def apple_mobileconfig(*, ssid: str, server_name: str, root_pem: str, issuing_pem: str, org: str, tenant_slug: str,

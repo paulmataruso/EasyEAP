@@ -20,7 +20,8 @@ with something waiting. Showing a link also gives what its platform needs:
   or Chrome on the device itself, so nobody has to email it.
 - **Linux**: **Download setup script**, the same `EasyEAP-WiFi-Setup.sh` the link's page gives, with the same
   one-time code. Hand it over, or copy it to a computer that has no browser.
-- **Windows**: the link installs the user's certificate only; **Windows setup** (below) does more.
+- **Windows**: the link installs the user's certificate only (and a task that renews it); **Windows setup** (below)
+  does more.
 
 A server-generated package is the exception: its password is shown once and never stored, so a lost one means
 cancelling the package and making a new one.
@@ -136,9 +137,10 @@ it was turned on don't have the wired settings until they enroll again (or IT in
 
 **Certificate authority → Renewal** sets what renews by itself (docs/plans/cert-renewal.md §15a):
 
-- **User certificates** and **Device certificates**: renewed by the Windows setup file's daily tasks and the Linux
-  script's timer, each signing the request with the certificate's current key, so nobody signs in and nothing is
-  downloaded again. Group Policy certificates renew on Windows' own schedule (see
+- **User certificates** and **Device certificates**: renewed by the Windows setup file's tasks, the task the portal's
+  Windows helper leaves for its user (from 2026-11-09 on; skipped where a setup file already renews everyone's
+  certificate), and the Linux script's timer, each signing the request with the certificate's current key, so nobody
+  signs in and nothing is downloaded again. Group Policy certificates renew on Windows' own schedule (see
   [autoenrollment.md](autoenrollment.md)). Apple and Android profiles can't renew themselves: the dashboard lists
   those certificates as they near expiry, and the user needs a new link.
 - **RADIUS server certificate**: EasyEAP issues a new one by itself (checked every 6 hours). Devices accept it because
@@ -161,8 +163,8 @@ setup file, the Linux script, Group Policy, or nothing: a new link), when renewa
 check-in, and what it was renewed into. The panel counts the tenant's valid certificates: renew by themselves,
 haven't checked in for a week, overdue, need the user. On the dashboard:
 
-- **Devices haven't checked in for renewal in a week**: renewal tasks that check in daily (the next versions of the
-  setup file and the Linux script) and have gone quiet while their certificate is due.
+- **Devices haven't checked in for renewal in a week**: renewal tasks that check in daily (setup files and Windows
+  helpers made since 2026-11-09, Linux scripts since 2026-11-08) and have gone quiet while their certificate is due.
 - **Certificates should have renewed by themselves**: two weeks into the renewal period (older tasks that ask only
   when due: once 14 days are left). Critical when one has 14 days or less.
 - **A certificate was renewed with two keys** (critical): a renewal signed by a certificate another key already

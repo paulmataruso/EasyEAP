@@ -4,9 +4,10 @@ from __future__ import annotations
 import base64
 import hashlib
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -17,7 +18,7 @@ from app.autoenroll.kerberos import PROXY_CERT
 from app.config import get_settings
 from app.db import set_platform, set_tenant
 from app.deps import client_ip, db
-from app.enrollment import linux_setup, profiles
+from app.enrollment import linux_setup, profiles, windows_setup
 from app.enrollment import service as enr
 from app.pki import renewal
 from app.pki import service as pki
@@ -82,6 +83,7 @@ class CsrIn(BaseModel):
     key_origin: str = "browser"
     device_hint: str | None = Field(default=None, max_length=120)
     key_storage: str | None = Field(default=None, max_length=16)  # tpm | software (Windows setup and helper)
+    renewer: Literal["windows-helper"] | None = None  # the portal's Windows helper installs a renewal task (cert-renewal.md §15c)
 
 
 @router.post("/{token}/csr")
@@ -92,7 +94,7 @@ def submit_csr(token: str, body: CsrIn, request: Request, s: Session = Depends(d
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This link is for a prepared package. Download it instead.")
     try:
         cert = enr.complete_with_csr(s, OpenBao(), e, body.csr.strip() + "\n", body.key_origin, key_storage=body.key_storage,
-                                     device_hint=body.device_hint)
+                                     device_hint=body.device_hint, renewer=body.renewer)
     except (enr.EnrollmentError, pki.PkiError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     issuing, root = pki.chain_pem(s, tenant.id)
@@ -194,7 +196,9 @@ def renew(body: RenewIn, request: Request, s: Session = Depends(db), format: str
                              signature=signature, key_storage=body.key_storage, client=body.client)
     except enr.RenewalRefused as exc:
         _refused(s, exc, request)
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        # `code` tells a renewer whether its waiting request is finished with (cert-renewal.md §15c): after "clock" or
+        # "off", a certificate may already exist for it, so it keeps the key.
+        return JSONResponse({"detail": str(exc), "code": exc.code}, status_code=status.HTTP_400_BAD_REQUEST)
     except (enr.EnrollmentError, pki.PkiError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     if new is None:
@@ -203,7 +207,8 @@ def renew(body: RenewIn, request: Request, s: Session = Depends(db), format: str
         st = renewal.settings(s, old.tenant_id)
         superseded = old.status == "superseded"
         return {"renewed": False, "not_after": old.not_after.isoformat(), "superseded": superseded,
-                # superseded: a renewer holding a request from a lost answer sends it again now; one without stops
+                # superseded: a renewer holding a request from a lost answer sends it again now; one without asks again
+                # with a new key, and an unused successor is replaced (cert-renewal.md §15c)
                 "renew_from": (datetime.now(UTC) if superseded else renewal.renew_from(old, st.renew_at_percent)).isoformat(),
                 "renewal_enabled": renewal.enabled_for(st, old.purpose), "trust": trust_block(s, old.tenant_id)}
     set_tenant(s, new.tenant_id)
@@ -226,8 +231,14 @@ def windows_script(token: str, request: Request, s: Session = Depends(db)) -> Re
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This link is for a prepared package. Download it instead.")
     issuing, root = pki.chain_pem(s, tenant.id)
     ssid, server, wpa3 = _net(s, tenant.id)
-    script = profiles.windows_powershell(get_settings().public_url, token, ssid, server, root or issuing, issuing, wpa3)
-    return Response(script, media_type="text/plain; charset=utf-8",
+    tpl = s.get(m.CertificateTemplate, e.template_id) if e.template_id else None
+    days = tpl.renew_before_days if tpl else 30
+    # The helper leaves a per-user renewal task behind (cert-renewal.md §15c item 8), so the certificate renews itself.
+    renew = windows_setup.renew_ps1(api=get_settings().public_url, kind="windows-helper", org=tenant.name, root_pems=[root or issuing],
+                                    issuing_pem=issuing, user_days=days, computer_days=days)
+    script = profiles.windows_powershell(get_settings().public_url, token, ssid, server, root or issuing, issuing, wpa3, renew_ps1=renew)
+    # With a BOM: Windows PowerShell reads a .ps1 without one as ANSI, which garbles a non-ASCII network or org name.
+    return Response("\ufeff" + script, media_type="text/plain; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="EasyEAP-WiFi-Setup.ps1"', "Cache-Control": "no-store"})
 
 

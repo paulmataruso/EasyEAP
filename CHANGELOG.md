@@ -26,9 +26,18 @@ versions follow [Semantic Versioning](https://semver.org/).
   certificate's key) and report what they are and which roots they trust; every answer says when renewal starts and
   carries the tenant's root certificates. v1 is unchanged.
 - **The Linux setup script's renewal uses it** (scripts made from now on): it checks in daily, renews from the date
-  EasyEAP gives instead of the days it was made with (those are the fallback when EasyEAP can't be reached), says
-  which roots it trusts, and drops a request EasyEAP refused so the next run starts afresh. The Windows setup file
-  comes next.
+  EasyEAP gives instead of the days it was made with (those are the fallback when EasyEAP can't be reached), and says
+  which roots it trusts.
+- **The Windows setup file's renewal uses it too** (`renew.ps1` 2.0, files made from now on;
+  [plan](docs/plans/cert-renewal.md) §15c): a daily signed check-in, renewal from EasyEAP's date, the new key and
+  request kept until the new certificate is in (a lost answer is asked again with the same request), the new
+  certificate confirmed by a check-in with its own key before the old one is deleted, and only the certificate it
+  renewed deleted (never Group Policy's or another EasyEAP one in the same store). Users are notified once a day when
+  their certificate is two weeks from expiry and didn't renew. The shared user task also runs daily, and two minutes
+  after sign-in and unlock.
+- **The portal's Windows helper renews its certificate**: it leaves a task for its user that runs the same script,
+  unless a setup file already renews everyone's certificate on that PC. The certificate's page says "Windows enrollment
+  helper".
 - **Retire renewed certificates** (on by default): a superseded certificate is revoked once its device uses the newer
   one and the old one hasn't connected for 7 days. A device still presenting the old one is listed on the dashboard
   instead (**A renewed certificate is still in use**).
@@ -275,6 +284,11 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **A renewal task that lost its new key gets a replacement** (v2 as well as v1): EasyEAP replaces the unused
+  certificate it issued, within 14 days and at most 3 times, as it did for the older tasks. A renewal refusal now
+  carries a `code`; renewal tasks keep their waiting request after a refusal that may change (a wrong clock, renewal
+  turned off) and drop it only after a final one. The Linux script asks again with a new key when EasyEAP says the
+  certificate was renewed but nothing reached the computer.
 - Renewal by the Windows setup file and the Linux script starts at the tenant's percentage of the certificate's own
   life instead of the template's fixed days, so a certificate shortened by an expiring CA renews in proportion.
   Existing templates' renewal periods are recalculated for 80 % (User Wi-Fi 30 → 73 days, Device Wi-Fi 45 → 146).
