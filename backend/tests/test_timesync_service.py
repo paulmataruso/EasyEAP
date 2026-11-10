@@ -70,6 +70,8 @@ class FakeChronyd:
             return "\n".join(out) + "\n"
         if cmd == "authdata":
             return "".join(f"{a},{'NTS' if 'nts' in o else '-'},1,30,128,10,0,0,8,64\n" for a, _n, o in self.rows())
+        if cmd == "reselect":
+            return "200 OK\n"
         if cmd == "selectopts":
             addr, change = args[1], args[2]
             if not chrony.is_address(addr):
@@ -371,7 +373,8 @@ def test_a_new_run_reloads_once_even_if_the_file_is_unchanged(host):
     calls = len(host.calls)
     m2 = manager(host)
     assert m2.apply(s) is False   # nothing new to log
-    assert host.calls[calls:] == [("reload", "sources")] and m2.apply(s) is False and len(host.calls) == calls + 1
+    assert host.calls[calls:] == [("reload", "sources"), ("reselect",)]
+    assert m2.apply(s) is False and len(host.calls) == calls + 2
 
 
 def test_new_settings_end_a_fallback_at_once(host):
@@ -541,3 +544,20 @@ def test_api_auditors_read_but_dont_change(api):
     assert api.client.get("/api/system/time").status_code == 200
     assert api.client.put("/api/system/time", json={"servers": []}).status_code == 403
     assert api.client.post("/api/system/time/test", json={"address": "time.example.org"}).status_code == 403
+
+
+def test_chronyd_chooses_again_at_once_after_a_change(host):
+    """Without reselect, changed options apply only at the next measurement (up to a poll interval, 17 minutes on a
+    settled host): the console would show the old reference until then."""
+    m = manager(host)
+    s = settings({"address": "time.example.org"}, only_these=True)
+    m.apply(s)
+    assert host.calls[-1] == ("reselect",)
+    n = len(host.calls)
+    m.reconcile(s, m.observe(s)["sources"])
+    assert host.calls[-1] == ("reselect",) and host.calls.count(("reselect",)) == 2
+    n = len(host.calls)
+    m.reconcile(s, m.observe(s)["sources"])   # nothing to change: no reselect
+    assert ("reselect",) not in host.calls[n:]
+    m.release()
+    assert host.calls[-1] == ("reselect",) and host.noselect == set()

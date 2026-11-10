@@ -14,7 +14,7 @@ const SELECT: Record<string, [string, Tone]> = {
   combined: ['In use', 'valid'],
   not_combined: ['Standby', 'neutral'],
   noselect: ['Switched off', 'neutral'],
-  not_preferred: ['Not used: another server is preferred', 'warn'],
+  not_preferred: ['Standby: another server is preferred', 'neutral'],
   unsynchronised: ['Not usable: not synchronised itself', 'warn'],
   missing_samples: ['Waiting for answers', 'neutral'],
   waits_for_update: ['Waiting for answers', 'neutral'],
@@ -23,7 +23,8 @@ const SELECT: Record<string, [string, Tone]> = {
   waits_for_others: ['Waiting for the others', 'neutral'],
   stale: ['Not usable: no recent answer', 'warn'],
   orphan: ['Not usable', 'warn'],
-  not_trusted: ['Not usable: not trusted', 'warn'],
+  // chronyc: "does not fully agree with sources that have the trust option" (NTS sources get it by default)
+  not_trusted: ['Not used: doesn’t fully agree with the trusted servers', 'warn'],
   falseticker: ['Not used: disagrees with the others', 'crit'],
 }
 
@@ -91,7 +92,11 @@ function TimeBody({ data, now, receivedAt }: { data: TimeConfig; now: Date; rece
   }
   const ours = st.sources.filter((s) => s.ours)
   const others = st.sources.filter((s) => !s.ours)
-  const notPreferred = ours.length > 0 && ours.every((s) => s.select === 'not_preferred' || !s.reachable) && ours.some((s) => s.select === 'not_preferred')
+  // EasyEAP's servers answer but the host's win: they're marked prefer, or (authselectmode mix, chrony's default) they use
+  // NTS and get trust and require, so servers without NTS are used only where they agree with them.
+  const held = (s: TimeSource) => s.select === 'not_preferred' || s.select === 'not_trusted'
+  const hostWins = ours.length > 0 && ours.every((s) => held(s) || !s.reachable) && ours.some(held)
+  const hostNts = others.some((s) => s.authenticated || s.nts) && !ours.some((s) => s.nts)
   const assessment = data.assessment
 
   return (
@@ -115,9 +120,11 @@ function TimeBody({ data, now, receivedAt }: { data: TimeConfig; now: Date; rece
 
       {st.apply_error && <Callout tone="warn" className="mt-4" title="The servers set here aren’t in use">{st.apply_error}</Callout>}
       {st.select_error && <Callout tone="warn" className="mt-4">{st.select_error}</Callout>}
-      {notPreferred && !data.settings.only_these && (
+      {hostWins && !data.settings.only_these && (
         <Callout tone="warn" className="mt-4" title="chronyd prefers the host’s own servers">
-          The host’s configuration marks its own servers <span className="ee-mono">prefer</span>, so chronyd uses these only if all of those fail. Turn on “Use only these servers”, or mark one of these Prefer.
+          {hostNts
+            ? <>The host’s own servers use NTS (authenticated time), so chronyd trusts them first and uses servers without NTS only where they agree. Turn on “Use only these servers”, or use servers with NTS.</>
+            : <>The host’s configuration marks its own servers <span className="ee-mono">prefer</span>, so chronyd uses these only if all of those fail. Turn on “Use only these servers”, or mark one of these Prefer.</>}
         </Callout>
       )}
       {st.mode === 'sntp' && st.problem && <Callout tone="neutral" className="mt-4" title="EasyEAP measures this clock but doesn’t set it">{st.problem}</Callout>}

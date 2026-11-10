@@ -94,6 +94,19 @@ describe('TimePanel', () => {
     expect(screen.getByRole('button', { name: /Edit servers/ })).toBeInTheDocument()
   })
 
+  it('explains that a host with NTS servers trusts them over servers without NTS', async () => {
+    const c = config()
+    c.status = { ...c.status!, sources: [
+      src({ address: '198.51.100.10', name: 'ntp.example.net', select: 'not_trusted' }),
+      src({ address: '198.51.100.11', name: 'ntp.example.net', select: 'not_preferred' }),
+      src({ address: '2001:db8::123', name: 'ntp-nts.example.com', ours: false, select: 'best', prefer: true, authenticated: true }),
+    ] }
+    vi.stubGlobal('fetch', vi.fn(async () => json(200, c)))
+    renderWith(<TimePanel />)
+    expect(await screen.findByText(/use NTS \(authenticated time\), so chronyd trusts them first/)).toBeInTheDocument()
+    expect(screen.getByText('Not used: doesn’t fully agree with the trusted servers')).toBeInTheDocument()
+  })
+
   it('says when the time service has stopped reporting', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json(200, config({ stale: true, assessment: null }))))
     renderWith(<TimePanel />)

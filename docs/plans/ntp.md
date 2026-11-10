@@ -32,6 +32,14 @@ the same servers.
     which sources it switched off itself.
   - It takes an IP, not a name, and it is lost when chronyd restarts or a pool replaces an address.
   - So the service re-applies it every 10 seconds.
+  - A change applies "in the next source selection, e.g. when a new measurement is made, or the reselect command is
+    executed" (chronyc docs). On a settled host the next measurement can be 17 minutes away, so the service runs
+    `reselect` after every selectopts change and every reload. Seen on the demo before that: the removed pool server
+    stayed the reference, and the host's servers stayed "N", for more than 5 minutes.
+- **NTS on the host:** Ubuntu 26.04's own servers use NTS. With `authselectmode mix` (the default), authenticated
+  sources get `trust` and `require`, so a source without NTS is used only where it agrees with them (selectdata `T`:
+  "does not fully agree with sources that have the trust option"). Switched-off sources don't count either way ("Sources
+  specified with the noselect option are ignored"), so with "Use only these servers" plain NTP servers work.
 - **`prefer`:** Ubuntu's pools carry it. If any selectable source has `prefer`, chronyd uses no other source while
   one of those is usable. The admin's servers would never be used unless the host's own servers are switched off,
   hence "Use only these servers", which the console turns on by default.

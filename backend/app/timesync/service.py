@@ -109,6 +109,7 @@ class Manager:
         self.run("reload", "sources")   # a failure raises, and the next round tries again
         changed = self.unloaded or self.reloaded is not False
         self.reloaded, self.unloaded = want, False
+        self.reselect()
         self.applied_revision, self.apply_error = settings.revision, None
         if not changed:                 # the run's first reload of a file chronyd already had
             return False
@@ -219,6 +220,7 @@ class Manager:
         except chrony.ChronyError as exc:
             self.select_error = f"The host's other servers couldn't be switched {'off' if want_off else 'back on'}: {exc} (needs chrony 4.4 or later)"
         if changed:
+            self.reselect()
             if want_off:
                 log.info("Time: the host's own NTP servers are switched off; chronyd uses only EasyEAP's")
             else:
@@ -234,6 +236,17 @@ class Manager:
             except chrony.ChronyError:
                 pass
             self.switched.pop(addr, None)
+        self.reselect()
+
+    def reselect(self) -> None:
+        """Have chronyd choose its sources again now. Changed selection options and a reloaded sources.d otherwise take
+        effect at the next measurement (chronyc: "the next source selection, e.g. when a new measurement is made, or the
+        reselect command is executed"), which can be 17 minutes away: until then the old reference stays in use and in
+        the console."""
+        try:
+            self.run("reselect")
+        except chrony.ChronyError as exc:
+            log.debug("Time: chronyc reselect failed: %s", exc)
 
 
 # ── Without chronyd ──────────────────────────────────────────────────────────
