@@ -60,7 +60,7 @@ services:
 
   easyeap-api:
     build: ../backend
-    image: easyeap-api:${EASYEAP_VERSION:-1.1.0}
+    image: easyeap-api:${EASYEAP_VERSION:-1.2.0}
     restart: unless-stopped
     command: ["/app/entrypoint.sh", "api"]
     environment: *api-env
@@ -83,7 +83,7 @@ services:
       start_period: 40s
 
   easyeap-worker:
-    image: easyeap-api:${EASYEAP_VERSION:-1.1.0}
+    image: easyeap-api:${EASYEAP_VERSION:-1.2.0}
     restart: unless-stopped
     command: ["/app/entrypoint.sh", "worker"]
     environment: *api-env
@@ -96,7 +96,7 @@ services:
 
   # The switch audit's SNMP poller (docs/switch-audit.md). Polls only switches with monitoring set up; idle otherwise.
   easyeap-collector:
-    image: easyeap-api:${EASYEAP_VERSION:-1.1.0}
+    image: easyeap-api:${EASYEAP_VERSION:-1.2.0}
     restart: unless-stopped
     command: ["/app/entrypoint.sh", "collector"]
     environment:
@@ -113,7 +113,7 @@ services:
       easyeap-api: { condition: service_healthy }
 
   easyeap-syslog:
-    image: easyeap-api:${EASYEAP_VERSION:-1.1.0}
+    image: easyeap-api:${EASYEAP_VERSION:-1.2.0}
     restart: unless-stopped
     command: ["/app/entrypoint.sh", "syslog"]
     environment:
@@ -138,7 +138,7 @@ services:
     # take their time from the host's clock, which the host's chronyd keeps. This service writes EasyEAP's servers to
     # chronyd's sources.d and steers it through its control socket (docs/plans/ntp.md). Without chrony on the host it
     # only measures the clock.
-    image: easyeap-api:${EASYEAP_VERSION:-1.1.0}
+    image: easyeap-api:${EASYEAP_VERSION:-1.2.0}
     restart: unless-stopped
     command: ["/app/entrypoint.sh", "time"]
     environment:
@@ -167,7 +167,7 @@ services:
 
   easyeap-radius:
     build: ../services/radius
-    image: easyeap-radius:${EASYEAP_VERSION:-1.1.0}
+    image: easyeap-radius:${EASYEAP_VERSION:-1.2.0}
     restart: unless-stopped
     environment:
       EASYEAP_API_URL: http://easyeap-api:8000
@@ -191,7 +191,7 @@ services:
     build:
       context: ..
       dockerfile: deploy/proxy/Dockerfile
-    image: easyeap-proxy:${EASYEAP_VERSION:-1.1.0}
+    image: easyeap-proxy:${EASYEAP_VERSION:-1.2.0}
     restart: unless-stopped
     environment:
       EASYEAP_HOSTNAME: ${EASYEAP_HOSTNAME}

@@ -13,8 +13,9 @@ an acknowledgement, and a fix is coordinated with you before anything is disclos
 
 | Version | Supported with security fixes |
 |---|---|
-| 1.1.x | Yes |
-| 1.0.x | No: upgrade to 1.1.x (in place; see [DEPLOYMENT.md](DEPLOYMENT.md#upgrades)) |
+| 1.2.x | Yes |
+| 1.1.x | No: upgrade to 1.2.x (in place; see [DEPLOYMENT.md](DEPLOYMENT.md#upgrades)) |
+| 1.0.x | No: upgrade to 1.2.x (in place; see [DEPLOYMENT.md](DEPLOYMENT.md#upgrades)) |
 
 ## Threat model
 

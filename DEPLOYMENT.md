@@ -125,11 +125,11 @@ the same key (`deploy/secrets/tls.key`), or their renewals fail.
 ## Upgrades
 
 Make a backup first (System health → Backup and restore → Create backup, then Download). Then check out the
-release you want from [Releases](https://github.com/paulmataruso/EasyEAP/releases), here 1.1.0, and rebuild:
+release you want from [Releases](https://github.com/paulmataruso/EasyEAP/releases), here 1.2.0, and rebuild:
 
 ```sh
-cd /opt/easyeap && git fetch --tags && git checkout v1.1.0
-cd deploy && sed -i 's/^EASYEAP_VERSION=.*/EASYEAP_VERSION=1.1.0/' .env
+cd /opt/easyeap && git fetch --tags && git checkout v1.2.0
+cd deploy && sed -i 's/^EASYEAP_VERSION=.*/EASYEAP_VERSION=1.2.0/' .env
 docker compose build && docker compose up -d
 ```
 
@@ -138,7 +138,17 @@ docker compose build && docker compose up -d
 Migrations run automatically when the API starts (under an advisory lock). RADIUS keeps authenticating from its
 local snapshot while the API restarts.
 
-**Upgrading from 1.0.x to 1.1.0:**
+**Upgrading from 1.1.x to 1.2.0:**
+
+- No database migration.
+- A new container, `easyeap-time`, starts with `docker compose up -d`. It mounts the host's `/run/chrony` and
+  `/etc/chrony/sources.d` (see the chrony requirement under [Requirements](#requirements)). Until you set NTP servers in
+  System → Time it changes nothing on the host: it reports the clock, and System health shows it.
+- Windows setup files made before 1.2.0 fail on a PC that doesn't trust EasyEAP's web certificate (such as the
+  self-signed one `install.sh` makes), and their renewal tasks can't renew: download a new setup file and run it on
+  those PCs (or use the portal's Windows helper again).
+
+**Upgrading from 1.0.x** (to 1.1.0 or straight to 1.2.0; the 1.2.0 notes above apply as well):
 
 - Migrations 0004 to 0015 run by themselves when the API starts.
 - Migration 0014 turns automatic renewal on for every tenant, starting at 80 % of each certificate's life, and sets

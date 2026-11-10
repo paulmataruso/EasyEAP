@@ -1,6 +1,6 @@
 # Progress
 
-Status as of 2026-11-09 (release 1.1.0). What's left to build and to test on real gear is in [TODO.md](TODO.md).
+Status as of 2026-11-10 (release 1.2.0). What's left to build and to test on real gear is in [TODO.md](TODO.md).
 
 ## Complete
 
