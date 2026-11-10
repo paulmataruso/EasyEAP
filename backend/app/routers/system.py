@@ -111,7 +111,7 @@ def check_time(s: Session, check, now: datetime) -> None:
     tone, line = tc.assess(st, tc.load_for_display(s))
     if tone == "valid":
         off = st.get("offset")
-        within = f", {abs(off) * 1000:.1f} ms {'fast' if off > 0 else 'slow'}" if isinstance(off, int | float) else ""
+        within = f", {tc.fmt_offset(off)}" if isinstance(off, int | float) else ""
         if st.get("mode") == "chrony":
             detail = f"Synchronised to {st.get('reference') or 'an NTP server'} (stratum {st.get('stratum')}){within}"
         else:

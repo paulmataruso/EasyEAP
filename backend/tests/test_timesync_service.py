@@ -575,3 +575,9 @@ def test_switching_the_hosts_servers_back_on_asks_them_for_a_measurement(host):
     m.reconcile(off, m.observe(off)["sources"])
     assert [c for c in host.calls[n:] if c[0] in ("reselect", "burst")] == [
         ("reselect",), ("burst", "1/4", "203.0.113.1"), ("burst", "1/4", "203.0.113.2")]
+
+
+@pytest.mark.parametrize(("off", "text"), [(0.0, "exact"), (0.000047, "47 µs fast"), (-0.0012, "1.2 ms slow"),
+                                           (0.25, "250 ms fast"), (-1.5, "1.50 s slow"), (125.0, "2 min 5 s fast")])
+def test_offsets_read_as_the_console_writes_them(off, text):
+    assert config.fmt_offset(off) == text

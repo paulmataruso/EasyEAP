@@ -125,6 +125,24 @@ def save(s: Any, body: SettingsIn, actor: str) -> TimeSettings:
     return new
 
 
+def fmt_offset(off: float) -> str:
+    """Positive: this clock is ahead. Written as the console writes it (api/time.ts fmtOffset)."""
+    a = abs(off)
+    if a < 0.000_000_5:
+        return "exact"
+    if a < 0.001:
+        n = f"{a * 1e6:.0f} µs"
+    elif a < 0.01:
+        n = f"{a * 1e3:.1f} ms"
+    elif a < 1:
+        n = f"{a * 1e3:.0f} ms"
+    elif a < 60:
+        n = f"{a:.2f} s"
+    else:
+        n = f"{int(a // 60)} min {round(a % 60)} s"
+    return f"{n} {'fast' if off > 0 else 'slow'}"
+
+
 def assess(st: dict[str, Any], settings: TimeSettings) -> tuple[str, str]:
     """(tone, one line) for the health check and the log: valid, warn or crit."""
     off = st.get("offset")
@@ -138,9 +156,9 @@ def assess(st: dict[str, Any], settings: TimeSettings) -> tuple[str, str]:
     elif st.get("kernel_synchronised") is False:
         return "crit", "the clock isn't synchronised: no time daemon on the host is keeping it"
     if off is not None and abs(off) >= CRIT_OFFSET:
-        return "crit", f"the clock is {abs(off):.2f} s {'fast' if off > 0 else 'slow'}"
+        return "crit", f"the clock is {fmt_offset(off)}"
     if off is not None and abs(off) >= WARN_OFFSET:
-        return "warn", f"the clock is {abs(off) * 1000:.0f} ms {'fast' if off > 0 else 'slow'}"
+        return "warn", f"the clock is {fmt_offset(off)}"
     if st.get("apply_error"):
         return "warn", f"EasyEAP's NTP servers aren't applied: {st['apply_error']}"
     if st.get("select_error"):
