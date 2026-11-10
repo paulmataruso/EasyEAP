@@ -193,6 +193,7 @@ class Manager:
         present = {s["address"]: s for s in sources if s["resolved"]}
         names_off = {n.lower() for n in self.switched.values()}
         changed = False
+        back_on: list[str] = []
         self.select_error = None
         if falling_back:
             self.select_error = ("None of EasyEAP's servers could set the clock for 10 minutes, so the host's own servers are in "
@@ -214,13 +215,14 @@ class Manager:
                     if s["noselect"]:
                         self.run("selectopts", addr, "-noselect")
                         changed = True
+                        back_on.append(addr)
                     self.switched.pop(addr, None)
             for addr in [a for a in self.switched if a not in present]:
                 self.switched.pop(addr)   # gone: chronyd restarted without it, or a pool replaced it (the new one is matched by name)
         except chrony.ChronyError as exc:
             self.select_error = f"The host's other servers couldn't be switched {'off' if want_off else 'back on'}: {exc} (needs chrony 4.4 or later)"
         if changed:
-            self.reselect()
+            self.reselect(back_on)
             if want_off:
                 log.info("Time: the host's own NTP servers are switched off; chronyd uses only EasyEAP's")
             else:
@@ -230,23 +232,28 @@ class Manager:
 
     def release(self) -> None:
         """Switch back on everything EasyEAP switched off (the service is stopping: nobody would watch the clock)."""
+        back_on = []
         for addr in list(self.switched):
             try:
                 self.run("selectopts", addr, "-noselect")
+                back_on.append(addr)
             except chrony.ChronyError:
                 pass
             self.switched.pop(addr, None)
-        self.reselect()
+        self.reselect(back_on)
 
-    def reselect(self) -> None:
+    def reselect(self, measure: list[str] | None = None) -> None:
         """Have chronyd choose its sources again now. Changed selection options and a reloaded sources.d otherwise take
         effect at the next measurement (chronyc: "the next source selection, e.g. when a new measurement is made, or the
-        reselect command is executed"), which can be 17 minutes away: until then the old reference stays in use and in
-        the console."""
+        reselect command is executed"), which can be 17 minutes away on a settled host. A source chosen by reselect
+        still "waits for a new measurement" before it becomes the reference, so the sources switched back on are asked
+        for one good measurement now (`burst 1/4`: at most four requests each), then go back to their usual polling."""
         try:
             self.run("reselect")
+            for addr in measure or ():
+                self.run("burst", "1/4", addr)
         except chrony.ChronyError as exc:
-            log.debug("Time: chronyc reselect failed: %s", exc)
+            log.debug("Time: chronyc reselect or burst failed: %s", exc)
 
 
 # ── Without chronyd ──────────────────────────────────────────────────────────

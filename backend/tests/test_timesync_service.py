@@ -70,7 +70,7 @@ class FakeChronyd:
             return "\n".join(out) + "\n"
         if cmd == "authdata":
             return "".join(f"{a},{'NTS' if 'nts' in o else '-'},1,30,128,10,0,0,8,64\n" for a, _n, o in self.rows())
-        if cmd == "reselect":
+        if cmd in ("reselect", "burst"):
             return "200 OK\n"
         if cmd == "selectopts":
             addr, change = args[1], args[2]
@@ -560,4 +560,18 @@ def test_chronyd_chooses_again_at_once_after_a_change(host):
     m.reconcile(s, m.observe(s)["sources"])   # nothing to change: no reselect
     assert ("reselect",) not in host.calls[n:]
     m.release()
-    assert host.calls[-1] == ("reselect",) and host.noselect == set()
+    assert host.noselect == set()
+    assert host.calls[-3:] == [("reselect",), ("burst", "1/4", "203.0.113.1"), ("burst", "1/4", "203.0.113.2")]
+
+
+def test_switching_the_hosts_servers_back_on_asks_them_for_a_measurement(host):
+    m = manager(host)
+    s = settings({"address": "time.example.org"}, only_these=True)
+    m.apply(s)
+    m.reconcile(s, m.observe(s)["sources"])
+    assert not any(c[0] == "burst" for c in host.calls)   # switching off needs none: EasyEAP's servers are polled anyway
+    n = len(host.calls)
+    off = settings({"address": "time.example.org"}, revision=2)
+    m.reconcile(off, m.observe(off)["sources"])
+    assert [c for c in host.calls[n:] if c[0] in ("reselect", "burst")] == [
+        ("reselect",), ("burst", "1/4", "203.0.113.1"), ("burst", "1/4", "203.0.113.2")]

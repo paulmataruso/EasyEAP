@@ -36,6 +36,9 @@ the same servers.
     executed" (chronyc docs). On a settled host the next measurement can be 17 minutes away, so the service runs
     `reselect` after every selectopts change and every reload. Seen on the demo before that: the removed pool server
     stayed the reference, and the host's servers stayed "N", for more than 5 minutes.
+  - After `reselect` the chosen source still "waits for a new measurement" (state `U`). So the sources switched back
+    on also get `burst 1/4 <IP>` (one good measurement, at most four requests), then return to normal polling. On the
+    demo the reference moved within seconds (chronyc 4.6.1 → chronyd 4.8).
 - **NTS on the host:** Ubuntu 26.04's own servers use NTS. With `authselectmode mix` (the default), authenticated
   sources get `trust` and `require`, so a source without NTS is used only where it agrees with them (selectdata `T`:
   "does not fully agree with sources that have the trust option"). Switched-off sources don't count either way ("Sources
