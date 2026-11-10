@@ -1,5 +1,5 @@
 #!/bin/sh
-# EasyEAP api/worker/collector entrypoint.
+# EasyEAP api/worker/collector/syslog/time entrypoint.
 set -eu
 role="${1:-api}"
 
@@ -41,6 +41,11 @@ case "$role" in
     # Syslog from monitored switches (app/switchaudit/syslog.py): the database only, no OpenBao.
     wait_for python -c "import psycopg; from app.config import get_settings as g; psycopg.connect(g().database_url.replace('postgresql+psycopg','postgresql')).close()"
     exec python -m app.switchaudit.syslog
+    ;;
+  time)
+    # The host's NTP client (app/timesync/service.py): chronyd's control socket and sources.d, and the database only.
+    wait_for python -c "import psycopg; from app.config import get_settings as g; psycopg.connect(g().database_url.replace('postgresql+psycopg','postgresql')).close()"
+    exec python -m app.timesync.service
     ;;
   *)
     exec "$@"

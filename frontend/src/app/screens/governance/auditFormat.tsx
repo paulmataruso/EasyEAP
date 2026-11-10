@@ -66,6 +66,7 @@ export const actionLabels: Record<string, string> = {
   'system.backup_restored': 'Backup restored',
   'system.restore_started': 'Restore started',
   'system.syslog_added': 'Syslog destination added',
+  'system.time_updated': 'NTP servers changed',
   'system.syslog_removed': 'Syslog destination removed',
   'system.syslog_updated': 'Syslog destination changed',
   'renewal.settings_updated': 'Renewal settings changed',

@@ -6,6 +6,11 @@ EasyEAP runs as one Docker Compose project (`easyeap`) on a Linux host. One depl
 
 - Linux host with Docker Engine 24+ and Docker Compose v2, 2 vCPU, 4 GB RAM, 20 GB disk (more for long event retention).
 - `openssl` on the host (the installer generates secrets with it).
+- chrony as the host's time daemon, so the NTP servers can be set from the console (System → Time). Every EasyEAP
+  container, the database and every log take their time from the host's clock. The `easyeap-time` container uses
+  chronyd's control socket (`/run/chrony`) and writes `/etc/chrony/sources.d/easyeap.sources`; chrony.conf must
+  read that directory (`sourcedir /etc/chrony/sources.d`, there by default on Ubuntu and Debian). On a host with
+  another time daemon, EasyEAP only measures the clock against the servers set there.
 - A DNS name for the console, e.g. `easyeap.msp.example`, and a trusted TLS certificate for it.
 - Network reachability from every controller and switch (Wi-Fi, wired 802.1X, MAC authentication) to the RADIUS
   ports, and from the host to each customer's domain controllers on LDAPS (TCP 636), normally over the site-to-site

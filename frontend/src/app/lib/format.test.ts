@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ago, daysUntil, duration, fmtDate, fmtDateTime, fmtFingerprint, fmtSerial, plural, relative, remaining } from './format'
+import { ago, daysUntil, duration, fmtDate, fmtDateTime, fmtFingerprint, fmtStamp, fmtSerial, plural, relative, remaining } from './format'
 
 const now = new Date('2026-11-05T10:42:00Z')
 const at = (ms: number) => new Date(now.getTime() + ms).toISOString()
@@ -10,6 +10,15 @@ describe('dates', () => {
     expect(fmtDateTime('2027-01-02T03:04:00Z')).toMatch(/2027/)
     expect(fmtDate(null)).toBe('—')
     expect(fmtDate('not a date')).toBe('—')
+  })
+
+  it('gives a log entry its date as well as its time, to the second', () => {
+    const local = new Date('2026-11-09T22:54:07Z')
+    const stamp = fmtStamp(local.toISOString())
+    expect(stamp).toMatch(/2026/)
+    expect(stamp).toContain(String(local.getDate()).padStart(2, '0'))
+    expect(stamp).toContain(`${String(local.getHours()).padStart(2, '0')}:${String(local.getMinutes()).padStart(2, '0')}:07`)
+    expect(fmtStamp(null)).toBe('—')
   })
 
   it('describes the future as the future, never "just now"', () => {

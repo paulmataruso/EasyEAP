@@ -12,6 +12,20 @@ versions follow [Semantic Versioning](https://semver.org/).
   and runs it the same way, in the same window. **Download the .cmd instead** still gives the file. The program isn't
   code-signed yet: SmartScreen asks once (**More info**, then **Run anyway**), and Smart App Control, where it's on,
   blocks it as it blocks the `.cmd`.
+- **Time (NTP) from the console.** System → Time sets the NTP servers the host's chrony uses (servers or pools,
+  NTS, prefer), with a test for each, and an option to use only those servers. It shows whether the clock is
+  synchronised, to what, how far off it is, each server's state, and whether your own computer's clock agrees. A new
+  container, **`easyeap-time`**, applies the settings through chronyd's control socket and a file in its
+  `sources.d`, and checks the clock every 10 seconds. If none of the chosen servers can set the clock within 10
+  minutes, the host's own servers keep it until one can. Without chrony on the host it measures the clock against
+  the servers instead. System health warns when the clock is 100 ms off and is critical at 1 s or when it isn't
+  synchronised; the changes go to the system log and to remote syslog. The panel also gives the Cisco lines that
+  point switches at the same servers.
+
+### Changed
+
+- Log views show the date as well as the time, to the second, with the time zone named: Device syslog, the system
+  log, the Admin log and the policy publish status. The authentication log keeps its day headings.
 
 ### Fixed
 

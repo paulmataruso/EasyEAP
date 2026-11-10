@@ -6,6 +6,7 @@ const dateFmt = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short
 const dateTimeFmt = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short' })
 const timeFmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 const timeSecFmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+const stampFmt = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
 const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
 
 const valid = (iso: string | null | undefined): iso is string => !!iso && !Number.isNaN(new Date(iso).getTime())
@@ -14,6 +15,9 @@ const valid = (iso: string | null | undefined): iso is string => !!iso && !Numbe
 export const fmtDate = (iso: string | null | undefined) => (valid(iso) ? dateFmt.format(new Date(iso)) : '—')
 /** "5 Nov 2026, 10:42 GMT+1" */
 export const fmtDateTime = (iso: string | null | undefined) => (valid(iso) ? dateTimeFmt.format(new Date(iso)) : '—')
+/** "09 Nov 2026, 10:42:07": a log entry's time, to the second, in fixed width. Name the zone (timeZoneName) in the
+ * column or line it sits in. */
+export const fmtStamp = (iso: string | null | undefined) => (valid(iso) ? stampFmt.format(new Date(iso)) : '—')
 /** "10:42" (local); use only beside a date or in a list already grouped by day. */
 export const fmtTime = (iso: string | null | undefined, seconds = false) => (valid(iso) ? (seconds ? timeSecFmt : timeFmt).format(new Date(iso)) : '—')
 export const timeZoneName = tz

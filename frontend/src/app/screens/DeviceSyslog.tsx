@@ -7,7 +7,7 @@ import { Eraser, Pause, Play, Search } from 'lucide-react'
 import { MAX_HELD, useLiveSyslog, type LiveDevice, type LiveMessage, type Receiver, type UnknownSources } from '../api/deviceSyslog'
 import { vendorLabels } from '../api/radius'
 import { useTenant } from '../api/tenant'
-import { ago, fmtCount, fmtDateTime, fmtTime, plural } from '../lib/format'
+import { ago, fmtCount, fmtStamp, plural, timeZoneName } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { paths } from '../routes'
 import { Btn, Callout, Chip, Empty, ErrorState, ESelect, HealthDot, LoadingBlock, PageHeader, Panel, Seg, type Tone } from '../ui'
@@ -142,19 +142,19 @@ function MessageTable({ messages, liveFrom, showDevice }: { messages: LiveMessag
       <table className="ee-table">
         <caption className="sr-only">Device syslog, newest first</caption>
         <thead className="sticky top-0 z-[1] bg-[var(--ee-panel-solid)]">
-          <tr><th className="pt-2.5">Time</th>{showDevice && <th className="pt-2.5">Device</th>}<th className="pt-2.5">Message</th><th className="pt-2.5">Port · client</th><th className="pt-2.5 w-full">Text</th></tr>
+          <tr><th className="pt-2.5">Time ({timeZoneName})</th>{showDevice && <th className="pt-2.5">Device</th>}<th className="pt-2.5">Message</th><th className="pt-2.5">Port · client</th><th className="pt-2.5 w-full">Text</th></tr>
         </thead>
         <tbody>
           {messages.map((m) => (
             // The key changes when a repeat updates the row, so it glows again.
             <tr key={`${m.id}:${m.seq}`} className={liveFrom !== null && m.seq > liveFrom ? 'ee-arrive' : undefined}>
-              <td className="whitespace-nowrap align-top ee-num text-[12.5px]" title={m.count > 1 ? `${fmtDateTime(m.first_at)} – ${fmtDateTime(m.last_at)}` : fmtDateTime(m.last_at)}>
-                {fmtTime(m.last_at, true)}
+              <td className="whitespace-nowrap align-top ee-num text-[12.5px]" title={m.count > 1 ? `First ${fmtStamp(m.first_at)}, last ${fmtStamp(m.last_at)}` : undefined}>
+                {fmtStamp(m.last_at)}
               </td>
               {showDevice && <td className="whitespace-nowrap align-top text-[12.5px]">{m.device ?? '—'}{m.source && <span className="block ee-mono text-[11.5px] ee-ink-3">{m.source}</span>}</td>}
               <td className="whitespace-nowrap align-top">
                 <Chip tone={sevTone(m.severity)} title={SEVERITY[m.severity] ?? `Severity ${m.severity}`}><span className="ee-mono text-[12px]">{m.tag}</span></Chip>
-                {m.count > 1 && <span className="ml-1.5 ee-small ee-ink-2 ee-num" title={`${m.count} times since ${fmtTime(m.first_at, true)}`}>×{m.count}</span>}
+                {m.count > 1 && <span className="ml-1.5 ee-small ee-ink-2 ee-num" title={`${m.count} times since ${fmtStamp(m.first_at)}`}>×{m.count}</span>}
               </td>
               <td className="whitespace-nowrap align-top text-[12.5px]">
                 {m.port && <span className="block ee-mono">{m.port}</span>}

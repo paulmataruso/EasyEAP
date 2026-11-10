@@ -74,6 +74,7 @@ def health(p: Principal = Depends(platform("platform:read")), s: Session = Depen
             "No recent heartbeat: device syslog isn't being received. Check the easyeap-syslog container."
         check("switch_syslog", salive, "valid" if salive else "warn", "Running" if salive else "Not running", detail,
               last_seen_at=slast.isoformat() if slast else None)
+    check_time(s, check, now)
     from app.logs import syslog
     dests = [d for d in syslog.load_destinations(s) if d.enabled]
     if dests:
@@ -96,6 +97,29 @@ def health(p: Principal = Depends(platform("platform:read")), s: Session = Depen
     backup = s.get(m.PlatformSetting, "last_backup")
     return {"version": __version__, "checked_at": now.isoformat(), "checks": checks, "jobs": {"queued": queued, "failed_24h": failed, "recent_failed": recent_failed},
             "backup": backup.value if backup else None}
+
+
+def check_time(s: Session, check, now: datetime) -> None:
+    """The host's clock, as the time service (easyeap-time) last reported it: every log and certificate depends on it."""
+    from app.timesync import config as tc
+    st = tc.load_status(s)
+    at = datetime.fromisoformat(st["at"]) if st and st.get("at") else None
+    if at is None or (now - at).total_seconds() > tc.STALE_SECONDS:
+        check("time", False, "warn", "Not reporting", "No recent report from the time service: the clock isn't being watched. "
+              "Check the easyeap-time container.", last_seen_at=at.isoformat() if at else None)
+        return
+    tone, line = tc.assess(st, tc.load_for_display(s))
+    if tone == "valid":
+        off = st.get("offset")
+        within = f", {abs(off) * 1000:.1f} ms {'fast' if off > 0 else 'slow'}" if isinstance(off, int | float) else ""
+        if st.get("mode") == "chrony":
+            detail = f"Synchronised to {st.get('reference') or 'an NTP server'} (stratum {st.get('stratum')}){within}"
+        else:
+            detail = f"Synchronised by the host's time daemon{within}"
+        check("time", True, "valid", "Synchronised", detail, last_seen_at=at.isoformat())
+        return
+    label = {"crit": "Not synchronised" if "isn't synchronised" in line else "Clock off"}.get(tone, "Attention")
+    check("time", False, tone, label, line[:1].upper() + line[1:], last_seen_at=at.isoformat())
 
 
 def check_pki(check) -> None:

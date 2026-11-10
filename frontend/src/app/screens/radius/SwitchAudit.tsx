@@ -14,7 +14,7 @@ import {
 } from '../../api/switchAudit'
 import { useReveal } from '../../api/oneTime'
 import { useTenant } from '../../api/tenant'
-import { ago, fmtDateTime } from '../../lib/format'
+import { ago, fmtDateTime, fmtStamp } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
 import { paths } from '../../routes'
 import { Btn, Callout, Chip, CopyButton, EDialog, ESelect, ESwitch, ErrorState, Field, FillSecretButton, LoadingBlock, OneTimeSecret, Seg, SeverityChip, errorMessage, toast, toastError } from '../../ui'
@@ -197,7 +197,7 @@ function SwitchSays({ lines, now, compact }: { lines: SyslogLine[]; now: Date; c
     <ul className={`ee-small ${compact ? 'mt-1 ee-ink-3' : 'ee-ink-2'} space-y-0.5`} aria-label="What the switch says">
       {lines.map((l) => (
         <li key={l.id} className="min-w-0 break-words">
-          {compact && 'The switch says: '}<span className="ee-mono text-[12px]">{l.tag}</span>{l.count > 1 && ` ×${l.count}`} · {ago(l.last_at, now)}
+          {compact && 'The switch says: '}<span className="ee-mono text-[12px]">{l.tag}</span>{l.count > 1 && ` ×${l.count}`} · <time dateTime={l.last_at} title={ago(l.last_at, now)} className="ee-num">{fmtStamp(l.last_at)}</time>
           {!compact && l.port && <> · <span className="ee-mono text-[12px]">{l.port}</span></>}
           {!compact && l.mac && <> · <span className="ee-mono text-[12px]">{macText(l.mac)}</span></>}
           {' · '}{l.text}

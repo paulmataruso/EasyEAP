@@ -141,6 +141,30 @@ after `clock`, `off`, `account` and `ca`, and ask again; after any other reason 
 - **A restore can't regain CA access.** The backup came from an installation without recovery keys and is more than
   32 days old. Use a more recent backup.
 
+## Time (System → Time)
+
+Every EasyEAP log, certificate and session takes its time from the host's clock, which the host's chrony keeps.
+
+- **"The time service isn't reporting."** The `easyeap-time` container isn't running, or can't reach the database.
+  It restarts on its own. It also restarts when chrony on the host is stopped and started again, to find chronyd's
+  new control socket.
+- **"EasyEAP measures this clock but doesn't set it."** The host has no chrony (it may use systemd-timesyncd). Install
+  chrony on the host to set the servers from the console. EasyEAP finds it within the hour, or straight away when
+  `easyeap-time` restarts.
+- **"chronyd isn't using …/easyeap.sources".** The host's `chrony.conf` doesn't read `/etc/chrony/sources.d`. Add the
+  line `sourcedir /etc/chrony/sources.d` there and restart chrony.
+- **"chronyd prefers the host's own servers".** The host's configuration marks its own servers `prefer` (Ubuntu's
+  do), so chronyd uses the servers set in EasyEAP only if all of those fail. Turn on **Use only these servers**, or
+  mark one of yours Prefer.
+- **A server says "Not answering".** UDP 123 to it is blocked, or the name doesn't resolve from the host. An NTS
+  server also needs TCP 4460. **Test** in the dialog asks from the EasyEAP host over plain NTP.
+- **"None of EasyEAP's servers could set the clock for 10 minutes".** The servers answer, but chronyd won't use them.
+  The usual cause is a listed NTS server that can't be reached: while one is listed, chronyd sets the clock only when
+  an NTS server agrees. Meanwhile the host's own servers keep the clock, and EasyEAP tries its servers alone again
+  an hour later.
+- **"Your computer's clock is … ahead of this server's".** Only times such as "3 minutes ago" are affected, because
+  your browser works them out. Times in the logs come from the server.
+
 ## Useful commands
 
 ```sh

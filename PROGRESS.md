@@ -14,6 +14,9 @@ Status as of 2026-11-09 (release 1.1.0). What's left to build and to test on rea
 - [x] Full backup and restore from the console and the first-run page (age-encrypted `.easyeap`, step-by-step
       progress, automatic rollback); `backup.sh` / `restore.sh` wrap the same engine for scheduling
 - [x] System log (30 days) and remote syslog (TLS/TCP/UDP, RFC 5424/3164, text/JSON, at-least-once with catch-up)
+- [x] Time from the console (`easyeap-time`): the host chrony's NTP servers (server/pool, NTS, prefer, only these,
+      with a fallback), clock status, health checks and alerts, an SNTP measurement without chrony; every log view
+      shows the date and time to the second with the zone
 - [x] Lab profile: Samba AD domain controller, `eapol_test` Wi-Fi client, and a pretend Cisco Catalyst (net-snmp) for
       the switch audit
 - [x] Development override with a hot-reloading API

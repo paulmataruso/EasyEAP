@@ -6,7 +6,7 @@ import { ChevronRight } from 'lucide-react'
 import { cn } from '@/ui/lib'
 import type { AuthEvent, ClientLite, RuleLite, VlanLite } from '../../api/events'
 import { controllerFor } from '../../api/events'
-import { ago, fmtDate, fmtDateTime, fmtTime, timeZoneName } from '../../lib/format'
+import { ago, fmtDate, fmtDateTime, fmtStamp, fmtTime, timeZoneName } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
 import { paths } from '../../routes'
 import { OutcomeChip, VlanTag } from '../../ui'
@@ -108,7 +108,7 @@ export function EventTable({ tid, events, lookups, onOpen, compact, selectedId, 
                   <tr data-clickable="true" aria-selected={selectedId === e.id || undefined} onClick={open(e)}>
                     <td className="whitespace-nowrap">
                       <button type="button" data-open className="ee-rowlink ee-num text-left" title={fmtDateTime(e.at)} aria-label={`Details for the ${e.result === 'accept' ? 'accepted' : 'rejected'} attempt by ${e.username ?? 'unknown user'} at ${fmtDateTime(e.at)}`}>
-                        {compact ? ago(e.at, now) : fmtTime(e.at, true)}
+                        {compact ? ago(e.at, now) : groupByDay ? fmtTime(e.at, true) : fmtStamp(e.at)}
                       </button>
                     </td>
                     <td className="max-w-[240px]">
@@ -152,7 +152,7 @@ export function EventTable({ tid, events, lookups, onOpen, compact, selectedId, 
                   </div>
                   <p className={cn('mt-1.5 text-[13px]', e.result === 'accept' && 'ee-ink-2')}>{reasonLine(e, lookups.rules)}</p>
                   <p className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[12px] ee-ink-3">
-                    <span className="ee-num">{groupByDay ? fmtTime(e.at, true) : ago(e.at, now)}</span>
+                    <span className="ee-num">{groupByDay ? fmtTime(e.at, true) : compact ? ago(e.at, now) : fmtStamp(e.at)}</span>
                     {e.calling_station_id && <span className="ee-mono">{e.calling_station_id}</span>}
                     {!compact && <span>{controllerText(e, lookups.clients)} · {networkLine(e)}</span>}
                     {!compact && e.vlan_id !== null && <span>VLAN {e.vlan_id}{e.monitor ? ` (${MONITOR_VLAN_NOTE.toLowerCase()})` : ''}</span>}

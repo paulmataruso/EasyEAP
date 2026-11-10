@@ -18,9 +18,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_
 # pg_dump/pg_restore must match the server's major version (PostgreSQL 18), so the client comes from the PostgreSQL
 # project's own Debian repository (set up by Debian's postgresql-common helper, which pins its signing key).
 # krb5-user: ktutil, which derives the autoenrollment service account's keys with the salt the domain controller
-# reports (app/autoenroll/account.py).
+# reports (app/autoenroll/account.py). chrony: its chronyc, which the time service (easyeap-time) uses to steer the
+# host's chronyd through its control socket; the package's chronyd never runs in the image.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini postgresql-common libgssapi-krb5-2 krb5-user \
+ && apt-get install -y --no-install-recommends ca-certificates tini postgresql-common libgssapi-krb5-2 krb5-user chrony \
  && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
  && apt-get install -y --no-install-recommends postgresql-client-18 \
  && rm -rf /var/lib/apt/lists/* \

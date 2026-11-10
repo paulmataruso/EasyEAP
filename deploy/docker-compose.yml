@@ -133,6 +133,38 @@ services:
     depends_on:
       easyeap-api: { condition: service_healthy }
 
+  easyeap-time:
+    # The host's NTP client, set up in the console (System → Time): every EasyEAP container, the database and every log
+    # take their time from the host's clock, which the host's chronyd keeps. This service writes EasyEAP's servers to
+    # chronyd's sources.d and steers it through its control socket (docs/plans/ntp.md). Without chrony on the host it
+    # only measures the clock.
+    image: easyeap-api:${EASYEAP_VERSION:-1.1.0}
+    restart: unless-stopped
+    command: ["/app/entrypoint.sh", "time"]
+    environment:
+      <<: *api-env
+      EASYEAP_DB_OWNER_PASSWORD_FILE: ""
+      EASYEAP_AGENT_TOKEN: ""
+      EASYEAP_SESSION_SECRET: ""
+    secrets: [db_app_password]
+    # chronyd's socket directory belongs to its own user, mode 0700, and only its Unix socket accepts changes: root with
+    # DAC_OVERRIDE (and no other capability) can use it. SELinux hosts would refuse the socket to a container's label.
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE]
+    security_opt: ["no-new-privileges:true", "label=disable"]
+    volumes:
+      # Same path as on the host: chronyc makes its reply socket here, and chronyd (AppArmor on Ubuntu) answers only
+      # under /run/chrony. On a host without chrony Docker creates an empty directory, which systemd re-owns if chrony
+      # is installed later.
+      - /run/chrony:/run/chrony
+      - /etc/chrony/sources.d:/etc/chrony/sources.d   # easyeap.sources: EasyEAP's servers, read again at every chronyd start
+    # No secrets volume (it holds OpenBao's tokens): during a restore the database refuses connections, and the service
+    # carries on with the settings it last read.
+    networks: [data, egress]        # egress: NTP checks when the host has no chrony
+    depends_on:
+      easyeap-api: { condition: service_healthy }
+
   easyeap-radius:
     build: ../services/radius
     image: easyeap-radius:${EASYEAP_VERSION:-1.1.0}
