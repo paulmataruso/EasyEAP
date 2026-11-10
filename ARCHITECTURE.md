@@ -24,6 +24,7 @@ flowchart LR
   end
   collector["easyeap-collector<br/>switch audit (SNMP)"]
   syslog["easyeap-syslog<br/>device syslog receiver"]
+  time["easyeap-time<br/>host NTP client (chrony)"]
   admin(("Admins /<br/>enrolling users")) -->|HTTPS| proxy
   nas(("Controllers and switches")) -->|"UDP 1812/1813"| radius
   nas -->|"TACACS+ TCP 49 (admin logins)"| radius
@@ -35,6 +36,8 @@ flowchart LR
   worker --> db
   collector --> db
   syslog --> db
+  time --> db
+  time -.->|"control socket, sources.d"| chronyd(("host chronyd"))
   api --> bao
   worker --> bao
   collector --> bao
@@ -51,6 +54,7 @@ flowchart LR
 | `easyeap-worker` | same image as api | uid 10001 | Background jobs: directory sync, hourly policy recomputation (which keeps the snapshot fresh while the directory is healthy), CRL rotation, RADIUS server certificate rotation (checked every 6 hours), retirement of superseded client certificates, enrollment-link expiry, purge of undelivered server-generated keys, event retention, OpenBao token renewal. |
 | `easyeap-collector` | same image as api | uid 10001 | Switch audit: polls monitored Cisco switches over SNMP (at most eight at once, every minute by default), keeps the latest result per switch and opens or resolves findings. |
 | `easyeap-syslog` | same image as api | uid 10001 | Receives syslog from switches and controllers (UDP 5514, and 514 with `docker-compose.syslog514.yml`), decodes it and stores it per tenant. No route to OpenBao. |
+| `easyeap-time` | same image as api | root, only CAP_DAC_OVERRIDE | The host's NTP client, set up under System → Time: writes the console's servers to the host chronyd's `/etc/chrony/sources.d/easyeap.sources`, reloads them through chronyd's control socket (`/run/chrony`), can switch the host's other servers off ("use only these"), and reports the clock's state. Every container, the database and every log share the host's clock. Without chrony on the host it only measures the clock (SNTP). [Plan](docs/plans/ntp.md). |
 | `easyeap-db` | postgres 18-alpine | postgres | Application database. Row-level security isolates tenants. |
 | `easyeap-pki` | openbao 2.4.1 | openbao | One PKI secrets-engine mount per tenant (issuing CA), one Transit key per tenant (envelope encryption of tenant secrets). Static auto-unseal from a key file. Raft/file storage on its own volume. |
 | `easyeap-radius` | freeradius 3.2.10 | freerad | FreeRADIUS plus `radius-agent` (Python) under a small supervisor. Renders and validates its own configuration from the API's desired state, keeps a local authorization snapshot, ships events. The agent also supervises EasyEAP's TACACS+ service for device administration (`tacacs.py`) while any tenant has a device with admin logins on. |

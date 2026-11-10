@@ -8,7 +8,7 @@ import { errorField } from '../../api/client'
 import { useDeviceSyslog, useSetDeviceSyslog, type DeviceSyslogResponse, type LoggedSession } from '../../api/deviceSyslog'
 import type { RadiusClient } from '../../api/radius'
 import { useTenant } from '../../api/tenant'
-import { ago, fmtCount, fmtDateTime } from '../../lib/format'
+import { ago, fmtCount, fmtDateTime, fmtStamp } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
 import { paths } from '../../routes'
 import { Btn, Callout, Chip, CopyButton, ESwitch, ErrorState, Field, LoadingBlock, errorMessage, toast, type Tone } from '../../ui'
@@ -183,7 +183,7 @@ export function DeviceSyslogPanel({ client }: { client: RadiusClient }) {
           <ul className="ee-small ee-ink-2 space-y-0.5" aria-label="What the device said">
             {d.recent.map((l) => (
               <li key={l.id} className="min-w-0 break-words">
-                <span className="ee-mono text-[12px]">{l.tag}</span>{l.count > 1 && ` ×${l.count}`} · {ago(l.last_at, now)}
+                <span className="ee-mono text-[12px]">{l.tag}</span>{l.count > 1 && ` ×${l.count}`} · <time dateTime={l.last_at} title={ago(l.last_at, now)} className="ee-num">{fmtStamp(l.last_at)}</time>
                 {l.mac && <> · <span className="ee-mono text-[12px]">{macText(l.mac)}</span></>}{' · '}{l.text}
               </li>
             ))}

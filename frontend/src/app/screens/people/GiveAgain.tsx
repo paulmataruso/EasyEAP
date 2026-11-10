@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { Download, Hourglass, Link2 } from 'lucide-react'
 import { saveBlob } from '../../api/client'
-import { downloadLinuxScript, downloadSetupAgain, showEnrollmentLink, useRadius, type IdentityListItem, type WaitingEnrollment } from '../../api/people'
+import { downloadLinuxScript, downloadSetupAgain, saveSetupFile, showEnrollmentLink, useRadius, type IdentityListItem, type WaitingEnrollment } from '../../api/people'
 import { useTenant } from '../../api/tenant'
 import { paths } from '../../routes'
 import { Btn, Callout, CopyButton, EDialog, LoadingBlock, errorMessage, platformLabels, toast } from '../../ui'
@@ -122,12 +122,12 @@ export function ShowLinkDialog({ tid, identityName, e, onClose }: { tid: string;
   )
 }
 
-/** Saves the waiting Windows setup file again. The file goes straight to the browser's downloads. */
-export async function saveSetupAgain(tid: string, e: Waiting, identityName: string): Promise<boolean> {
+/** Saves the waiting Windows setup file again: the program, or the .cmd (asCmd). It goes straight to the downloads. */
+export async function saveSetupAgain(tid: string, e: Waiting, identityName: string, asCmd = false): Promise<boolean> {
   try {
     const res = await downloadSetupAgain(tid, e.id)
-    saveBlob(new Blob([res.content], { type: 'application/octet-stream' }), res.filename)
-    toast('Setup file downloaded again', `For ${identityName}: the same one-time codes, which still work once, until ${fmtDateTime(res.expires_at)}.`)
+    const saved = saveSetupFile(res, asCmd)
+    toast('Setup file downloaded again', `${saved}, for ${identityName}: the same one-time codes, which still work once, until ${fmtDateTime(res.expires_at)}.`)
     return true
   } catch (err) {
     toast('The setup file can’t be downloaded again', errorMessage(err), 'crit')

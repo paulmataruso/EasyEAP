@@ -2,7 +2,7 @@
 
 Started 2026-11-08. This is the working list: features not built yet, and what still needs testing on real gear. What's
 already done is in [CHANGELOG.md](CHANGELOG.md) and [PROGRESS.md](PROGRESS.md). PROGRESS.md was last refreshed at
-release 1.1.0. Plans live in [docs/plans/](docs/plans/).
+release 1.2.0. Plans live in [docs/plans/](docs/plans/).
 
 Tick items off here when they're done or verified, and say where (commit, or the device and version it was tried on).
 
@@ -53,7 +53,10 @@ Tick items off here when they're done or verified, and say where (commit, or the
 - [ ] A second RADIUS node against the same API, with its health on the System page.
 
 ### Certificates and enrollment
-- [ ] Windows setup as a signed `.exe` (needs a code-signing certificate so SmartScreen doesn't block it).
+- [ ] Code-sign the Windows setup program (the `.exe` is done, unsigned), so SmartScreen doesn't ask and Smart App
+  Control doesn't block it. Needs a code-signing certificate from a CA in Microsoft's Trusted Root Program (or Azure
+  Artifact Signing). A signature covers the whole file and Smart App Control also checks the scripts a program runs,
+  so the setup script has to become fixed, signed code with each user's settings carried as data.
 - [ ] A computer-wide Mac profile (login window), so a Mac joins Wi-Fi before anyone signs in.
 - [ ] SCEP / MDM enrollment (Intune, Jamf).
 - [ ] Email delivery of enrollment links and expiry notices (overlaps renewal phase 3).
@@ -71,7 +74,7 @@ Tick items off here when they're done or verified, and say where (commit, or the
 - [ ] Directory sources other than Active Directory over LDAPS (Entra ID, Google Workspace).
 
 ### Housekeeping
-- [x] Refresh PROGRESS.md: done 2026-11-09 (1.1.0).
+- [x] Refresh PROGRESS.md: done 2026-11-10 (1.2.0).
 
 ## Things to test on real gear
 
@@ -104,6 +107,8 @@ named in each item says what to check.
   [docs/autoenrollment.md](docs/autoenrollment.md). The open question is whether Windows accepts EasyEAP's unsigned
   CMC response.
 - [ ] The Windows wired kit (`netsh lan`) on a real 802.1X port.
+- [ ] The **setup program** (`.exe`) on a real PC: SmartScreen's prompt, the window it runs in, and the web
+  certificate accepted by its key against `install.sh`'s self-signed one, under Windows PowerShell 5.1.
 
 ### Linux
 - [ ] **Linux script on a real machine** (not a container): Wi-Fi, then wired on a real switch port
@@ -140,6 +145,10 @@ named in each item says what to check.
 - [ ] Syslog from a 9800, AireOS, UniFi and Meraki (decoded lines show up under Investigate → Device syslog).
 
 ### Server side
+- [ ] **Time on other hosts** (System → Time, tested on Ubuntu 26.04 with chrony 4.8 and NTS servers): Debian 12's
+  chrony 4.3 (no `selectopts`: "Use only these servers" should say it needs 4.4), a Fedora or RHEL host with SELinux
+  enforcing, a host with systemd-timesyncd (measured only), and an NTS server behind a firewall that blocks TCP 4460
+  (the 10-minute fallback to the host's servers).
 - [ ] **RADIUS server certificate rotation and rollback** with real clients connected: do they accept the new
   certificate without a prompt? Does rolling back work for them?
 - [ ] **Restoring a backup** from the console onto a fresh install.

@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { IdentityListItem, WaitingEnrollment } from '../../api/people'
 import { TenantProvider } from '../../api/tenant'
 import type { TenantDetail } from '../../api/types'
-import { WaitingList } from './GiveAgain'
+import { saveSetupAgain, WaitingList } from './GiveAgain'
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const w = (over: Partial<WaitingEnrollment>): WaitingEnrollment => ({
@@ -76,5 +76,20 @@ describe('WaitingList', () => {
     show([w({}), w({ id: 'e2', method: 'windows-setup', device_id: 'd1' })], ['identities:read'])
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
     expect(screen.getAllByRole('link')).toHaveLength(2)
+  })
+})
+
+describe('saveSetupAgain', () => {
+  it('saves the program, or the .cmd when asked', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json(200, {
+      filename: 'EasyEAP-Setup-nina.cmd', content: '<# : batch\r\n', exe_filename: 'EasyEAP-Setup-nina.exe', exe_b64: btoa('MZ!'),
+      expires_at: '2099-11-11T10:00:00Z', sign_in_mode: 'machineOrUser', enrollments: [],
+    })))
+    const names: string[] = []
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:x')
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { names.push(this.download) })
+    expect(await saveSetupAgain('t1', w({ method: 'windows-setup' }), 'Nina Patel')).toBe(true)
+    expect(await saveSetupAgain('t1', w({ method: 'windows-setup' }), 'Nina Patel', true)).toBe(true)
+    expect(names).toEqual(['EasyEAP-Setup-nina.exe', 'EasyEAP-Setup-nina.cmd'])
   })
 })

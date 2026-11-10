@@ -3,7 +3,7 @@ import { ArrowLeft, Circle, CircleCheck, CircleX, Download, Eye, EyeOff, KeyRoun
 import { EnrollError, getCaChain, getLinuxHelper, getWifiXml, getWindowsHelper, submitCsr, takePackage, type CsrResult, type PendingInfo, type Platform } from './api'
 import type { DeviceKey } from './crypto'
 import { fillMobileconfig, generatePassword, profileDisplayName } from './pem'
-import { MIME, saveFile } from './files'
+import { helperMime, MIME, saveFile } from './files'
 import { APPLE, closedMeanwhile, fileNames, HELPER_FILE, rootPemOf, type BrowserResult, type GoneReason, type HelperResult, type PackageResult } from './model'
 
 /** pkijs is large: load it when the create step needs it (and prefetch it when that step opens). */
@@ -217,20 +217,20 @@ export function BrowserCreate({ token, info, platform, onBack, onGone, onDone }:
   )
 }
 
-// ── Setup helper (Windows: PowerShell; Linux: bash) ──────────────────────
+// ── Setup helper (Windows: a program running PowerShell; Linux: bash) ────
 export function HelperCreate({ token, info, platform, onBack, onGone, onDone, onUseBrowser }: CreateProps & { onDone: (r: HelperResult) => void; onUseBrowser: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const linux = platform === 'linux'
-  const file = HELPER_FILE[platform] ?? 'EasyEAP-WiFi-Setup.ps1'
+  const file = HELPER_FILE[platform] ?? 'EasyEAP-WiFi-Setup.exe'
   const get = async () => {
     setBusy(true)
     setError(null)
     try {
-      const script = linux ? await getLinuxHelper(token) : await getWindowsHelper(token)
+      const got = linux ? { blob: await getLinuxHelper(token), file } : await getWindowsHelper(token)
       const caPem = await getCaChain(token).catch(() => null)
-      saveFile(script, file, linux ? MIME.sh : MIME.ps1)
-      onDone({ kind: 'helper', script, caPem, rootCn: await rootCnOf(caPem), finished: false })
+      saveFile(got.blob, got.file, helperMime(got.file))
+      onDone({ kind: 'helper', script: got.blob, file: got.file, caPem, rootCn: await rootCnOf(caPem), finished: false })
     } catch (e) {
       if (e instanceof EnrollError && e.kind === 'gone') { onGone(await closedMeanwhile(token)); return }
       setError(e)
@@ -258,7 +258,7 @@ export function HelperCreate({ token, info, platform, onBack, onGone, onDone, on
         ) : (
           <>
             <li>It runs as you and doesn’t need administrator rights.</li>
-            <li>It’s a PowerShell script made for this link. Don’t share it: anyone who runs it before you could use your link.</li>
+            <li>It’s made for this link. Don’t share it: anyone who runs it before you could use your link.</li>
           </>
         )}
       </ul>
@@ -271,7 +271,7 @@ export function HelperCreate({ token, info, platform, onBack, onGone, onDone, on
         <Button variant="ghost" onClick={onBack}><ArrowLeft aria-hidden />Back</Button>
       </div>
       <p className="en-small mt-5">
-        {linux ? 'Can’t run scripts on this computer?' : 'Can’t run PowerShell scripts on this computer?'}{' '}
+        {linux ? 'Can’t run scripts on this computer?' : 'Can’t run the helper on this computer?'}{' '}
         <button type="button" className="underline underline-offset-[3px] text-[var(--ee-ink)] min-h-[44px]" onClick={onUseBrowser}>Create the certificate in this browser instead</button>
       </p>
     </div>

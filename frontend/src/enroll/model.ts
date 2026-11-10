@@ -18,7 +18,8 @@ export interface BrowserResult {
   rootCn: string | null
 }
 /** Setup helper downloaded (Windows: PowerShell, Linux: bash); the helper itself creates the key and posts the CSR. */
-export interface HelperResult { kind: 'helper'; script: Blob; caPem: string | null; rootCn: string | null; finished: boolean }
+/** `file`: the name it was saved as (the Windows helper is a program, or its .ps1 when the server has no program). */
+export interface HelperResult { kind: 'helper'; script: Blob; file: string; caPem: string | null; rootCn: string | null; finished: boolean }
 /** IT's server-generated package, taken once: a .p12, or (iPhone, iPad, Mac) an Apple profile wrapping it. */
 export interface PackageResult {
   kind: 'package'
@@ -57,7 +58,7 @@ export async function closedMeanwhile(token: string, ours = false): Promise<Gone
 export const APPLE: Platform[] = ['ios', 'macos']
 
 /** Platforms with a setup helper: it makes the key on the device and adds the network, so it's their default route. */
-export const HELPER_FILE: Partial<Record<Platform, string>> = { windows: 'EasyEAP-WiFi-Setup.ps1', linux: 'EasyEAP-WiFi-Setup.sh' }
+export const HELPER_FILE: Partial<Record<Platform, string>> = { windows: 'EasyEAP-WiFi-Setup.exe', linux: 'EasyEAP-WiFi-Setup.sh' }
 
 export function routeFor(info: PendingInfo, platform: Platform, helperRoute: 'helper' | 'browser'): Route {
   if (info.method === 'server') return 'package'
@@ -97,7 +98,7 @@ export function guideCtx(info: PendingInfo, platform: Platform, result: FlowResu
         : APPLE.includes(platform) && result?.kind === 'browser' && result.mobileconfig ? n.mobileconfig : undefined,
       ca: platform === 'android' ? n.caCrt : n.caPem,
       xml: platform === 'windows' && ((result?.kind === 'browser' && result.csr.profiles.windows_xml) || (result?.kind === 'package' && result.wifiXml)) ? n.xml : undefined,
-      helper: HELPER_FILE[platform] ?? 'EasyEAP-WiFi-Setup.ps1',
+      helper: result?.kind === 'helper' ? result.file : HELPER_FILE[platform] ?? 'EasyEAP-WiFi-Setup.exe',
     },
     androidCertName: info.network.ssid,
   }

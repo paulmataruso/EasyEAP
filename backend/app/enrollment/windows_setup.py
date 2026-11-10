@@ -39,6 +39,7 @@ class SetupOptions:
     computer_renew_days: int
     expires: str              # when the codes stop working (for the message), ISO 8601
     mode: str | None = None   # the profiles' sign-in mode when the file is made again with only the codes not used yet
+    pin: str = ""             # the server certificate's public key pin, for PCs that don't trust it (tls_pin_ps)
 
 
 def mode_for(user: bool, computer: bool, shared_pc: bool) -> str:
@@ -78,6 +79,92 @@ def _der_b64(pem: str) -> str:
     return base64.b64encode(x509.load_pem_x509_certificate(pem.encode()).public_bytes(Encoding.DER)).decode()
 
 
+# The PC may not trust the server's TLS certificate: EasyEAP's temporary self-signed one, or one from a private CA.
+# Then the certificate whose public key EasyEAP made this file with is accepted, and no other (the Linux script does the
+# same, linux_setup.tls_pin). Windows PowerShell's Invoke-RestMethod asks ServicePointManager; the check is C# (C# 5:
+# Windows' own compiler) because a script block can be called where no runspace exists. A plain single-quoted string,
+# not a here-string: renew.ps1 travels inside one in the setup file.
+TLS_PIN = r"""$TlsPin = __PIN__
+$TlsPinSource = '
+using System;
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+public static class EasyEapTlsPin {
+  static string expected;
+  public static void Use(string pin) {
+    expected = pin;
+    ServicePointManager.ServerCertificateValidationCallback = Check;
+  }
+  public static bool Check(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) {
+    if (errors == SslPolicyErrors.None) return true;
+    if (cert == null || String.IsNullOrEmpty(expected)) return false;
+    return Matches(cert.GetRawCertData(), expected);
+  }
+  public static bool Matches(byte[] der, string pin) {
+    byte[] spki = Spki(der);
+    if (spki == null) return false;
+    using (SHA256 sha = SHA256.Create()) { return Convert.ToBase64String(sha.ComputeHash(spki)) == pin; }
+  }
+  static int Length(byte[] d, ref int i) {
+    int b = d[i++];
+    if (b < 0x80) return b;
+    int n = b & 0x7f;
+    if (n < 1 || n > 3) throw new FormatException();
+    int len = 0;
+    for (int k = 0; k < n; k++) len = (len << 8) | d[i++];
+    return len;
+  }
+  static int Next(byte[] d, int i) { int j = i + 1; int len = Length(d, ref j); return j + len; }
+  static int Enter(byte[] d, int i) { if (d[i] != 0x30) throw new FormatException(); int j = i + 1; Length(d, ref j); return j; }
+  // The SubjectPublicKeyInfo element of a DER certificate: the seventh field of tbsCertificate (after the optional
+  // version, the serial number, the signature algorithm, the issuer, the validity and the subject).
+  public static byte[] Spki(byte[] der) {
+    try {
+      int i = Enter(der, Enter(der, 0));
+      if (der[i] == 0xA0) i = Next(der, i);
+      for (int k = 0; k < 5; k++) i = Next(der, i);
+      if (der[i] != 0x30) return null;
+      int end = Next(der, i);
+      if (end > der.Length) return null;
+      byte[] r = new byte[end - i];
+      Array.Copy(der, i, r, 0, r.Length);
+      return r;
+    } catch (Exception) { return null; }
+  }
+}
+'
+function Use-EasyEapPin {
+  if (-not $TlsPin -or $script:TlsPinTried) { return }
+  $script:TlsPinTried = $true
+  # PowerShell 7's web requests don't ask ServicePointManager: only Windows PowerShell can use the check.
+  if ($PSVersionTable.PSEdition -eq 'Core') { $script:TlsPinProblem = 'PowerShell 7 can''t use that check. Run this with Windows PowerShell.' }
+  try {
+    # -IgnoreWarnings: Add-Type fails on a warning, and PowerShell 7 warns that ServicePointManager is obsolete.
+    if (-not ('EasyEapTlsPin' -as [type])) { Add-Type -TypeDefinition $TlsPinSource -IgnoreWarnings -WarningAction SilentlyContinue -ErrorAction Stop }
+    [EasyEapTlsPin]::Use($TlsPin)
+  } catch {
+    # Application control (Constrained Language mode, AppLocker) can forbid compiling it: then only certificates
+    # Windows trusts work, as before. Said when a request then fails.
+    $script:TlsPinProblem = "Windows didn't allow that check here ($($_.Exception.Message))."
+  }
+}
+function Get-EasyEapPinHint($Err) {
+  # What to add to a request that failed before EasyEAP answered, when the check of its certificate isn't in place.
+  if ($script:TlsPinProblem -and -not ($Err -and $Err.Exception -and $Err.Exception.Response)) {
+    return " EasyEAP's server certificate couldn't be checked by its key: $script:TlsPinProblem"
+  }
+  ''
+}"""
+
+
+def tls_pin_ps(pin: str) -> str:
+    """The PowerShell that accepts the server certificate with this SubjectPublicKeyInfo pin (base64 SHA-256, as
+    linux_setup.tls_pin makes it) when Windows doesn't trust it. Call Use-EasyEapPin before a request."""
+    return TLS_PIN.replace("__PIN__", _ps(pin))
+
+
 def filename(username: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", username.split("@", 1)[0]).strip("-.")[:40] or "user"
     return f"EasyEAP-Setup-{safe}.cmd"
@@ -92,6 +179,7 @@ param([ValidateSet('Computer', 'User')][string]$Scope = 'Computer')
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+__TLS_PIN__
 $Api = __API__
 $Kind = __KIND__
 $Org = __ORG__
@@ -218,12 +306,13 @@ function Invoke-EasyEap($Body) {
   # Status 200 with the answer, the HTTP status with EasyEAP's reason (and a refusal's code), or 0 when EasyEAP couldn't
   # be reached.
   try {
+    Use-EasyEapPin
     $r = Invoke-RestMethod -Method Post -Uri "$Api/api/enroll/renew" -ContentType 'application/json' -Body ($Body | ConvertTo-Json -Compress) -UseBasicParsing -TimeoutSec 60
     return @{ Status = 200; Data = $r; Detail = ''; Code = '' }
   } catch {
     $status = 0; $code = ''
     try { if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode } } catch { }
-    $detail = $_.Exception.Message
+    $detail = $_.Exception.Message + (Get-EasyEapPinHint $_)
     if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
       try { $e = $_.ErrorDetails.Message | ConvertFrom-Json; $detail = [string]$e.detail; $code = [string]$e.code } catch { $detail = $_.ErrorDetails.Message }
     }
@@ -261,7 +350,9 @@ function New-EasyEapRequest([string]$Work) {
     if ($LASTEXITCODE -eq 0 -and (Test-Path $csr)) {
       $entry = @(Get-ChildItem "$StoreRoot\REQUEST" -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq $subject }) | Select-Object -First 1
       if (-not $entry) { throw "Windows made the request but it isn't in the REQUEST store." }
-      return @{ Pem = (Get-Content $csr -Raw); Storage = $t.Storage; Request = $entry.Thumbprint }
+      # ReadAllText, not Get-Content: Windows PowerShell's ConvertTo-Json writes a Get-Content string as an object (its
+      # PSPath and other notes included), and EasyEAP refuses that csr ("Input should be a valid string").
+      return @{ Pem = [IO.File]::ReadAllText($csr); Storage = $t.Storage; Request = $entry.Thumbprint }
     }
   }
   throw 'Windows could not create a key for the new certificate.'
@@ -545,6 +636,7 @@ MAIN = r"""
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+__TLS_PIN__
 $Api = __API__
 $Org = __ORG__
 $ForUser = __USER__
@@ -570,6 +662,8 @@ $RunId = $env:EASYEAP_RUN
 # renewal script that runs as SYSTEM.
 $ProgramDir = Join-Path $env:ProgramFiles 'EasyEAP'
 $ResultFile = Join-Path $ProgramDir 'setup-result.json'
+# Windows' own PowerShell for the administrator part: Start-Process would take a powershell.exe in the current folder.
+$PowerShellExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 function Test-Admin { ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
 
@@ -599,7 +693,8 @@ function New-EasyEapRequest([string]$Work, [bool]$Machine) {
       ('ProviderName = "' + $t.Provider + '"'), 'KeyUsage = 0x80', 'RequestType = PKCS10'
     ) | Set-Content -Path $inf -Encoding ASCII
     & { $ErrorActionPreference = 'Continue'; & certreq.exe -q -new $inf $csr 2>&1 | Out-Null }   # see renew.ps1
-    if ($LASTEXITCODE -eq 0 -and (Test-Path $csr)) { return @{ Pem = (Get-Content $csr -Raw); Storage = $t.Storage; Subject = $subject } }
+    # ReadAllText, not Get-Content: see renew.ps1's New-EasyEapRequest.
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $csr)) { return @{ Pem = [IO.File]::ReadAllText($csr); Storage = $t.Storage; Subject = $subject } }
   }
   throw 'Windows could not create a key for the certificate.'
 }
@@ -608,11 +703,14 @@ function Install-EasyEapCertificate([string]$Code, [bool]$Machine, [string]$Work
   $req = New-EasyEapRequest $Work $Machine
   $body = @{ csr = $req.Pem; key_origin = 'device'; device_hint = $env:COMPUTERNAME; key_storage = $req.Storage } | ConvertTo-Json
   try {
+    Use-EasyEapPin
     $resp = Invoke-RestMethod -Method Post -Uri "$Api/api/enroll/$Code/csr" -ContentType 'application/json' -Body $body -UseBasicParsing
   } catch {
     $pending = if ($Machine) { 'Cert:\LocalMachine\REQUEST' } else { 'Cert:\CurrentUser\REQUEST' }
     Get-ChildItem $pending -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq $req.Subject } |
       ForEach-Object { Remove-Item -Path $_.PSPath -DeleteKey -ErrorAction SilentlyContinue }
+    $hint = Get-EasyEapPinHint $_
+    if ($hint) { throw ($_.Exception.Message + $hint) }
     throw
   }
   $pem = Join-Path $Work 'cert.pem'
@@ -838,7 +936,7 @@ if ($needComputer) {
     $cmd = "`$env:EASYEAP_PART='computer'; `$env:EASYEAP_RUN='$run'; `$env:EASYEAP_SETUP='" + $Self.Replace("'", "''") + "'; Invoke-Expression ([IO.File]::ReadAllText(`$env:EASYEAP_SETUP))"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
     try {
-      $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+      $p = Start-Process -FilePath $PowerShellExe -Verb RunAs -Wait -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
       if (Test-Path $ResultFile) {
         $found = Get-Content $ResultFile -Raw | ConvertFrom-Json
         if ($found.run -eq $run) { $computer = $found }  # never a result left by an earlier run
@@ -880,26 +978,29 @@ LAUNCHER = (
     "setlocal\r\n"
     "set \"EASYEAP_SETUP=%~f0\"\r\n"
     "set \"EASYEAP_PART=\"\r\n"
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"Invoke-Expression ([IO.File]::ReadAllText($env:EASYEAP_SETUP))\"\r\n"
+    # Windows' own PowerShell: cmd.exe would run a powershell.exe in the current folder (Downloads) before the PATH.
+    "\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -ExecutionPolicy Bypass -Command \"Invoke-Expression ([IO.File]::ReadAllText($env:EASYEAP_SETUP))\"\r\n"
     "exit /b %errorlevel%\r\n"
     "#>\r\n"
 )
 
 
-def renew_ps1(*, api: str, kind: str, org: str, root_pems: list[str], issuing_pem: str, user_days: int, computer_days: int) -> str:
+def renew_ps1(*, api: str, kind: str, org: str, root_pems: list[str], issuing_pem: str, user_days: int, computer_days: int,
+              pin: str = "") -> str:
     """The renewal script (renewer 2.0, docs/plans/cert-renewal.md §15c): `kind` is windows-setup (the setup file) or
     windows-helper (the portal's helper, user scope only)."""
     if kind not in ("windows-setup", "windows-helper"):
         raise ValueError("kind must be windows-setup or windows-helper")
     values = {"__API__": _ps(api.rstrip("/")), "__KIND__": _ps(kind), "__ORG__": _ps_utf8(org), "__ROOTS__": ", ".join(_ps(_der_b64(p)) for p in root_pems),
-              "__ISSUING__": _ps(_der_b64(issuing_pem)), "__COMPUTER_DAYS__": str(int(computer_days)), "__USER_DAYS__": str(int(user_days))}
+              "__ISSUING__": _ps(_der_b64(issuing_pem)), "__COMPUTER_DAYS__": str(int(computer_days)), "__USER_DAYS__": str(int(user_days)),
+              "__TLS_PIN__": tls_pin_ps(pin)}
     pattern = re.compile("|".join(re.escape(k) for k in sorted(values, key=len, reverse=True)))
     return pattern.sub(lambda mt: values[mt.group(0)], RENEW)
 
 
 def renew_script(o: SetupOptions) -> str:
     return renew_ps1(api=o.api, kind="windows-setup", org=o.org, root_pems=[o.root_pem], issuing_pem=o.issuing_pem,
-                     user_days=o.user_renew_days, computer_days=o.computer_renew_days)
+                     user_days=o.user_renew_days, computer_days=o.computer_renew_days, pin=o.pin)
 
 
 def build(o: SetupOptions) -> str:
@@ -915,7 +1016,7 @@ def build(o: SetupOptions) -> str:
         "__WIRED__": "$true" if o.wired else "$false", "__MODE__": _ps(mode), "__EXPIRES__": _ps(o.expires), "__VERSION__": _ps(SCRIPT_VERSION),
         "__ROOT__": _here(o.root_pem.strip()), "__ISSUING_PEM__": _here(o.issuing_pem.strip()), "__ISSUING__": _ps(_der_b64(o.issuing_pem)),
         "__WLAN__": _here(wlan) if wlan else "''", "__WLAN_USER__": _here(wlan_user) if wlan_user else "''", "__LAN__": _here(lan) if lan else "''",
-        "__RENEW__": _here(renew_script(o)),
+        "__RENEW__": _here(renew_script(o)), "__TLS_PIN__": tls_pin_ps(o.pin),
     }
     body = MAIN
     # One pass, longest names first, so a value is never substituted into again.

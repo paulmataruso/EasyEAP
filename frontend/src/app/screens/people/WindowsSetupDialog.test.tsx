@@ -9,13 +9,14 @@ const tenant = { id: 't1', name: 'Acme', slug: 'acme', permissions: ['enrollment
 const nina = { id: 'i1', display_name: 'Nina Patel', username: 'nina', upn: 'nina@acme.example' }
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 
-function setup(settings: Record<string, unknown> | null) {
+function setup(settings: Record<string, unknown> | null, exe: { exe_filename: string; exe_b64: string } | null = null) {
   const posts: Record<string, unknown>[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/tenants/t1/radius') return json(200, { settings, clients: [] })
     if (url === '/api/tenants/t1/enrollments/windows-setup' && init?.method === 'POST') {
       posts.push(JSON.parse(String(init.body)) as Record<string, unknown>)
-      return json(201, { filename: 'EasyEAP-Setup-nina.cmd', content: '<# : batch\r\n', expires_at: '2026-11-10T12:00:00Z', sign_in_mode: 'machineOrUser', enrollments: [] })
+      return json(201, { filename: 'EasyEAP-Setup-nina.cmd', content: '<# : batch\r\n', exe_filename: null, exe_b64: null, ...exe,
+        expires_at: '2026-11-10T12:00:00Z', sign_in_mode: 'machineOrUser', enrollments: [] })
     }
     return json(404, { detail: 'not found' })
   }))
@@ -44,6 +45,24 @@ describe('WindowsSetupDialog', () => {
     expect(await screen.findByText(/Saved as EasyEAP-Setup-nina.cmd/)).toBeInTheDocument()
     expect(posts).toEqual([{ identity_id: 'i1', user_certificate: true, computer_certificate: true, wifi: true, wired: true, shared_pc: true, ttl_hours: 72 }])
     expect(created).toHaveLength(1)
+  })
+
+  it('saves the program users double-click when the server made one, and the .cmd on request', async () => {
+    const blobs: Blob[] = []
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((b) => { blobs.push(b as Blob); return 'blob:x' })
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    setup({ ssid: 'Acme-Secure', server_hostname: 'radius.acme.example', session_timeout_seconds: null, wired_enabled: false },
+      { exe_filename: 'EasyEAP-Setup-nina.exe', exe_b64: btoa('MZ\x90\x00\xff payload') })
+    const download = await screen.findByRole('button', { name: /Download setup/ })
+    await waitFor(() => expect(download).not.toBeDisabled())
+    fireEvent.click(download)
+    expect(await screen.findByText(/Saved as EasyEAP-Setup-nina.exe/)).toBeInTheDocument()
+    expect(screen.getByText(/More info/)).toBeInTheDocument()
+    expect(blobs[0].type).toBe('application/vnd.microsoft.portable-executable')
+    expect(Array.from(new Uint8Array(await blobs[0].arrayBuffer()))).toEqual(Array.from('MZ\x90\x00\xff payload', (ch) => ch.charCodeAt(0)))
+    fireEvent.click(screen.getByRole('button', { name: 'Download the .cmd instead' }))
+    expect(blobs).toHaveLength(2)
+    expect(await blobs[1].text()).toBe('<# : batch\r\n')
   })
 
   it('needs a certificate and a network', async () => {

@@ -5,7 +5,7 @@ import { Link } from 'react-router'
 import { ArrowLeft, Search } from 'lucide-react'
 import { sourceLabels, useSystemLogs, type LogLevel, type LogSource, type SystemLogEntry } from '../api/logs'
 import { useSession } from '../api/session'
-import { ago, fmtDateTime, plural } from '../lib/format'
+import { ago, fmtStamp, plural, timeZoneName } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { paths } from '../routes'
 import { Btn, Chip, Empty, ErrorState, ESelect, LoadingBlock, PageHeader, Panel, Seg, type Tone } from '../ui'
@@ -42,7 +42,7 @@ export default function SystemLog() {
   return (
     <div>
       <PageHeader title="System log"
-        lede="Messages from the API, background worker, RADIUS agent and FreeRADIUS, newest first. Kept for 30 days, and forwarded to remote syslog if you set it up."
+        lede={`Messages from the API, background worker, RADIUS agent and FreeRADIUS, newest first, in ${timeZoneName} time. Kept for 30 days, and forwarded to remote syslog if you set it up.`}
         actions={<Link to={paths.system()} className="ee-btn"><ArrowLeft aria-hidden />System health</Link>} />
       <Panel className="overflow-hidden">
         <div className="flex flex-wrap items-center gap-3 border-b border-[var(--ee-line)] px-4 py-3">
@@ -80,8 +80,8 @@ function LogRow({ e, now }: { e: SystemLogEntry; now: Date }) {
   const [first, ...rest] = e.message.split('\n')
   const [open, setOpen] = useState(false)
   return (
-    <li className="grid gap-x-4 gap-y-1 px-4 py-2.5 text-[13px] md:grid-cols-[150px_86px_110px_minmax(0,1fr)]">
-      <span className="ee-small ee-ink-3 ee-num" title={fmtDateTime(e.at)}>{ago(e.at, now)}</span>
+    <li className="grid gap-x-4 gap-y-1 px-4 py-2.5 text-[13px] md:grid-cols-[170px_86px_110px_minmax(0,1fr)]">
+      <span className="ee-small ee-num"><span className="block ee-ink-2">{fmtStamp(e.at)}</span><span className="block ee-ink-3">{ago(e.at, now)}</span></span>
       <span><Chip tone={levelTone[e.level]}>{levelText[e.level]}</Chip></span>
       <span className="ee-small ee-ink-2">{sourceLabels[e.source] ?? e.source}</span>
       <div className="min-w-0">

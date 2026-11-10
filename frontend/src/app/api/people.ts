@@ -2,7 +2,7 @@
 // people screens need (policy rules/VLANs for the decision ledger, PKI authorities/templates, RADIUS CoA settings).
 // Field names match backend/app/routers/{identities,certificates,enrollments,policy,pki,radius,directory}.py exactly.
 import { keepPreviousData, useQuery, type QueryClient } from '@tanstack/react-query'
-import { api, qs } from './client'
+import { api, qs, saveBlob } from './client'
 import { qk } from './keys'
 import type { AccessStatus, EnforcementGap, EnforcementStatus, Outcome, Page } from './types'
 
@@ -264,9 +264,26 @@ export interface WindowsSetupIn {
 export interface WindowsSetupResult {
   filename: string
   content: string
+  /** The program users double-click, carrying the same file (null when the server was built without it). */
+  exe_filename: string | null
+  exe_b64: string | null
   expires_at: string
   sign_in_mode: 'user' | 'machine' | 'machineOrUser'
   enrollments: unknown[]
+}
+
+/** Saves a Windows setup file to the browser's downloads: the .exe when the server made one, otherwise (or with
+ *  `asCmd`) the .cmd, which does the same and can be read first. Returns the file name saved. */
+export function saveSetupFile(res: WindowsSetupResult, asCmd = false): string {
+  if (res.exe_b64 && res.exe_filename && !asCmd) {
+    const bin = atob(res.exe_b64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    saveBlob(new Blob([bytes], { type: 'application/vnd.microsoft.portable-executable' }), res.exe_filename)
+    return res.exe_filename
+  }
+  saveBlob(new Blob([res.content], { type: 'application/octet-stream' }), res.filename)
+  return res.filename
 }
 export const createWindowsSetup = (tid: string, body: WindowsSetupIn) => api.post<WindowsSetupResult>(`/api/tenants/${tid}/enrollments/windows-setup`, body)
 export const cancelEnrollment = (tid: string, id: string) => api.post<{ ok: boolean }>(`/api/tenants/${tid}/enrollments/${id}/cancel`)

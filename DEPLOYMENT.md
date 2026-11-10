@@ -6,6 +6,11 @@ EasyEAP runs as one Docker Compose project (`easyeap`) on a Linux host. One depl
 
 - Linux host with Docker Engine 24+ and Docker Compose v2, 2 vCPU, 4 GB RAM, 20 GB disk (more for long event retention).
 - `openssl` on the host (the installer generates secrets with it).
+- chrony as the host's time daemon, so the NTP servers can be set from the console (System → Time). Every EasyEAP
+  container, the database and every log take their time from the host's clock. The `easyeap-time` container uses
+  chronyd's control socket (`/run/chrony`) and writes `/etc/chrony/sources.d/easyeap.sources`; chrony.conf must
+  read that directory (`sourcedir /etc/chrony/sources.d`, there by default on Ubuntu and Debian). On a host with
+  another time daemon, EasyEAP only measures the clock against the servers set there.
 - A DNS name for the console, e.g. `easyeap.msp.example`, and a trusted TLS certificate for it.
 - Network reachability from every controller and switch (Wi-Fi, wired 802.1X, MAC authentication) to the RADIUS
   ports, and from the host to each customer's domain controllers on LDAPS (TCP 636), normally over the site-to-site
@@ -73,12 +78,12 @@ setup token.
 
 Put your certificate chain and key at `deploy/secrets/tls.crt` and `deploy/secrets/tls.key` (PEM), then run
 `docker compose restart easyeap-proxy easyeap-api`. The API reads the certificate too (Group Policy autoenrollment
-checks channel binding against it, and Linux setup scripts pin its public key). It's a single-file mount, so the API
-sees a replaced file only after a restart.
+checks channel binding against it, and Linux setup scripts and Windows setup files pin its public key). It's a
+single-file mount, so the API sees a replaced file only after a restart.
 
-A Linux computer that doesn't trust the certificate (the temporary self-signed one, for example) falls back on its
-setup script's pin, renewals included. If such computers won't trust the new certificate either, make it with the same
-key (`deploy/secrets/tls.key`), or their renewals fail.
+A computer that doesn't trust the certificate (the temporary self-signed one, for example) falls back on its setup
+script's or setup file's pin, renewals included. If such computers won't trust the new certificate either, make it with
+the same key (`deploy/secrets/tls.key`), or their renewals fail.
 
 ### Settings (`deploy/.env`)
 
@@ -120,11 +125,11 @@ key (`deploy/secrets/tls.key`), or their renewals fail.
 ## Upgrades
 
 Make a backup first (System health → Backup and restore → Create backup, then Download). Then check out the
-release you want from [Releases](https://github.com/paulmataruso/EasyEAP/releases), here 1.1.0, and rebuild:
+release you want from [Releases](https://github.com/paulmataruso/EasyEAP/releases), here 1.2.0, and rebuild:
 
 ```sh
-cd /opt/easyeap && git fetch --tags && git checkout v1.1.0
-cd deploy && sed -i 's/^EASYEAP_VERSION=.*/EASYEAP_VERSION=1.1.0/' .env
+cd /opt/easyeap && git fetch --tags && git checkout v1.2.0
+cd deploy && sed -i 's/^EASYEAP_VERSION=.*/EASYEAP_VERSION=1.2.0/' .env
 docker compose build && docker compose up -d
 ```
 
@@ -133,7 +138,17 @@ docker compose build && docker compose up -d
 Migrations run automatically when the API starts (under an advisory lock). RADIUS keeps authenticating from its
 local snapshot while the API restarts.
 
-**Upgrading from 1.0.x to 1.1.0:**
+**Upgrading from 1.1.x to 1.2.0:**
+
+- No database migration.
+- A new container, `easyeap-time`, starts with `docker compose up -d`. It mounts the host's `/run/chrony` and
+  `/etc/chrony/sources.d` (see the chrony requirement under [Requirements](#requirements)). Until you set NTP servers in
+  System → Time it changes nothing on the host: it reports the clock, and System health shows it.
+- Windows setup files made before 1.2.0 fail on a PC that doesn't trust EasyEAP's web certificate (such as the
+  self-signed one `install.sh` makes), and their renewal tasks can't renew: download a new setup file and run it on
+  those PCs (or use the portal's Windows helper again).
+
+**Upgrading from 1.0.x** (to 1.1.0 or straight to 1.2.0; the 1.2.0 notes above apply as well):
 
 - Migrations 0004 to 0015 run by themselves when the API starts.
 - Migration 0014 turns automatic renewal on for every tenant, starting at 80 % of each certificate's life, and sets

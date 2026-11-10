@@ -1,8 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { ArrowRight, CircleCheck, Download, FileCheck2, LoaderCircle } from 'lucide-react'
-import { EnrollError, getLink, isPending, type PendingInfo, type Platform } from './api'
+import { EnrollError, getLink, getWindowsScript, isPending, WINDOWS_SCRIPT, type PendingInfo, type Platform } from './api'
 import { PackageAck } from './Create'
-import { MIME, saveFile } from './files'
+import { helperMime, MIME, saveFile } from './files'
 import { InstallSteps, linuxCommand, type GuideCtx, type Route } from './guides'
 import { closedReason, fileNames, type FlowResult, type GoneReason, type HelperResult } from './model'
 import { Button, Command, CopyButton, Disclosure, Note, StepHeading } from './ui'
@@ -196,11 +196,11 @@ function HelperInstall({ token, platform, result, c, onResult, onUseBrowser, onG
   }, [token, result, onResult, onGone])
 
   const linux = platform === 'linux'
-  const file = c.files.helper ?? (linux ? 'EasyEAP-WiFi-Setup.sh' : 'EasyEAP-WiFi-Setup.ps1')
+  const file = result.file
   const what = linux ? 'script' : 'helper'
   return (
     <div className="space-y-6">
-      <SavedFile name={file} onAgain={() => saveFile(result.script, file, linux ? MIME.sh : MIME.ps1)} />
+      <SavedFile name={file} onAgain={() => saveFile(result.script, file, helperMime(file))} />
       <section aria-labelledby="h-run">
         <h2 id="h-run" className="en-h2 mb-4">Run it</h2>
         <InstallSteps platform={platform} route="helper" c={c} />
@@ -216,7 +216,7 @@ function HelperInstall({ token, platform, result, c, onResult, onUseBrowser, onG
           </Note>
         )}
       </div>
-      {linux ? <LinuxHelperDetails c={c} file={file} /> : <WindowsHelperDetails c={c} file={file} />}
+      {linux ? <LinuxHelperDetails c={c} file={file} /> : <WindowsHelperDetails token={token} c={c} file={file} />}
       {!result.finished && (
         <p className="en-small">
           The {what} didn’t work?{' '}
@@ -227,12 +227,32 @@ function HelperInstall({ token, platform, result, c, onResult, onUseBrowser, onG
   )
 }
 
-function WindowsHelperDetails({ c, file }: { c: GuideCtx; file: string }) {
-  const cmd = `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\\Downloads\\${file}"`
+function WindowsHelperDetails({ token, c, file }: { token: string; c: GuideCtx; file: string }) {
+  // The program can't be started from PowerShell with -File; its script can, where unknown programs aren't allowed.
+  const exe = file.endsWith('.exe')
+  const cmd = `powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\\Downloads\\${exe ? WINDOWS_SCRIPT : file}"`
+  const [script, setScript] = useState<'idle' | 'busy' | 'saved' | 'failed'>('idle')
+  const getScript = async () => {
+    setScript('busy')
+    try {
+      saveFile(await getWindowsScript(token), WINDOWS_SCRIPT, helperMime(WINDOWS_SCRIPT))
+      setScript('saved')
+    } catch {
+      setScript('failed')
+    }
+  }
   return (
     <>
-      <Disclosure summary="Prefer to type a command?">
-        <p className="en-body mb-3">Open <b>PowerShell</b> (press Start, type <b>PowerShell</b>, press Enter), paste this and press Enter. The window stays open and says <b>Done</b> when it’s finished.</p>
+      <Disclosure summary={exe ? 'Can’t run the program?' : 'Prefer to type a command?'}>
+        {exe && (
+          <>
+            <p className="en-body mb-3">Some computers only run programs their IT team installed. The same helper also comes as a PowerShell script:</p>
+            <Button onClick={getScript} busy={script === 'busy'}>{script !== 'busy' && <Download aria-hidden />}Download the PowerShell script</Button>
+            {script === 'saved' && <p className="en-small mt-2" role="status">Saved as <b>{WINDOWS_SCRIPT}</b>.</p>}
+            {script === 'failed' && <p className="en-small mt-2" role="alert">It couldn’t be downloaded. Try again, or create the certificate in this browser instead.</p>}
+          </>
+        )}
+        <p className={exe ? 'en-body mt-4 mb-3' : 'en-body mb-3'}>{exe ? 'Then open' : 'Open'} <b>PowerShell</b> (press Start, type <b>PowerShell</b>, press Enter), paste this and press Enter. The window stays open and says <b>Done</b> when it’s finished.</p>
         <Command value={cmd} what="PowerShell command" />
         <p className="en-small mt-2">If the file isn’t in your Downloads folder, change the path to where it is.</p>
       </Disclosure>

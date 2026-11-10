@@ -101,8 +101,18 @@ export async function submitCsr(token: string, csr: string, deviceHint: string):
   return res.json()
 }
 
-/** The Windows helper script. Doesn't consume the link; the script itself posts the CSR. */
-export async function getWindowsHelper(token: string): Promise<Blob> {
+/** The Windows helper: the program users double-click, or the PowerShell script it carries when the server has no
+ *  program (501) or it can't be had. Doesn't consume the link; the helper itself posts the CSR. */
+export async function getWindowsHelper(token: string): Promise<{ blob: Blob; file: string }> {
+  const exe = await fetch(`${base(token)}/windows.exe`, { credentials: 'omit', cache: 'no-store' }).catch(() => null)
+  if (exe?.ok) return { blob: await exe.blob(), file: 'EasyEAP-WiFi-Setup.exe' }
+  return { blob: await getWindowsScript(token), file: WINDOWS_SCRIPT }
+}
+
+export const WINDOWS_SCRIPT = 'EasyEAP-WiFi-Setup.ps1'
+/** The same helper as a PowerShell script, for PCs that don't run unknown programs. Through call(): an unknown, used or
+ *  rate-limited link is reported as usual. */
+export async function getWindowsScript(token: string): Promise<Blob> {
   return (await call(`${base(token)}/windows.ps1`)).blob()
 }
 

@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from app.enrollment import profiles
+from app.enrollment import linux_setup, profiles
 from app.enrollment import service as enr
 from app.enrollment import windows_setup as ws
 
@@ -45,7 +45,20 @@ def _pem(c: x509.Certificate) -> str:
     return c.public_bytes(serialization.Encoding.PEM).decode()
 
 
+def _tls(name: str, key) -> str:
+    """A self-signed server certificate for easyeap.test (as install.sh's temporary one), its key, and its pin."""
+    c = _cert("easyeap.test", key, "easyeap.test", key, ca=False, eku=ExtendedKeyUsageOID.SERVER_AUTH)
+    (OUT / f"{name}.crt").write_text(_pem(c))
+    (OUT / f"{name}.cer").write_bytes(c.public_bytes(serialization.Encoding.DER))
+    (OUT / f"{name}.key").write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    return linux_setup.tls_pin(OUT / f"{name}.crt")
+
+
 def make() -> None:
+    # The pin every generated file carries (the server tls-pin.ps1 talks to), and an RSA one for the parser.
+    pins = {"tls": _tls("tls", ec.generate_private_key(ec.SECP256R1())),
+            "tls-rsa": _tls("tls-rsa", rsa.generate_private_key(public_exponent=65537, key_size=2048))}
+    (OUT / "pins.json").write_text(json.dumps(pins))
     rk, ik = ec.generate_private_key(ec.SECP256R1()), ec.generate_private_key(ec.SECP256R1())
     root, issuing = _cert("Test Root", rk, "Test Root", rk, ca=True), _cert("Test Issuing", ik, "Test Root", rk, ca=True)
     # renew.ps1's selection (Test-EasyEapCertificate): EasyEAP's own, and the ones it must leave alone.
@@ -69,15 +82,15 @@ def make() -> None:
         kw = {"org": "O'Brien & Co <#x#>", "user_label": "Nina O'Neil (nina@corp.example)", **kw}
         o = ws.SetupOptions(api="https://easyeap.example/",
                             server_name="radius.corp.example", root_pem=_pem(root), issuing_pem=_pem(issuing), wpa3=False,
-                            user_renew_days=30, computer_renew_days=45, expires="2026-11-10 12:00 UTC", **kw)
+                            user_renew_days=30, computer_renew_days=45, expires="2026-11-10 12:00 UTC", pin=pins["tls"], **kw)
         (OUT / f"{name}.cmd").write_bytes(ws.build(o).encode())
         (OUT / f"{name}-renew.ps1").write_text(ws.renew_script(o))
     # The portal's helper, with its own renewal script (kind windows-helper).
     helper_renew = ws.renew_ps1(api="https://easyeap.example", kind="windows-helper", org="O'Brien & Co", root_pems=[_pem(root)],
-                                issuing_pem=_pem(issuing), user_days=30, computer_days=30)
+                                issuing_pem=_pem(issuing), user_days=30, computer_days=30, pin=pins["tls"])
     (OUT / "helper-renew.ps1").write_text(helper_renew)
     (OUT / "helper.ps1").write_text(profiles.windows_powershell("https://easyeap.example", "TOKEN", "Corp's <Wi-Fi>", "radius.corp.example",
-                                                                _pem(root), _pem(issuing), renew_ps1=helper_renew))
+                                                                _pem(root), _pem(issuing), renew_ps1=helper_renew, pin=pins["tls"]))
     # As Windows PowerShell would read a helper without its BOM (ANSI): the renewal script inside must still parse.
     quoted = ws.renew_ps1(api="https://easyeap.example", kind="windows-helper", org="Children\u2019s Szko\u0142a", root_pems=[_pem(root)],
                           issuing_pem=_pem(issuing), user_days=30, computer_days=30)

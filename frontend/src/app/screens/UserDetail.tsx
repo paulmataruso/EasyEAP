@@ -365,9 +365,9 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
   const live = (e: IdentityEnrollment) => new Date(e.expires_at) > now
   const usable = u.account_state === 'enabled'   // a disabled account's codes wait until it's enabled again
   const kept = (e: IdentityEnrollment) => (e.method === 'windows-setup' ? fileAvailable(e) : !!e.link_available)
-  const saveAgain = async (e: IdentityEnrollment) => {
+  const saveAgain = async (e: IdentityEnrollment, asCmd = false) => {
     setSaving(e.id)
-    await saveSetupAgain(tid, e, u.display_name)
+    await saveSetupAgain(tid, e, u.display_name, asCmd)
     setSaving(null)
   }
   const statusChip = (e: IdentityEnrollment) => {
@@ -400,7 +400,11 @@ function EnrollmentPanel({ tid, u, pending, past, now }: { tid: string; u: Ident
             <Btn size="sm" onClick={() => setShowing(e)}><Link2 aria-hidden />Show link</Btn>
           )}
           {e.method === 'windows-setup' && (!e.device_id || fileRow.get(e.device_id) === e.id) && fileAvailable(e) && usable && can('enrollment:manage') && live(e) && (
-            <Btn size="sm" onClick={() => saveAgain(e)} busy={saving === e.id}><Download aria-hidden />Download setup file</Btn>
+            <>
+              <Btn size="sm" onClick={() => saveAgain(e)} busy={saving === e.id}><Download aria-hidden />Download setup file</Btn>
+              <Btn size="sm" variant="ghost" onClick={() => saveAgain(e, true)} disabled={saving === e.id}
+                aria-label="Download the setup file as a .cmd" title="The same setup as a .cmd file, for PCs that don’t run unknown programs">.cmd</Btn>
+            </>
           )}
           {e.method === 'server' && can('enrollment:server_keygen') && new Date(e.expires_at) > now && (
             <Btn size="sm" onClick={() => setTaking(e)}><Download aria-hidden />Download package</Btn>

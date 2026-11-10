@@ -1,6 +1,7 @@
 """Administrator side of enrollment: create links, server-generated packages (opt-in), list, cancel."""
 from __future__ import annotations
 
+import base64
 import uuid
 from datetime import UTC, datetime
 
@@ -93,6 +94,8 @@ class WindowsSetupIn(BaseModel):
 def _setup_file(ctx: TenantCtx, ident: m.Identity, rs: m.RadiusSettings, codes: dict[str, tuple[m.Enrollment, str]],
                 templates: dict[str, m.CertificateTemplate], *, wifi: bool, wired: bool, shared_pc: bool, mode: str) -> dict:
     """The setup file for these one-time codes ({"user"|"device": (enrollment, code)}) and today's network settings."""
+    from app.autoenroll.kerberos import PROXY_CERT
+    from app.enrollment import linux_setup, windows_exe
     from app.enrollment import windows_setup as ws
     from app.pki import service as pki
     issuing, root = pki.chain_pem(ctx.session, ctx.id)
@@ -105,9 +108,14 @@ def _setup_file(ctx: TenantCtx, ident: m.Identity, rs: m.RadiusSettings, codes: 
         computer_code=comp[1] if comp else None, server_name=rs.server_hostname, root_pem=root or issuing, issuing_pem=issuing,
         ssid=rs.ssid if wifi else None, wpa3=rs.wpa3, wired=wired, shared_pc=shared_pc,
         user_renew_days=renew.get("user", 30), computer_renew_days=renew.get("device", 30),
-        expires=expires.strftime("%Y-%m-%d %H:%M UTC"), mode=mode))
-    return {"filename": ws.filename(ident.username), "content": content, "expires_at": expires.isoformat(), "sign_in_mode": mode,
-            "enrollments": [enrollment_out(e, ident) for e, _ in codes.values()]}
+        expires=expires.strftime("%Y-%m-%d %H:%M UTC"), mode=mode, pin=linux_setup.tls_pin(PROXY_CERT)))
+    name = ws.filename(ident.username)
+    # The program users double-click (windows_exe): the same file inside. Without a launcher in the image (a development
+    # build), the .cmd alone.
+    exe = windows_exe.wrap_or_none(content.encode())
+    return {"filename": name, "content": content, "exe_filename": windows_exe.exe_name(name) if exe else None,
+            "exe_b64": base64.b64encode(exe).decode() if exe else None,
+            "expires_at": expires.isoformat(), "sign_in_mode": mode, "enrollments": [enrollment_out(e, ident) for e, _ in codes.values()]}
 
 
 def _radius_for_setup(ctx: TenantCtx) -> m.RadiusSettings:

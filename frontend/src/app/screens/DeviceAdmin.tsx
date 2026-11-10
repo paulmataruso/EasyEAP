@@ -11,7 +11,7 @@ import {
 } from '../api/deviceAdmin'
 import { vendorLabels } from '../api/radius'
 import { useTenant } from '../api/tenant'
-import { ago, fmtDateTime, plural } from '../lib/format'
+import { ago, fmtDateTime, fmtStamp, plural, timeZoneName } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { paths } from '../routes'
 import { Btn, Callout, Chip, ESelect, ESwitch, Empty, ErrorState, LoadingBlock, PageHeader, Panel, Seg, Tip, errorMessage, toast, type Tone } from '../ui'
@@ -276,11 +276,11 @@ function AdminLog({ data }: { data: DeviceAdminOverview }) {
           <div className="overflow-x-auto">
             <table className="ee-table">
               <caption className="sr-only">Device administration activity, newest first</caption>
-              <thead><tr><th className="pt-1.5">When</th><th className="pt-1.5">Who</th><th className="pt-1.5">Device</th><th className="pt-1.5">What</th><th className="pt-1.5">Detail</th></tr></thead>
+              <thead><tr><th className="pt-1.5">When ({timeZoneName})</th><th className="pt-1.5">Who</th><th className="pt-1.5">Device</th><th className="pt-1.5">What</th><th className="pt-1.5">Detail</th></tr></thead>
               <tbody>
                 {items.map((e) => (
                   <tr key={e.id}>
-                    <td className="whitespace-nowrap"><span title={fmtDateTime(e.at)}>{ago(e.at, now)}</span></td>
+                    <td className="whitespace-nowrap"><span className="ee-num text-[12.5px]">{fmtStamp(e.at)}</span><span className="ee-small ee-ink-3 block">{ago(e.at, now)}</span></td>
                     <td className="min-w-[120px]">
                       <span className={e.username?.startsWith('unknown:') ? 'ee-ink-3' : 'ee-mono text-[12.5px]'}>{e.username?.startsWith('unknown:') ? 'Unknown name' : e.username ?? '—'}</span>
                       {e.source && <span className="ee-small ee-ink-3 block">{e.source === 'local' ? 'EasyEAP account' : 'Directory'}</span>}

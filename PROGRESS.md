@@ -1,6 +1,6 @@
 # Progress
 
-Status as of 2026-11-09 (release 1.1.0). What's left to build and to test on real gear is in [TODO.md](TODO.md).
+Status as of 2026-11-10 (release 1.2.0). What's left to build and to test on real gear is in [TODO.md](TODO.md).
 
 ## Complete
 
@@ -14,6 +14,9 @@ Status as of 2026-11-09 (release 1.1.0). What's left to build and to test on rea
 - [x] Full backup and restore from the console and the first-run page (age-encrypted `.easyeap`, step-by-step
       progress, automatic rollback); `backup.sh` / `restore.sh` wrap the same engine for scheduling
 - [x] System log (30 days) and remote syslog (TLS/TCP/UDP, RFC 5424/3164, text/JSON, at-least-once with catch-up)
+- [x] Time from the console (`easyeap-time`): the host chrony's NTP servers (server/pool, NTS, prefer, only these,
+      with a fallback), clock status, health checks and alerts, an SNTP measurement without chrony; every log view
+      shows the date and time to the second with the zone
 - [x] Lab profile: Samba AD domain controller, `eapol_test` Wi-Fi client, and a pretend Cisco Catalyst (net-snmp) for
       the switch audit
 - [x] Development override with a hot-reloading API
@@ -104,6 +107,8 @@ Status as of 2026-11-09 (release 1.1.0). What's left to build and to test on rea
   profiles, automatic renewal with `renew.ps1` 2.0 (a daily signed check-in, renewal from EasyEAP's date, the pending
   request kept across a lost answer, the old certificate deleted only after the new one checks in, a notice two
   weeks before expiry); the portal's Windows helper renews its certificate the same way
+- [x] Windows setup as a program users double-click (`.exe`, not code-signed yet), for the setup file and the portal's
+  helper; both accept EasyEAP's web certificate by its pinned key when the PC doesn't trust it
 - [x] Linux setup script (`EasyEAP-WiFi-Setup.sh`): finds NetworkManager, iwd, or wpa_supplicant with systemd-networkd
   or dhcpcd, makes the key on the computer, adds the Wi-Fi network and, with NetworkManager, wired 802.1X (one 802.1X
   connection per port, each port's own settings kept, "other ports" for the rest); `--check` and `--remove`; renews by
@@ -187,8 +192,11 @@ Status as of 2026-11-09 (release 1.1.0). What's left to build and to test on rea
   RADIUS node; fine-grained password policies aren't read; anyone who can reach a device's SSH can lock a named
   EasyEAP account for 15 minutes; FreeRADIUS and the TACACS+ service share the container user that can read the
   admin data.
-- **Windows setup file not run on a real Windows 11 PC.** It's tested under PowerShell 7 with Windows' commands
-  replaced by recorders; certreq with the TPM, netsh, the approval prompt and the scheduled tasks are unverified. Its
+- **Windows setup file not fully run on a real Windows 11 PC.** It's tested under PowerShell 7 with Windows' commands
+  replaced by recorders. A first real run got through the CA, the profiles and the renewal tasks, then stopped at the
+  self-signed web certificate (fixed with the pin); certreq with the TPM, the approval prompt and the scheduled tasks
+  running are unverified. The setup program (`.exe`) isn't code-signed: SmartScreen asks once, and Smart App Control,
+  where it's on, blocks it (and the `.cmd`). Its
   renewal (`renew.ps1` 2.0) and the portal helper's renewal task are tested the same way and against a running
   EasyEAP's API, never on a PC.
 - **Group Policy autoenrollment is a preview, not run on a real Windows PC.** It's tested against Samba AD and a

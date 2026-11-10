@@ -5,6 +5,56 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-10
+
+The host's clock set from the console (System → Time), dates on every log line, and Windows setup as a program to
+double-click, which also works when the PC doesn't trust EasyEAP's web certificate.
+
+### Upgrading from 1.1.x
+
+- Back up first (System → Backup and restore, or `deploy/backup.sh`). There's no database migration.
+- A new container, **`easyeap-time`**, starts with the stack. It needs chrony as the host's time daemon to set the
+  clock (DEPLOYMENT.md, Requirements); without it, it only measures the clock. It changes nothing on the host until
+  NTP servers are set in System → Time.
+- Windows setup files made with 1.1.0 fail on PCs that don't trust EasyEAP's web certificate, and their renewal tasks
+  can't renew: download a new setup file and run it on those PCs, or run the portal's Windows helper again.
+
+### Added
+
+- **Windows setup as a program.** **Download setup** in the console and the portal's Windows helper now give a `.exe`
+  users double-click, instead of a `.cmd` file or a PowerShell script to right-click and run. It carries the same setup
+  and runs it the same way, in the same window. **Download the .cmd instead** still gives the file. The program isn't
+  code-signed yet: SmartScreen asks once (**More info**, then **Run anyway**), and Smart App Control, where it's on,
+  blocks it as it blocks the `.cmd`.
+- **Time (NTP) from the console.** System → Time sets the NTP servers the host's chrony uses (servers or pools,
+  NTS, prefer), with a test for each, and an option to use only those servers. It shows whether the clock is
+  synchronised, to what, how far off it is, each server's state, and whether your own computer's clock agrees. A new
+  container, **`easyeap-time`**, applies the settings through chronyd's control socket and a file in its
+  `sources.d`, and checks the clock every 10 seconds. If none of the chosen servers can set the clock within 10
+  minutes, the host's own servers keep it until one can. Without chrony on the host it measures the clock against
+  the servers instead. System health warns when the clock is 100 ms off and is critical at 1 s or when it isn't
+  synchronised; the changes go to the system log and to remote syslog. Changes reach chronyd within seconds. When
+  chronyd sets EasyEAP's servers aside for the host's own (marked `prefer`, or using NTS), the panel says so. It also
+  gives the Cisco lines that point switches at the same servers.
+
+### Changed
+
+- Log views show the date as well as the time, to the second, with the time zone named: Device syslog, the switch
+  audit, the system log, the Admin log and the policy publish status. The authentication log keeps its day headings,
+  and shows the date where it has none.
+
+### Fixed
+
+- Windows setup files, the portal's Windows helper and their renewal tasks couldn't reach EasyEAP when the PC didn't
+  trust its web certificate, such as the temporary self-signed one `install.sh` makes: each request failed with "Could
+  not establish trust relationship for the SSL/TLS secure channel". They now accept that certificate when its public
+  key is the one the file was made with, as the Linux script does. Files made before this fix still fail that way:
+  download them again.
+- Windows setup files, the portal's Windows helper and their renewal tasks sent the certificate request in a form
+  EasyEAP refused ("csr: Input should be a valid string"): Windows PowerShell 5.1 writes text read with `Get-Content`
+  to JSON as an object. They now read it as plain text. Renewal tasks installed before this fix can't renew: run a new
+  setup file (or the portal helper) on those PCs.
+
 ## [1.1.0] - 2026-11-09
 
 Wired 802.1X and MAC authentication on Cisco, Meraki MS and UniFi switches; switch logins over TACACS+; a switch
@@ -507,7 +557,8 @@ Verified end to end with a live Cisco Catalyst 9800 and an iPhone enrolled throu
 - Backups made by the preview (`.tar.gz.enc` or `.tar.gz.gpg`) can't be restored. Make a new backup from the
   console after upgrading.
 
-[Unreleased]: https://github.com/paulmataruso/EasyEAP/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/paulmataruso/EasyEAP/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/paulmataruso/EasyEAP/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/paulmataruso/EasyEAP/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/paulmataruso/EasyEAP/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/paulmataruso/EasyEAP/releases/tag/v1.0.0

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { CircleCheck, RefreshCw, X } from 'lucide-react'
 import { useEnforcement, type PreviewSummary } from '../../api/policy'
-import { fmtTime, plural, relative } from '../../lib/format'
+import { fmtStamp, plural, relative, timeZoneName } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
 import { paths } from '../../routes'
 import { Btn, Callout, Panel } from '../../ui'
@@ -39,7 +39,7 @@ export function PublishedStatus({ tid, publishedAt, serverBefore, impact, onDism
   } else if (applied) {
     body = (
       <Callout tone="valid" title="RADIUS is using the new policy">
-        The RADIUS agent reported the snapshot built at {fmtTime(e.snapshot_built_at, true)} as applied. New connections are decided by the published rules. People already connected keep their session until they reconnect or it times out.
+        The RADIUS agent reported the snapshot built at {fmtStamp(e.snapshot_built_at)} ({timeZoneName}) as applied. New connections are decided by the published rules. People already connected keep their session until they reconnect or it times out.
       </Callout>
     )
   } else if (!e.agent_online) {
@@ -50,7 +50,7 @@ export function PublishedStatus({ tid, publishedAt, serverBefore, impact, onDism
     body = (
       <p className="ee-small ee-ink-2 flex items-center gap-2" role="status">
         <RefreshCw className="size-4 animate-spin text-[var(--ee-gold)]" aria-hidden />
-        Waiting for RADIUS to apply the snapshot built at {fmtTime(e.snapshot_built_at, true)}. RADIUS checks for updates every few seconds and keeps using its previous snapshot until then.
+        Waiting for RADIUS to apply the snapshot built at {fmtStamp(e.snapshot_built_at)} ({timeZoneName}). RADIUS checks for updates every few seconds and keeps using its previous snapshot until then.
       </p>
     )
   }

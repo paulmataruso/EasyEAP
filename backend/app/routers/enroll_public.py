@@ -18,7 +18,7 @@ from app.autoenroll.kerberos import PROXY_CERT
 from app.config import get_settings
 from app.db import set_platform, set_tenant
 from app.deps import client_ip, db
-from app.enrollment import linux_setup, profiles, windows_setup
+from app.enrollment import linux_setup, profiles, windows_exe, windows_setup
 from app.enrollment import service as enr
 from app.pki import renewal
 from app.pki import service as pki
@@ -224,8 +224,9 @@ def renew(body: RenewIn, request: Request, s: Session = Depends(db), format: str
             "issuing_ca_pem": issuing, "root_ca_pem": root, "trust": trust_block(s, new.tenant_id)}
 
 
-@router.get("/{token}/windows.ps1", response_class=PlainTextResponse)
-def windows_script(token: str, request: Request, s: Session = Depends(db)) -> Response:
+def _windows_helper(token: str, request: Request, s: Session) -> str:
+    """The portal's Windows helper for this link, with its BOM: Windows PowerShell reads a .ps1 without one as ANSI,
+    which garbles a non-ASCII network or org name."""
     e, tenant, _ = _load(token, request, s, pending=True)
     if e.method != "link":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This link is for a prepared package. Download it instead.")
@@ -234,12 +235,31 @@ def windows_script(token: str, request: Request, s: Session = Depends(db)) -> Re
     tpl = s.get(m.CertificateTemplate, e.template_id) if e.template_id else None
     days = tpl.renew_before_days if tpl else 30
     # The helper leaves a per-user renewal task behind (cert-renewal.md §15c item 8), so the certificate renews itself.
+    pin = linux_setup.tls_pin(PROXY_CERT)
     renew = windows_setup.renew_ps1(api=get_settings().public_url, kind="windows-helper", org=tenant.name, root_pems=[root or issuing],
-                                    issuing_pem=issuing, user_days=days, computer_days=days)
-    script = profiles.windows_powershell(get_settings().public_url, token, ssid, server, root or issuing, issuing, wpa3, renew_ps1=renew)
-    # With a BOM: Windows PowerShell reads a .ps1 without one as ANSI, which garbles a non-ASCII network or org name.
-    return Response("\ufeff" + script, media_type="text/plain; charset=utf-8",
+                                    issuing_pem=issuing, user_days=days, computer_days=days, pin=pin)
+    return "\ufeff" + profiles.windows_powershell(get_settings().public_url, token, ssid, server, root or issuing, issuing, wpa3,
+                                                  renew_ps1=renew, pin=pin)
+
+
+@router.get("/{token}/windows.ps1", response_class=PlainTextResponse)
+def windows_script(token: str, request: Request, s: Session = Depends(db)) -> Response:
+    return Response(_windows_helper(token, request, s), media_type="text/plain; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="EasyEAP-WiFi-Setup.ps1"', "Cache-Control": "no-store"})
+
+
+@router.get("/{token}/windows.exe")
+def windows_program(token: str, request: Request, s: Session = Depends(db)) -> Response:
+    """The same helper inside the program users double-click (enrollment/windows_exe.py). 501 when this server was
+    built without it (404 means an unknown link to the portal): the portal then offers the .ps1."""
+    none = HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "This server has no Windows setup program. Use the PowerShell helper.")
+    if not windows_exe.available():  # before the link is looked up: the .ps1 that follows counts once
+        raise none
+    exe = windows_exe.wrap_or_none(_windows_helper(token, request, s).encode())
+    if exe is None:
+        raise none
+    return Response(exe, media_type="application/vnd.microsoft.portable-executable",
+                    headers={"Content-Disposition": 'attachment; filename="EasyEAP-WiFi-Setup.exe"', "Cache-Control": "no-store"})
 
 
 def linux_script_for(s: Session, e: m.Enrollment, tenant: m.Tenant, ident: m.Identity, token: str) -> str | None:

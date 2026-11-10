@@ -2,7 +2,7 @@
 // snapshots it has applied, background jobs, and full backup and restore.
 import type { ReactNode } from 'react'
 import { Link } from 'react-router'
-import { Cog, Database, KeyRound, Network, Router, Send } from 'lucide-react'
+import { Clock, Cog, Database, KeyRound, Network, Router, Send } from 'lucide-react'
 import { ApiError } from '../api/client'
 import { useOverview } from '../api/dashboard'
 import { useSession } from '../api/session'
@@ -14,6 +14,7 @@ import { paths } from '../routes'
 import { Callout, Chip, Dl, ErrorState, HealthDot, LoadingBlock, PageHeader, Panel, SectionHeader } from '../ui'
 import { BackupPanel } from './system/BackupPanel'
 import { SyslogPanel } from './system/SyslogPanel'
+import { TimePanel } from './system/TimePanel'
 
 const SERVICE: Record<string, { name: string; icon: ReactNode; what: string }> = {
   database: { name: 'Database', icon: <Database />, what: 'PostgreSQL: tenants, users, certificates, policy and the audit log.' },
@@ -23,11 +24,13 @@ const SERVICE: Record<string, { name: string; icon: ReactNode; what: string }> =
   collector: { name: 'Switch collector', icon: <Network />, what: 'Polls monitored switches over SNMP for the switch audit.' },
   switch_syslog: { name: 'Device syslog', icon: <Network />, what: 'Receives switches’ and controllers’ syslog: the switch audit’s “the switch says”, and Investigate → Device syslog.' },
   syslog: { name: 'Remote syslog', icon: <Send />, what: 'Forwards the audit trail, authentication events and system log.' },
+  time: { name: 'Time', icon: <Clock />, what: 'The host’s clock, which every log, certificate and session uses, kept by chrony on the NTP servers set under Time.' },
 }
 
 function ageText(c: HealthCheck, checkedAt: number, now: Date) {
   if (c.service === 'database' || c.service === 'pki') return `Checked ${relative(new Date(checkedAt).toISOString(), new Date(Math.max(now.getTime(), checkedAt) + 1))}`
   if (c.service === 'syslog') return c.last_seen_at ? `Last message sent ${ago(c.last_seen_at, now)}` : 'Nothing sent yet'
+  if (c.service === 'time') return c.last_seen_at ? `Last report ${ago(c.last_seen_at, now)}` : 'No report yet'
   return c.last_seen_at ? `Last heartbeat ${ago(c.last_seen_at, now)}` : 'No heartbeat recorded'
 }
 
@@ -151,6 +154,8 @@ export default function System() {
               )}
           </div>
         </Panel>
+
+        {canHealth && <TimePanel />}
 
         {/* Jobs */}
         {isPlatform && h && (
